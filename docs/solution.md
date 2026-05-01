@@ -532,12 +532,12 @@ Freshness 按指标类型分别定义，不使用全局硬编码阈值：
 
 #### 10.3.4 Resolver 输出格式
 
-每个指标经过 resolver 后输出统一结构：
+每个指标经��� resolver 后输出统一结构。动态层字段统一使用 `availability`（与 §10.3.1 定义一致），不使用 `status`：
 
 ```json
 {
   "value": 42,
-  "status": "ok",
+  "availability": "ok",
   "capability": "supported",
   "source": "hook",
   "preferredSource": "telemetry",
@@ -552,7 +552,7 @@ Freshness 按指标类型分别定义，不使用全局硬编码阈值：
 ```json
 {
   "value": 85.2,
-  "status": "degraded",
+  "availability": "degraded",
   "capability": "supported",
   "source": "status_file",
   "preferredSource": "hook",
@@ -562,12 +562,12 @@ Freshness 按指标类型分别定义，不使用全局硬编码阈值：
 }
 ```
 
-不支持示例：
+不支持示例（`capability=unsupported` 是静态声明，不进入 resolver 流程，因此无动态 availability）：
 
 ```json
 {
   "value": null,
-  "status": "unsupported",
+  "availability": null,
   "capability": "unsupported",
   "source": null,
   "preferredSource": null,
@@ -612,13 +612,44 @@ interface MetricAdapter {
 
 #### Resolver 组装
 
-Resolver 按指标查找所有 adapter 的 capability，按优先级排序，依次尝试 resolve，返回第一个 `availability != error && availability != missing` 的结果。如果全部 fallback 失败，返回最高优先级 adapter 的 error/missing 状态。
+Resolver 按指标��找所有 adapter 的 capability，按优先级排序，收集每个 adapter 的 resolve 结果，然后按以下 ranking 规则选出最终结果：
+
+**Ranking 规则（优先级递减）：**
+
+1. **最高优先级 adapter 且 availability=ok** → 直接选中（最优路径）
+2. **任意 adapter availability=ok** → 选优先级最高的 ok 结果（跳过高优但 stale/degraded/missing 的来源）
+3. **degraded 结果** → 仅在以下条件之一满足时选中：
+   - 没有任何 adapter 返回 ok
+   - 该指标声明 `degradedAcceptable: true`（即 degraded 数据仍有展示价值）
+   - 选中时标记 fallbackReason
+4. **stale 结果** → 不应压过更新鲜的低优来源。仅在没有任何 ok 或 degraded 结果时选中
+5. **全部 missing/error** → 返回最高优先级 adapter 的 error/missing 状态
+
+简言之：**freshness 优先于 source priority**。一个 fresh 的低优来源��过一个 stale 的高优来源。
 
 ```
 resolve("tool_calls", "claude"):
-  1. TelemetryAdapter.resolve("tool_calls", "claude")  → missing (collector not running)
-  2. HookAdapter.resolve("tool_calls", "claude")        → ok, value=[...]
-  → 返回 HookAdapter 结果, source="hook", preferredSource="telemetry", fallbackReason="telemetry_missing"
+  1. TelemetryAdapter  → missing (collector not running)
+  2. HookAdapter       → ok, value=[...]
+  3. FileAdapter       → ok, value=[...] (from JSONL)
+  ranking: HookAdapter ok (优先级高于 FileAdapter ok)
+  → 返回 HookAdapter 结果, availability="ok", source="hook",
+    preferredSource="telemetry", fallbackReason="telemetry_missing"
+
+resolve("context_usage", "claude"):
+  1. TelemetryAdapter  → stale (last update 5min ago)
+  2. StatusLineAdapter → ok, value=72.3 (updated 2s ago)
+  ranking: StatusLineAdapter ok 优先于 TelemetryAdapter stale
+  → 返回 StatusLineAdapter 结果, availability="ok", source="statusline",
+    preferredSource="telemetry", fallbackReason="telemetry_stale"
+
+resolve("tool_failures", "codex"):
+  1. TelemetryAdapter  → capability=unsupported (Codex 无 OTel)，跳过
+  2. HookAdapter       → degraded (从 PostToolUse result 推断，无专用事件)
+  3. FileAdapter       → ok, value=[...]
+  ranking: FileAdapter ok 优先于 HookAdapter degraded
+  → 返��� FileAdapter 结果, availability="ok", source="status_file",
+    preferredSource="hook", fallbackReason="hook_degraded"
 
 resolve("permission_requests", "claude"):
   1. capabilities check → capability=unsupported for claude
