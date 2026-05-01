@@ -532,7 +532,7 @@ Freshness 按指标类型分别定义，不使用全局硬编码阈值：
 
 #### 10.3.4 Resolver 输出格式
 
-每个指标经��� resolver 后输出统一结构。动态层字段统一使用 `availability`（与 §10.3.1 定义一致），不使用 `status`：
+每个指标经过 resolver 后输出统一结构。动态层字段统一使用 `availability`（与 §10.3.1 定义一致），不使用 `status`：
 
 ```json
 {
@@ -612,7 +612,7 @@ interface MetricAdapter {
 
 #### Resolver 组装
 
-Resolver 按指标��找所有 adapter 的 capability，按优先级排序，收集每个 adapter 的 resolve 结果，然后按以下 ranking 规则选出最终结果：
+Resolver 按指标查找所有 adapter 的 capability，按优先级排序，收集每个 adapter 的 resolve 结果，然后按以下 ranking 规则选出最终结果：
 
 **Ranking 规则（优先级递减）：**
 
@@ -625,7 +625,7 @@ Resolver 按指标��找所有 adapter 的 capability，按优先级排序，
 4. **stale 结果** → 不应压过更新鲜的低优来源。仅在没有任何 ok 或 degraded 结果时选中
 5. **全部 missing/error** → 返回最高优先级 adapter 的 error/missing 状态
 
-简言之：**freshness 优先于 source priority**。一个 fresh 的低优来源��过一个 stale 的高优来源。
+简言之：**freshness 优先于 source priority**。一个 fresh 的低优来源胜过一个 stale 的高优来源。
 
 ```
 resolve("tool_calls", "claude"):
@@ -648,7 +648,7 @@ resolve("tool_failures", "codex"):
   2. HookAdapter       → degraded (从 PostToolUse result 推断，无专用事件)
   3. FileAdapter       → ok, value=[...]
   ranking: FileAdapter ok 优先于 HookAdapter degraded
-  → 返��� FileAdapter 结果, availability="ok", source="status_file",
+  → 返回 FileAdapter 结果, availability="ok", source="status_file",
     preferredSource="hook", fallbackReason="hook_degraded"
 
 resolve("permission_requests", "claude"):
