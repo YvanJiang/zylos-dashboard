@@ -15,34 +15,89 @@ Zylos Dashboard 是一个为 zylos agent 系统设计的可观测性与管理仪
 | 数据类型 | 当前位置 | 查看方式 |
 |---------|---------|---------|
 | Agent 状态（忙/闲/思考） | `activity-monitor/agent-status.json` | 手动 `cat` 文件 |
+| Statusline（成本/context/rate limit） | `activity-monitor/statusline.json` | 手动查 JSON |
 | Session 成本 | `activity-monitor/cost-log.jsonl` (576 条记录) | 手动查 JSONL |
 | 工具调用事件 | `activity-monitor/tool-events.jsonl` (2651 条) | 手动查 JSONL |
+| 工具会话状态 | `activity-monitor/session-tool-state.json` | 手动查 JSON |
 | API 活动 | `activity-monitor/api-activity.json` | 手动查 JSON |
 | Context 使用率 | `activity-monitor/context-monitor-state.json` | 手动查 JSON |
+| 进程状态 | `activity-monitor/proc-state.json` | 手动查 JSON |
 | 配额使用 | `activity-monitor/usage.json` | 手动查 JSON |
-| 通信记录 | `comm-bridge/c4.db` (18138 条对话) | SQL 查询 |
+| Hook 计时 | `activity-monitor/hook-timing.log` (~98KB) | 手动查日志 |
+| 活动日志 | `activity-monitor/activity.log` (~75KB, 每日截断 500 行) | 手动查日志 |
+| 通信记录 | `comm-bridge/c4.db` (18138 条对话, 308 checkpoints) | SQL 查询 |
 | 计划任务 | `scheduler/scheduler.db` (12 active, 293 history) | CLI 命令 |
 | PM2 服务状态 | PM2 运行时 | `pm2 status` 命令 |
+| PM2 日志 | `~/.pm2/logs/` (12 服务 × 2 = 24 文件) | 手动查日志 |
+| 系统日志 | `~/zylos/logs/` (health/upgrade/doctor 等) | 手动查日志 |
+| Session 会话记录 | `~/.claude/projects/.../` (175 个 .jsonl) | 无可视化工具 |
 | 内存使用 | `memory/` 目录 | 手动浏览 |
 
 ### 1.2 新机遇：Claude Code 原生 OTel
 
-Claude Code 原生支持 OpenTelemetry 遥测输出（通过 `CLAUDE_CODE_ENABLE_TELEMETRY=1`），可以导出：
+Claude Code 原生支持 OpenTelemetry 遥测输出，体系非常完善：
 
-- **Metrics**：token 计数、成本、工具决策计数器
-- **Log Events**：每个 prompt、API 请求、工具结果的结构化日志
-- **Traces (beta)**：完整的分布式追踪，span 层级：
-  ```
-  claude_code.interaction（一轮对话）
-  ├── claude_code.llm_request（API 调用）
-  ├── claude_code.tool（工具执行）
-  │   └── claude_code.hook（Hook 执行）
-  └── claude_code.subagent（子 agent）
-  ```
+**环境变量体系：**
 
-这意味着我们可以获得远比 activity-monitor Hook 更细粒度的运行时数据，包括 LLM 请求级别的延迟、token 消耗和工具调用链。
+| 变量 | 用途 |
+|------|------|
+| `CLAUDE_CODE_ENABLE_TELEMETRY=1` | 主开关（必需） |
+| `CLAUDE_CODE_ENHANCED_TELEMETRY_BETA=1` | 启用 span tracing（beta） |
+| `OTEL_METRICS_EXPORTER` | `otlp` / `prometheus` / `console` / `none` |
+| `OTEL_LOGS_EXPORTER` | `otlp` / `console` / `none` |
+| `OTEL_TRACES_EXPORTER` | `otlp` / `console` / `none` |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | e.g. `http://localhost:4317` |
+| `OTEL_EXPORTER_OTLP_PROTOCOL` | `grpc` / `http/json` / `http/protobuf` |
+| `OTEL_METRIC_EXPORT_INTERVAL` | 默认 60000ms |
+| `OTEL_LOGS_EXPORT_INTERVAL` | 默认 5000ms |
 
-已有参考项目 `claude-code-telemetry`（GitHub lainra/claude-code-telemetry）演示了 Claude Code OTel → OTel Collector → Langfuse 的完整链路。
+**内容细粒度控制（opt-in）：**
+
+| 变量 | 内容 |
+|------|------|
+| `OTEL_LOG_USER_PROMPTS=1` | Prompt 文本内容 |
+| `OTEL_LOG_TOOL_DETAILS=1` | 工具输入参数（文件路径、bash 命令、MCP/skill 名称） |
+| `OTEL_LOG_TOOL_CONTENT=1` | 完整工具 I/O（60KB 截断），需启用 tracing |
+| `OTEL_LOG_RAW_API_BODIES` | 完整 API 请求/响应 JSON |
+
+**8 个 Metrics：**
+- `claude_code.session.count` — session 启动计数
+- `claude_code.lines_of_code.count` — 代码变更行数（added/removed）
+- `claude_code.pull_request.count` — PR 创建数
+- `claude_code.commit.count` — commit 数
+- `claude_code.cost.usage` — 成本（按 model、query_source、speed、effort）
+- `claude_code.token.usage` — token 消耗（input/output/cacheRead/cacheCreation）
+- `claude_code.code_edit_tool.decision` — 代码编辑工具决策
+- `claude_code.active_time.total` — 活跃时间
+
+**13+ 个 Log Events：**
+- `claude_code.user_prompt` — prompt 提交
+- `claude_code.tool_result` — 工具完成（含 tool_name、success、duration_ms）
+- `claude_code.api_request` — API 调用（含 model、cost_usd、duration_ms、token 计数）
+- `claude_code.api_error` — API 失败
+- `claude_code.tool_decision` — 工具 accept/reject
+- `claude_code.compaction` — context 压缩（含 pre/post tokens）
+- `claude_code.hook_execution_start/complete` — Hook 生命周期
+- `claude_code.mcp_server_connection` — MCP 连接状态
+- 等
+
+**Traces span 层级（beta）：**
+```
+claude_code.interaction（一轮对话）
+├── claude_code.llm_request（API 调用：model, tokens, ttft_ms, cache stats）
+├── claude_code.tool（工具执行）
+│   ├── claude_code.tool.blocked_on_user（等待用户确认）
+│   ├── claude_code.tool.execution（实际执行：duration_ms, success, error）
+│   └── （Task 子 agent 的 spans 嵌套在此）
+├── claude_code.hook（Hook 执行）
+└── claude_code.subagent（子 agent）
+```
+
+**W3C Trace Context 传播**：Claude Code 自动传播 `TRACEPARENT` 到 Bash 子进程和 Agent SDK 子 agent，实现端到端分布式追踪。
+
+**多实例标识**：通过 `OTEL_RESOURCE_ATTRIBUTES="agent.name=zylos01"` 和 `OTEL_SERVICE_NAME` 区分不同 zylos 实例。
+
+已有参考项目 `claude-code-telemetry`（GitHub lainra/claude-code-telemetry）演示了 Claude Code OTel → OTel Collector → Langfuse 的完整链路。该项目架构简单（Docker Compose 跑 Langfuse + Postgres + Bridge），但功能单一（仅成本/token 追踪），我们的 Dashboard 需要整合更丰富的数据源。
 
 ## 2. 设计目标
 
@@ -117,14 +172,19 @@ Claude Code 原生支持 OpenTelemetry 遥测输出（通过 `CLAUDE_CODE_ENABLE
 
 | 数据源 | 文件 | 更新频率 | 读取方式 |
 |--------|------|---------|---------|
-| Agent 状态 | `agent-status.json` | 实时 (~3s) | fs.watch + JSON parse |
+| Agent 状态 | `agent-status.json` | ~1s | fs.watch + JSON parse |
+| Statusline | `statusline.json` | 每个 turn | fs.watch（最丰富的单文件数据源：session_id, model, cost, context%, rate limits, effort） |
 | Claude 状态 | `claude-status.json` | 实时 | fs.watch |
 | Session 成本 | `cost-log.jsonl` | session 结束时 | 启动全量 + tail 增量 |
 | 工具事件 | `tool-events.jsonl` | 实时 | tail -f 流式读取 |
-| API 活动 | `api-activity.json` | 实时 | fs.watch |
+| 工具会话状态 | `session-tool-state.json` | 每个工具事件 | fs.watch |
+| API 活动 | `api-activity.json` | 每个工具事件 | fs.watch |
 | Context 状态 | `context-monitor-state.json` | 定期 | fs.watch |
+| 进程采样 | `proc-state.json` | ~10s | fs.watch |
 | 配额 | `usage.json` | 定期检查 | fs.watch |
 | Hook 状态 | `hook-state.json` | 事件触发 | fs.watch |
+| Hook 计时 | `hook-timing.log` | 每个 hook | tail -f |
+| 活动日志 | `activity.log` | ~1s | tail -f（每日截断至 500 行） |
 | 通信记录 | `c4.db` | 消息到达时 | SQLite readonly |
 | 任务调度 | `scheduler.db` | 任务执行时 | SQLite readonly |
 
@@ -136,12 +196,26 @@ Claude Code 原生支持 OpenTelemetry 遥测输出（通过 `CLAUDE_CODE_ENABLE
 ```bash
 # 在 .env 中添加
 CLAUDE_CODE_ENABLE_TELEMETRY=1
-OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318  # Dashboard OTel 接收端口
+CLAUDE_CODE_ENHANCED_TELEMETRY_BETA=1          # 启用 traces
+OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318
+OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf
+OTEL_METRICS_EXPORTER=otlp
+OTEL_LOGS_EXPORTER=otlp
+OTEL_TRACES_EXPORTER=otlp
+OTEL_LOG_TOOL_DETAILS=1                        # 记录工具参数
+OTEL_RESOURCE_ATTRIBUTES="agent.name=zylos01"  # 多实例标识
 ```
 
-OTel 数据模型：
-- **Traces**: session → interaction → llm_request / tool / hook（带耗时、token 数、错误）
-- **Metrics**: `claude_code.tokens.input`, `claude_code.tokens.output`, `claude_code.cost_usd`, `claude_code.tool.duration`
+OTel 数据模型（详见上方 1.2 节完整列表）：
+- **Metrics (8)**：session/token/cost/LOC/PR/commit/tool decision/active time
+- **Events (13+)**：prompt/tool_result/api_request/api_error/compaction/hook 等
+- **Traces**：interaction → llm_request / tool / hook / subagent 完整瀑布图
+
+**关键架构洞察**：Dashboard 需要统一两个数据平面：
+1. **OTel 平面**（新增）：Claude Code 原生遥测 — 请求级粒度
+2. **Activity-Monitor 平面**（已有）：自定义 Hook 监控 — agent 状态机、watchdog、context 管理
+
+两者互补而非替代：OTel 提供 LLM 请求维度的深度数据，activity-monitor 提供 agent 生命周期维度的运维数据。
 
 ## 4. 功能模块
 
@@ -309,6 +383,7 @@ Zylos Dashboard 和 COCO Dashboard 是完全不同的产品：
 
 ---
 
-*文档版本: v1.0*
+*文档版本: v1.1*
 *创建日期: 2026-05-01*
+*最后更新: 2026-05-01（补充 OTel 完整环境变量/Metrics/Events/Traces 细节 + 额外数据源）*
 *作者: zylos01*
