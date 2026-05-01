@@ -132,7 +132,7 @@ claude_code.interaction（一轮对话）
 │            Dashboard API Server                          │
 │            (Node.js, Caddy route)                        │
 └──────────────────────┬──────────────────────────────────┘
-                       │ HTTP / WebSocket
+                       │ HTTP / SSE
 ┌──────────────────────┼──────────────────────────────────┐
 │              Data Access Layer                           │
 │  ┌──────────────┬───────────────┬──────────────────┐    │
@@ -160,8 +160,8 @@ claude_code.interaction（一轮对话）
 |---|------|------|
 | **后端** | Node.js + Express/Fastify | 与 zylos 技术栈一致，可复用已有模块 |
 | **前端** | 纯静态 HTML + Vanilla JS + Chart.js | 零构建、即开即用，Caddy 直接托管。比 React/Vue 更轻量，适合运维仪表盘 |
-| **数据读取** | better-sqlite3 (只读模式) + fs.watch | SQLite 只读连接保证安全；文件系统 watch 实现近实时更新 |
-| **实时推送** | WebSocket (ws 库) | 向浏览器推送 agent 状态变化 |
+| **数据读取** | better-sqlite3 (只读模式) + fs.watch + polling 兜底 | SQLite URI readonly + fileMustExist + PRAGMA query_only 三层保护；fs.watch 做变化提示，5-10s polling 兜底（activity-monitor 用 temp+rename 写入，inotify 会丢 inode） |
+| **实时推送** | SSE (Server-Sent Events) + polling fallback | 只读 dashboard 无需双向通信；SSE 只推薄事件通知（type+id），客户端按需调 REST 拉数据；EventSource 自带重连；降级到 5-10s polling |
 | **OTel Collector** | @opentelemetry/sdk-node | 轻量 Node.js OTel Collector，接收 Claude Code 导出 |
 | **数据存储** | SQLite (dashboard 自有) | 存储 OTel traces/metrics，不污染已有数据库 |
 | **部署** | PM2 + Caddy route | 遵循 zylos 标准部署方式 |
@@ -303,7 +303,7 @@ OTel 数据模型（详见上方 1.2 节完整列表）：
 │   ├── otel/
 │   │   ├── collector.js          # OTel OTLP 接收端
 │   │   └── storage.js            # OTel 数据 → SQLite
-│   └── websocket.js              # WebSocket 实时推送
+│   └── sse.js                    # SSE 实时推送（薄事件通知）
 ├── public/
 │   ├── index.html                # 主页面
 │   ├── css/
@@ -311,7 +311,7 @@ OTel 数据模型（详见上方 1.2 节完整列表）：
 │   └── js/
 │       ├── app.js                # 主应用逻辑
 │       ├── charts.js             # Chart.js 图表封装
-│       └── websocket.js          # WS 客户端
+│       └── events.js             # SSE/EventSource 客户端 + polling fallback
 └── references/                   # 设计文档、决策记录
 
 ~/zylos/components/dashboard/
@@ -346,11 +346,40 @@ service:
 
 ## 7. 安全考虑
 
-- **只读数据库连接**：SQLite 使用 `?mode=ro` 参数，物理上无法写入
+### 7.1 数据只读保护
+
+- **SQLite 三层只读**：URI `?mode=ro` + `fileMustExist: true`（防空库创建）+ `PRAGMA query_only = ON`（二次保险）
+- **查询即开即关**：不持长事务/长游标，避免 WAL checkpoint 被拖住导致写入延迟
 - **无外部网络依赖**：Dashboard 仅读取本地文件和数据库
-- **Caddy 认证**：可选启用 HTTP Basic Auth 或集成现有认证
-- **敏感信息脱敏**：通信消息内容在 API 层截断/脱敏
+
+### 7.2 访问控制
+
+- **认证方式**：管理界面登录后发 HttpOnly + SameSite=Strict cookie；REST API 和 SSE 走同源 cookie；CLI/脚本访问支持 `Authorization: Bearer <token>`
+- **URL token 默认关闭**：`?token=` 有泄露面（浏览器历史、access log、Referer header），仅 localhost + 显式配置开启时可用
+- **绑定 localhost**：Dashboard server 只监听 127.0.0.1，外部访问通过 Caddy 反向代理
+
+### 7.3 敏感信息保护
+
+- **字段白名单**：Summary API 只返回状态、计数、时间戳、成本等聚合数据。不返回 prompt 原文、.env 值、完整消息正文
+- **详情页限制**：工具事件列表返回 tool_name、duration、success，不返回工具输入参数
 - **OTel 数据本地存储**：不发送到任何外部 SaaS
+
+### 7.4 API 降级语义
+
+每个数据源独立 try/catch，返回 per-source status：
+
+```json
+{
+  "sources": {
+    "activityMonitor": { "status": "ok", "updatedAt": "..." },
+    "c4": { "status": "degraded", "error": "readonly open failed" },
+    "scheduler": { "status": "ok" },
+    "pm2": { "status": "ok" }
+  }
+}
+```
+
+单个源 degraded 不影响其他源展示。前端显示绿/黄/红 badge。
 
 ## 8. 与 COCO Dashboard 的关系
 
@@ -365,13 +394,44 @@ Zylos Dashboard 和 COCO Dashboard 是完全不同的产品：
 
 但技术上有借鉴意义：zylos-dashboard 对 agent 运行时的可观测性探索，可以反哺 COCO Dashboard 的 AI Ops 模块设计。
 
-## 9. 开放问题
+## 9. Review 共识（Jinglever review, 2026-05-01）
 
-1. **OTel 数据量管理**：Claude Code OTel 输出可能非常详细，需要确定保留策略（保留多少天？采样率？）
+架构讨论已收敛，以下为 zylos01 + Jinglever 达成的共识：
+
+| 决策项 | 结论 |
+|--------|------|
+| MVP 边界 | 只读、可降级、可观测自身资源 |
+| OTel | 不进 MVP，独立 spike 验证 |
+| SQLite | URI readonly + fileMustExist + PRAGMA query_only，查询即开即关 |
+| 文件监控 | fs.watch 做提示 + 5-10s polling 兜底（activity-monitor 用 temp+rename，inotify 不可靠） |
+| Caddy | 走 http_routes marker block，不手改 Caddyfile |
+| 实时刷新 | SSE 薄事件通知 + REST 拉数据，polling fallback |
+| 前端 | Vanilla JS + Chart.js，不提前固化框架 |
+| 认证 | Cookie（HttpOnly+SameSite）为主，Authorization header 为辅，URL token 默认关闭 |
+| 降级 | per-source status，单源 degraded 不影响全局 |
+| 时间窗口 | 默认 24h，list endpoint 硬性 limit，Chart.js 按 5min bucket downsample |
+| 路径 | config.json 支持 override，默认按 zylos 标准路径推导 |
+| PM2 | `pm2 jlist` 10s 轮询 + 5s timeout + 失败降级 |
+
+**验证清单（9 条）**：
+
+P0:
+1. SQLite readonly smoke test（不存在不创建、INSERT 失败、SELECT 正常）
+2. SQLite 并发压测（WAL 下写入循环 + dashboard 高频查询，观察 writer latency 和 WAL 文件增长）
+3. JSON watcher 稳定性（原地写、temp+rename、半截 JSON、1000 次快速更新）
+4. Caddy 路由验证（validate + reload + healthz + 现有路由不受影响）
+5. Dashboard 资源基线（空闲、单客户端、5 客户端、持续更新 10 分钟，记录 RSS/CPU/事件延迟）
+
+P1:
+6. OTel 隔离测试（独立 HOME/测试进程/localhost collector，对比 on/off 延迟和资源）
+7. OTel payload 敏感信息检查（traces/logs 是否含 prompt、文件路径、token、工具参数）
+8. JSONL rotation 测试（copytruncate、rename-create、truncate 下 tail offset 恢复）
+9. Caddy SSE 缓冲验证（是否需要 `flush_interval -1`）
+
+## 10. 开放问题
+
+1. **OTel 数据量管理**：Claude Code OTel 输出可能非常详细，需要确定保留策略（保留多少天？采样率？）— Phase 2 spike 时验证
 2. **多实例数据汇聚**：Phase 3 的多实例监控需要数据传输机制（push vs pull？通过 HXA？）
-3. **Dashboard 自身的资源消耗**：需确保 Dashboard 不会成为额外的性能负担
-4. **前端框架选择**：MVP 用纯 HTML/JS 快速启动，后续是否迁移到 React/Vue？
-5. **验证方法**：启用 OTel 环境变量是否会影响 Claude Code/zylos 的正常运行？需要安全验证
 
 ## 10. 里程碑
 
@@ -383,7 +443,7 @@ Zylos Dashboard 和 COCO Dashboard 是完全不同的产品：
 
 ---
 
-*文档版本: v1.1*
+*文档版本: v1.2*
 *创建日期: 2026-05-01*
-*最后更新: 2026-05-01（补充 OTel 完整环境变量/Metrics/Events/Traces 细节 + 额外数据源）*
+*最后更新: 2026-05-01（v1.2: Jinglever review 共识 — SSE 替代 WebSocket、三层 SQLite readonly、cookie 认证、per-source 降级、验证清单 9 条）*
 *作者: zylos01*
