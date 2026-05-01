@@ -4,7 +4,11 @@
 
 Zylos Dashboard 是一个为 zylos agent 系统设计的可观测性与管理仪表盘。它将分散在多个文件、数据库和日志中的运行时数据汇聚到一个统一的 Web 界面中，让运维者（Howard）能够实时掌握 agent 的运行状态、资源消耗、任务执行和通信活动。
 
-核心设计原则：**读取已有数据，不改变现有架构**。Dashboard 作为一个纯观测层，不修改 zylos 的核心运行逻辑，仅消费已有的数据源。
+核心设计原则：
+
+1. **读取已有数据，不改变现有架构**。Dashboard 作为一个纯观测层，不修改 zylos 的核心运行逻辑，仅消费已有的数据源。
+2. **统一 runtime observability model，不是数据来源拼盘**。Dashboard 展示的是面向用户的统一指标，不按数据获取途径（遥测 / hook / 状态文件）拆分版面。底层来源只是指标 metadata。
+3. **多 runtime 并集覆盖**。同时支持 Claude runtime 和 Codex runtime。指标集取两个 runtime 的并集：某 runtime 不支持的指标标记为 unsupported，不假补数据。
 
 ## 1. 问题定义
 
@@ -428,12 +432,207 @@ P1:
 8. JSONL rotation 测试（copytruncate、rename-create、truncate 下 tail offset 恢复）
 9. Caddy SSE 缓冲验证（是否需要 `flush_interval -1`）
 
-## 10. 开放问题
+## 10. Multi-Runtime 设计（v1.3 新增）
+
+zylos-core 有两个重要 runtime：Claude Code 和 Codex CLI。Dashboard 的指标模型向上抽象为 zylos runtime 通用能力集，Claude/Codex 是两个 runtime implementation。
+
+### 10.1 Runtime Capability Matrix
+
+每个 runtime 对各数据采集途径的支持情况：
+
+| 采集途径 | Claude Code | Codex CLI (v0.124.0+) | 备注 |
+|---------|------------|----------------------|------|
+| **Hook 事件** | | | |
+| UserPromptSubmit | ✅ | ✅ | 两端共有 |
+| PreToolUse | ✅ | ✅ | 两端共有 |
+| PostToolUse | ✅ | ✅ | 两端共有 |
+| Stop | ✅ | ✅ | 两端共有 |
+| PostToolUseFailure | ✅ | ❌ | Claude 独有 |
+| Notification | ✅ | ❌ | Claude 独有 |
+| PermissionRequest | ❌ | ✅ | Codex 独有 |
+| SessionStart | ❌ | ✅ | Codex 独有；Claude 可通过其他方式检测 |
+| **OTel 遥测** | | | |
+| Metrics (8 项) | ✅ | ❌ | Claude 原生 OTel |
+| Log Events (13+ 项) | ✅ | ❌ | Claude 原生 OTel |
+| Traces (span hierarchy) | ✅ (beta) | ❌ | Claude 原生 OTel |
+| W3C TRACEPARENT 传播 | ✅ | ❌ | 子进程/子 agent 分布式追踪 |
+| **StatusLine** | ✅ | ❌ | Claude 独有（context%/cost/rate limits/tokens） |
+| **状态文件** | ✅ | ✅ | agent-status.json、proc-state.json 等（由 activity-monitor hook 生成） |
+| **PM2** | ✅ | ✅ | runtime 无关，进程级监控 |
+| **C4 / Scheduler** | ✅ | ✅ | runtime 无关，应用级数据 |
+
+Codex hook 配置路径：`~/.codex/hooks.json` 或 `config.toml`，需开启 feature flag `codex_hooks=true`。
+
+### 10.2 Unified Metrics Catalog
+
+Dashboard 面向用户呈现统一指标。每个指标定义语义、单位、展示位置和 resolver chain，不暴露底层数据来源差异。
+
+| 指标 | 语义 | 单位 | 展示位置 | Claude 支持 | Codex 支持 | Resolver chain（优先级递减） |
+|------|------|------|---------|-------------|------------|--------------------------|
+| **agent_state** | Agent 当前状态 | enum: idle/busy/thinking/error/stopped | 状态总览 | ✅ supported | ✅ supported | hook lifecycle → activity-monitor status file → PM2 process state |
+| **current_tool** | 当前执行的工具 | string (tool name) | 状态总览 | ✅ supported | ✅ supported | hook PreToolUse/PostToolUse → status file active_tool_name |
+| **tool_calls** | 工具调用事件流 | event stream | 工具分析 | ✅ supported | ✅ supported | telemetry span → hook Pre/Post → tool-events.jsonl fallback |
+| **tool_failures** | 工具执行失败 | event stream | 工具分析 | ✅ supported | ✅ degraded | telemetry error span → Claude PostToolUseFailure → PostToolUse result inference → status fallback |
+| **tool_duration** | 工具执行耗时 | ms | 工具分析 | ✅ supported | ✅ supported | telemetry tool span → Pre/Post 时间差计算 |
+| **context_usage** | Context window 使用率 | % (0-100) | 状态总览 | ✅ supported | ❌ unsupported | telemetry → statusLine → context-monitor-state.json |
+| **token_usage** | Token 消耗 | count (input/output/cache) | 成本分析 | ✅ supported | ❌ unsupported | telemetry metric → statusLine → cost-log.jsonl |
+| **session_cost** | Session 成本 | USD | 成本分析 | ✅ supported | ❌ unsupported | telemetry metric → statusLine → cost-log.jsonl |
+| **llm_latency** | LLM 请求延迟 | ms (P50/P95/P99) | 性能分析 | ✅ supported | ❌ unsupported | telemetry llm_request span |
+| **session_lifecycle** | Session 启动/结束 | event | 状态总览 | ✅ supported | ✅ supported | Codex SessionStart hook / Claude 推断 → status file |
+| **permission_requests** | 权限审批请求 | event stream | 安全/审计 | ❌ unsupported | ✅ supported | Codex PermissionRequest hook |
+| **health** | 健康/心跳状态 | enum: healthy/degraded/error | 状态总览 | ✅ supported | ✅ supported | agent-status.json health + watchdog_phase |
+| **pm2_services** | PM2 服务状态 | structured | 服务健康 | ✅ supported | ✅ supported | pm2 jlist（runtime 无关） |
+| **messages** | 通信消息量 | count + event | 通信概览 | ✅ supported | ✅ supported | c4.db（runtime 无关） |
+| **scheduled_tasks** | 计划任务状态 | structured | 任务监控 | ✅ supported | ✅ supported | scheduler.db（runtime 无关） |
+| **cache_hit_rate** | Prompt cache 命中率 | % | 性能分析 | ✅ supported | ❌ unsupported | telemetry token metric (cacheRead/input) |
+
+### 10.3 Source Resolver Rules
+
+#### 10.3.1 两层状态模型
+
+每个指标对每个 runtime 有两层状态：
+
+- **capability**（静态）：该 runtime 理论上是否支持此指标。文档定义后不随运行时变化。
+  - `supported` — 正式支持
+  - `supported/beta` — 支持但 API 不稳定
+  - `unsupported` — 不支持
+  - `planned` — 计划中，尚未实现
+
+- **availability**（动态）：当前实例该指标数据是否可用。由 resolver 实时判断。
+  - `ok` — 数据正常
+  - `degraded` — 使用了 fallback 来源，或数据部分缺失
+  - `stale` — 数据存在但超过 freshness 阈值
+  - `missing` — capability=supported 但数据未到达（如 collector 未开启）
+  - `error` — 数据源报错
+
+前端处理规则：
+- `capability=unsupported` → 默认隐藏或灰态，不进入 resolver
+- `capability=supported` + `availability=ok` → 正常展示
+- `capability=supported` + `availability=degraded` → 黄灯 + 显示 fallback 来源
+- `capability=supported` + `availability=stale` → 黄灯 + 显示最后更新时间
+- `capability=supported` + `availability=missing` → 灰态 + "数据未收集"提示
+- `capability=supported` + `availability=error` → 红灯 + 错误信息
+
+#### 10.3.2 来源优先级
+
+全局优先级：**telemetry > hook > 状态文件**
+
+同一指标多个来源同时存在时，resolver 选最可信且最新的来源。高优来源不可用时自动 fallback 到低优来源。
+
+#### 10.3.3 Freshness 规则
+
+Freshness 按指标类型分别定义，不使用全局硬编码阈值：
+
+| 指标类型 | 默认 freshness 规则 | 可 override |
+|---------|-------------------|------------|
+| **event-stream 类**（tool_calls, tool_failures） | hook/telemetry 超过 N 秒无事件不一定 degraded，除非另一个来源显示 agent 处于 active/busy 状态 | 每指标可自定义 N |
+| **state 类**（agent_state, health） | 超过 2× expected heartbeat interval 未更新 → stale | heartbeat interval 可配置 |
+| **cost/token 类**（session_cost, token_usage） | 交互结束后一段时间仍未更新 → degraded | 延迟窗口可配置 |
+| **PM2/health 类**（pm2_services） | 轮询失败一次 → stale，连续失败 → degraded/error | 连续失败阈值可配置 |
+
+#### 10.3.4 Resolver 输出格式
+
+每个指标经过 resolver 后输出统一结构：
+
+```json
+{
+  "value": 42,
+  "status": "ok",
+  "capability": "supported",
+  "source": "hook",
+  "preferredSource": "telemetry",
+  "fallbackReason": null,
+  "confidence": "high",
+  "updatedAt": "2026-05-01T16:00:00Z"
+}
+```
+
+降级示例：
+
+```json
+{
+  "value": 85.2,
+  "status": "degraded",
+  "capability": "supported",
+  "source": "status_file",
+  "preferredSource": "hook",
+  "fallbackReason": "hook_stale",
+  "confidence": "medium",
+  "updatedAt": "2026-05-01T15:59:30Z"
+}
+```
+
+不支持示例：
+
+```json
+{
+  "value": null,
+  "status": "unsupported",
+  "capability": "unsupported",
+  "source": null,
+  "preferredSource": null,
+  "fallbackReason": null,
+  "confidence": null,
+  "updatedAt": null
+}
+```
+
+### 10.4 Runtime Adapter Contract
+
+每个数据来源实现一个标准 adapter，输出统一 shape 供 resolver 消费。
+
+#### Adapter 接口
+
+```
+interface MetricAdapter {
+  // 返回此 adapter 能提供的指标列表及其 capability
+  capabilities(runtime: "claude" | "codex"): Map<MetricName, Capability>
+
+  // 获取指标当前值
+  resolve(metric: MetricName, runtime: "claude" | "codex"): MetricResult
+
+  // 获取指标历史（用于趋势图）
+  history(metric: MetricName, runtime: "claude" | "codex", timeRange: TimeRange): MetricResult[]
+
+  // 健康检查
+  health(): AdapterHealth
+}
+```
+
+#### Adapter 实现计划
+
+| Adapter | 数据来源 | Phase | 覆盖指标 |
+|---------|---------|-------|---------|
+| **FileAdapter** | activity-monitor JSON/JSONL 文件 | Phase 1 | agent_state, current_tool, tool_calls, tool_duration, health, context_usage (Claude only) |
+| **SQLiteAdapter** | c4.db, scheduler.db | Phase 1 | messages, scheduled_tasks |
+| **PM2Adapter** | pm2 jlist | Phase 1 | pm2_services |
+| **HookAdapter** | Hook 事件流（Claude + Codex 共用 Pre/Post/Stop/UserPromptSubmit；各自独有事件分别适配） | Phase 2 | tool_calls, tool_failures, agent_state, session_lifecycle, permission_requests (Codex) |
+| **TelemetryAdapter** | OTel OTLP 接收端 | Phase 2 | token_usage, session_cost, llm_latency, cache_hit_rate, tool_calls (高精度) |
+| **StatusLineAdapter** | statusline.json (Claude only) | Phase 1 | context_usage, token_usage, session_cost, cache_hit_rate |
+
+#### Resolver 组装
+
+Resolver 按指标查找所有 adapter 的 capability，按优先级排序，依次尝试 resolve，返回第一个 `availability != error && availability != missing` 的结果。如果全部 fallback 失败，返回最高优先级 adapter 的 error/missing 状态。
+
+```
+resolve("tool_calls", "claude"):
+  1. TelemetryAdapter.resolve("tool_calls", "claude")  → missing (collector not running)
+  2. HookAdapter.resolve("tool_calls", "claude")        → ok, value=[...]
+  → 返回 HookAdapter 结果, source="hook", preferredSource="telemetry", fallbackReason="telemetry_missing"
+
+resolve("permission_requests", "claude"):
+  1. capabilities check → capability=unsupported for claude
+  → 返回 unsupported, 不进入 resolve 流程
+```
+
+## 11. 开放问题
 
 1. **OTel 数据量管理**：Claude Code OTel 输出可能非常详细，需要确定保留策略（保留多少天？采样率？）— Phase 2 spike 时验证
 2. **多实例数据汇聚**：Phase 3 的多实例监控需要数据传输机制（push vs pull？通过 HXA？）
+3. **Codex OTel 路线图**：Codex 目前不支持 OTel 遥测。如果未来 Codex 支持，TelemetryAdapter 应能无缝接入（adapter contract 已预留）
+4. **Codex statusLine 替代方案**：Codex 无 statusLine。context usage / token cost 等指标在 Codex runtime 下目前标记为 unsupported，未来可能通过 Codex 自有 API 或状态文件获取
 
-## 10. 里程碑
+## 12. 里程碑
 
 | Phase | 范围 | 预计工期 | 依赖 |
 |-------|------|---------|------|
@@ -443,7 +642,7 @@ P1:
 
 ---
 
-*文档版本: v1.2*
+*文档版本: v1.3*
 *创建日期: 2026-05-01*
-*最后更新: 2026-05-01（v1.2: Jinglever review 共识 — SSE 替代 WebSocket、三层 SQLite readonly、cookie 认证、per-source 降级、验证清单 9 条）*
+*最后更新: 2026-05-01（v1.3: 多 runtime 设计 — Howard 三条方向 + zylos01/Jinglever 共识。新增 Runtime Capability Matrix、Unified Metrics Catalog、Source Resolver Rules、Runtime Adapter Contract 四章。核心原则：统一 observability model，Claude/Codex 并集覆盖，capability/availability 两层状态，来源优先级 telemetry > hook > 状态文件）*
 *作者: zylos01*
