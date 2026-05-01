@@ -432,6 +432,14 @@ P1:
 8. JSONL rotation 测试（copytruncate、rename-create、truncate 下 tail offset 恢复）
 9. Caddy SSE 缓冲验证（是否需要 `flush_interval -1`）
 
+**OTel 安全清单（v1.3 新增，Phase 2 必做）**：
+
+10. Prompt redaction 验证：Claude (`OTEL_LOG_USER_PROMPTS` 默认关) 和 Codex (`log_user_prompt` 默认 false) 均确认 prompt 内容不出现在 traces/logs 中
+11. Collector 仅 localhost/self-host：OTel 数据不直接发往外部 SaaS，必须经本地 collector 中转
+12. Payload field audit：对两个 runtime 的 OTel 输出逐字段检查，确认无 .env 值、API key、消息正文泄露
+13. Exporter batching/shutdown：验证 Claude (env var) 和 Codex (config.toml) 的 exporter 在 agent 退出时正确 flush 未发数据
+14. Dashboard 默认不启用 prompt 内容采集；如果启用，需在配置中标记为高风险选项
+
 ## 10. Multi-Runtime 设计（v1.3 新增）
 
 zylos-core 有两个重要 runtime：Claude Code 和 Codex CLI。Dashboard 的指标模型向上抽象为 zylos runtime 通用能力集，Claude/Codex 是两个 runtime implementation。
@@ -452,16 +460,23 @@ zylos-core 有两个重要 runtime：Claude Code 和 Codex CLI。Dashboard 的�
 | PermissionRequest | ❌ | ✅ | Codex 独有 |
 | SessionStart | ❌ | ✅ | Codex 独有；Claude 可通过其他方式检测 |
 | **OTel 遥测** | | | |
-| Metrics (8 项) | ✅ | ❌ | Claude 原生 OTel |
-| Log Events (13+ 项) | ✅ | ❌ | Claude 原生 OTel |
-| Traces (span hierarchy) | ✅ (beta) | ❌ | Claude 原生 OTel |
-| W3C TRACEPARENT 传播 | ✅ | ❌ | 子进程/子 agent 分布式追踪 |
+| Metrics | ✅ (8 项，env var 启用) | ✅ (config.toml `[otel]` 启用：API duration、SSE duration、WebSocket duration、tool call count/duration 等) | 两端都有，事件命名和字段 shape 不同 |
+| Log Events | ✅ (13+ 项，env var 启用) | ✅ (config.toml `[otel]` 启用：`codex.conversation_starts`、`codex.api_request`、`codex.sse_event`、`codex.websocket_request/event`、`codex.user_prompt`、`codex.tool_decision`、`codex.tool_result`) | 两端都有，事件名不同需 adapter 映射 |
+| Traces (span hierarchy) | ✅ (beta) | ✅/verify (SigNoz guide 确认 traces 可用，官方文档待进一步验证) | Claude 有明确 span 层级文档；Codex 需实测确认 span 结构 |
+| W3C TRACEPARENT 传播 | ✅ | ❌/unknown | Claude 自动传播到子进程；Codex 未见文档说明 |
+| Prompt redaction | ✅ (opt-in: `OTEL_LOG_USER_PROMPTS=1`) | ✅ (opt-in: `log_user_prompt=true`，默认 redacted) | 两端都默认不采集 prompt 内容 |
+| **OTel 配置入口** | 环境变量 (`CLAUDE_CODE_ENABLE_TELEMETRY=1` + `OTEL_*`) | `~/.codex/config.toml` `[otel]` section | 不同配置方式，adapter 需分别处理 |
+| **OTel Exporter** | `otlp` / `prometheus` / `console` / `none` | `otlp-http` / `otlp-grpc` | Claude 选项更多；Codex 只支持 OTLP |
 | **StatusLine** | ✅ | ❌ | Claude 独有（context%/cost/rate limits/tokens） |
 | **状态文件** | ✅ | ✅ | agent-status.json、proc-state.json 等（由 activity-monitor hook 生成） |
 | **PM2** | ✅ | ✅ | runtime 无关，进程级监控 |
 | **C4 / Scheduler** | ✅ | ✅ | runtime 无关，应用级数据 |
 
-Codex hook 配置路径：`~/.codex/hooks.json` 或 `config.toml`，需开启 feature flag `codex_hooks=true`。
+配置路径：
+- Claude Code hook：`~/.claude/settings.json` `hooks` 字段
+- Codex hook：`~/.codex/hooks.json` 或 `config.toml`，需开启 feature flag `codex_hooks=true`
+- Claude Code OTel：环境变量 `CLAUDE_CODE_ENABLE_TELEMETRY=1` + `OTEL_*`
+- Codex OTel：`~/.codex/config.toml` `[otel]` section（`exporter = { otlp-grpc = { endpoint = "..." } }`）
 
 ### 10.2 Unified Metrics Catalog
 
@@ -472,12 +487,12 @@ Dashboard 面向用户呈现统一指标。每个指标定义语义、单位、�
 | **agent_state** | Agent 当前状态 | enum: idle/busy/thinking/error/stopped | 状态总览 | ✅ supported | ✅ supported | hook lifecycle → activity-monitor status file → PM2 process state |
 | **current_tool** | 当前执行的工具 | string (tool name) | 状态总览 | ✅ supported | ✅ supported | hook PreToolUse/PostToolUse → status file active_tool_name |
 | **tool_calls** | 工具调用事件流 | event stream | 工具分析 | ✅ supported | ✅ supported | telemetry span → hook Pre/Post → tool-events.jsonl fallback |
-| **tool_failures** | 工具执行失败 | event stream | 工具分析 | ✅ supported | ✅ degraded | telemetry error span → Claude PostToolUseFailure → PostToolUse result inference → status fallback |
-| **tool_duration** | 工具执行耗时 | ms | 工具分析 | ✅ supported | ✅ supported | telemetry tool span → Pre/Post 时间差计算 |
+| **tool_failures** | 工具执行失败 | event stream | 工具分析 | ✅ supported | ✅ supported (via `codex.tool_result`) | telemetry error span/tool_result → Claude PostToolUseFailure → PostToolUse result inference → status fallback |
+| **tool_duration** | 工具执行耗时 | ms | 工具分析 | ✅ supported | ✅ supported (Codex OTel tool call duration metric) | telemetry tool span/metric → Pre/Post 时间差计算 |
 | **context_usage** | Context window 使用率 | % (0-100) | 状态总览 | ✅ supported | ❌ unsupported | telemetry → statusLine → context-monitor-state.json |
-| **token_usage** | Token 消耗 | count (input/output/cache) | 成本分析 | ✅ supported | ❌ unsupported | telemetry metric → statusLine → cost-log.jsonl |
-| **session_cost** | Session 成本 | USD | 成本分析 | ✅ supported | ❌ unsupported | telemetry metric → statusLine → cost-log.jsonl |
-| **llm_latency** | LLM 请求延迟 | ms (P50/P95/P99) | 性能分析 | ✅ supported | ❌ unsupported | telemetry llm_request span |
+| **token_usage** | Token 消耗 | count (input/output/cache) | 成本分析 | ✅ supported | ✅ supported/verify (Codex `sse_event` response.completed 含 token counts) | telemetry metric → statusLine → cost-log.jsonl |
+| **session_cost** | Session 成本 | USD | 成本分析 | ✅ supported | ✅/verify (需确认 Codex OTel 是否输出 cost 字段) | telemetry metric → statusLine → cost-log.jsonl |
+| **llm_latency** | LLM 请求延迟 | ms (P50/P95/P99) | 性能分析 | ✅ supported | ✅ supported (Codex OTel API duration metric) | telemetry llm_request span / API duration metric |
 | **session_lifecycle** | Session 启动/结束 | event | 状态总览 | ✅ supported | ✅ supported | Codex SessionStart hook / Claude 推断 → status file |
 | **permission_requests** | 权限审批请求 | event stream | 安全/审计 | ❌ unsupported | ✅ supported | Codex PermissionRequest hook |
 | **health** | 健康/心跳状态 | enum: healthy/degraded/error | 状态总览 | ✅ supported | ✅ supported | agent-status.json health + watchdog_phase |
@@ -607,7 +622,7 @@ interface MetricAdapter {
 | **SQLiteAdapter** | c4.db, scheduler.db | Phase 1 | messages, scheduled_tasks |
 | **PM2Adapter** | pm2 jlist | Phase 1 | pm2_services |
 | **HookAdapter** | Hook 事件流（Claude + Codex 共用 Pre/Post/Stop/UserPromptSubmit；各自独有事件分别适配） | Phase 2 | tool_calls, tool_failures, agent_state, session_lifecycle, permission_requests (Codex) |
-| **TelemetryAdapter** | OTel OTLP 接收端 | Phase 2 | token_usage, session_cost, llm_latency, cache_hit_rate, tool_calls (高精度) |
+| **TelemetryAdapter** | OTel OTLP 接收端（**multi-runtime**）。内部包含 runtime-specific codec/parser：Claude 事件以 `claude_code.*` 为前缀，Codex 事件以 `codex.*` 为前缀。共用 OTLP ingestion pipeline，分别映射到统一指标模型。Claude 通过 env var 配置，Codex 通过 config.toml `[otel]` 配置。 | Phase 2 | token_usage, session_cost, llm_latency, cache_hit_rate, tool_calls, tool_failures, tool_duration (两个 runtime 覆盖面不同，见 §10.2) |
 | **StatusLineAdapter** | statusline.json (Claude only) | Phase 1 | context_usage, token_usage, session_cost, cache_hit_rate |
 
 #### Resolver 组装
@@ -660,15 +675,16 @@ resolve("permission_requests", "claude"):
 
 1. **OTel 数据量管理**：Claude Code OTel 输出可能非常详细，需要确定保留策略（保留多少天？采样率？）— Phase 2 spike 时验证
 2. **多实例数据汇聚**：Phase 3 的多实例监控需要数据传输机制（push vs pull？通过 HXA？）
-3. **Codex OTel 路线图**：Codex 目前不支持 OTel 遥测。如果未来 Codex 支持，TelemetryAdapter 应能无缝接入（adapter contract 已预留）
-4. **Codex statusLine 替代方案**：Codex 无 statusLine。context usage / token cost 等指标在 Codex runtime 下目前标记为 unsupported，未来可能通过 Codex 自有 API 或状态文件获取
+3. **Codex OTel 字段映射验证**：Codex OTel 已确认支持（config.toml `[otel]`），但事件名 (`codex.*`) 和字段 shape 与 Claude (`claude_code.*`) 不同。Phase 2 spike 需要实测两端 payload 并建立映射表。需确认：`codex.sse_event` response.completed 的 token count 字段名、`codex.tool_result` 是否含 success/failure 标志、traces span 层级结构
+4. **Codex statusLine 替代方案**：Codex 无 statusLine。context usage 在 Codex 下仍标记 unsupported。token/cost 可能通过 Codex OTel metrics/events 获取（标记为 supported/verify，待实测）
+5. **Phase 2 定位调整**：Phase 2 不再只是"Claude OTel spike"，而是"multi-runtime OTel adapter spike"——Claude 和 Codex 都要验证配置、payload、字段映射和性能影响
 
 ## 12. 里程碑
 
 | Phase | 范围 | 预计工期 | 依赖 |
 |-------|------|---------|------|
 | Phase 1 MVP | 已有数据可视化（状态/成本/工具/通信/任务/PM2） | 1-2 周 | 无 |
-| Phase 2 OTel | Claude Code 原生遥测集成 | 1-2 周 | 验证 OTel 环境变量安全性 |
+| Phase 2 OTel | Multi-runtime OTel adapter（Claude env var + Codex config.toml），字段映射验证，安全清单 | 1-2 周 | 验证两端 OTel payload + 安全清单通过 |
 | Phase 3 Multi | 多实例集中监控 | TBD | Phase 2 完成 + 多实例部署 |
 
 ---
