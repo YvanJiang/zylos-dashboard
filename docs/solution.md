@@ -492,7 +492,7 @@ Dashboard 面向用户呈现统一指标。每个指标定义语义、单位、�
 | **context_usage** | Context window 使用率 | % (0-100) | 状态总览 | ✅ supported | ❌ unsupported | telemetry → statusLine → context-monitor-state.json |
 | **token_usage** | Token 消耗 | count (input/output/cache) | 成本分析 | ✅ supported | ✅ supported/verify (Codex `sse_event` response.completed 含 token counts) | telemetry metric → statusLine → cost-log.jsonl |
 | **session_cost** | Session 成本 | USD | 成本分析 | ✅ supported | ✅/verify (需确认 Codex OTel 是否输出 cost 字段) | telemetry metric → statusLine → cost-log.jsonl |
-| **llm_latency** | LLM 请求延迟 | ms (P50/P95/P99) | 性能分析 | ✅ supported | ✅ supported (Codex OTel API duration metric) | telemetry llm_request span / API duration metric |
+| **llm_latency** | LLM 请求延迟 | ms (P50/P95/P99) | 性能分析 | ✅ supported | ✅ supported/verify (Codex OTel 有 API duration metric，但与 Claude `llm_request` span 语义不一定等价——需 Phase 2 payload audit 确认映射) | telemetry llm_request span / API duration metric |
 | **session_lifecycle** | Session 启动/结束 | event | 状态总览 | ✅ supported | ✅ supported | Codex SessionStart hook / Claude 推断 → status file |
 | **permission_requests** | 权限审批请求 | event stream | 安全/审计 | ❌ unsupported | ✅ supported | Codex PermissionRequest hook |
 | **health** | 健康/心跳状态 | enum: healthy/degraded/error | 状态总览 | ✅ supported | ✅ supported | agent-status.json health + watchdog_phase |
@@ -659,12 +659,16 @@ resolve("context_usage", "claude"):
     preferredSource="telemetry", fallbackReason="telemetry_stale"
 
 resolve("tool_failures", "codex"):
-  1. TelemetryAdapter  → capability=unsupported (Codex 无 OTel)，跳过
-  2. HookAdapter       → degraded (从 PostToolUse result 推断，无专用事件)
-  3. FileAdapter       → ok, value=[...]
-  ranking: FileAdapter ok 优先于 HookAdapter degraded
+  1. TelemetryAdapter  → ok, value=[...] (from codex.tool_result events with failure flag)
+  → 返回 TelemetryAdapter 结果, availability="ok", source="telemetry"
+
+resolve("context_usage", "codex"):
+  1. TelemetryAdapter  → capability=unsupported (Codex OTel 无 context 指标)，跳过
+  2. StatusLineAdapter → capability=unsupported (Codex 无 statusLine)，跳过
+  3. FileAdapter       → ok, value=65.0 (from context-monitor-state.json)
+  ranking: FileAdapter 是唯一可用来源
   → 返回 FileAdapter 结果, availability="ok", source="status_file",
-    preferredSource="hook", fallbackReason="hook_degraded"
+    preferredSource=null, fallbackReason=null
 
 resolve("permission_requests", "claude"):
   1. capabilities check → capability=unsupported for claude
