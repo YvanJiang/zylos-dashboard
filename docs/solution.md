@@ -236,10 +236,13 @@ resolve("tool_calls", "claude"):
   → source="hook", preferredSource="telemetry", fallbackReason="telemetry_missing"
 
 resolve("context_usage", "codex"):
-  TelemetryAdapter  → capability=unsupported, 跳过
-  StatusLineAdapter → capability=unsupported, 跳过
-  FileAdapter       → ok, value=65.0
-  → source="status_file"（唯一可用来源）
+  capability=unsupported → 不进入 resolve
+
+resolve("context_usage", "claude"):
+  TelemetryAdapter  → stale (last update 5min ago)
+  StatusLineAdapter → ok, value=72.3 (updated 2s ago)
+  ranking: StatusLineAdapter ok 优先于 TelemetryAdapter stale
+  → source="statusline", preferredSource="telemetry", fallbackReason="telemetry_stale"
 
 resolve("permission_requests", "claude"):
   capability=unsupported → 不进入 resolve
@@ -354,7 +357,7 @@ TelemetryAdapter 内部按 runtime 分 codec：Claude 事件以 `claude_code.*` 
 | Statusline | `statusline.json` | 每 turn | fs.watch | Claude only |
 | Session 成本 | `cost-log.jsonl` | session 结束 | 启动全量 + tail 增量 | 无 |
 | 工具事件 | `tool-events.jsonl` | 实时 | tail -f 流式 | 无 |
-| Context 状态 | `context-monitor-state.json` | 定期 | fs.watch | 无 |
+| Context 状态 | `context-monitor-state.json` | 定期 | fs.watch | 文件由 hook 写入（两个 runtime 均生成），但数据语义依赖 Claude statusline 解析。Codex 下文件可能存在但内容不可靠，context_usage 对 Codex 标记为 unsupported |
 | 进程采样 | `proc-state.json` | ~10s | fs.watch | 无 |
 | 配额 | `usage.json` | 定期 | fs.watch | 无 |
 | 通信记录 | `c4.db` | 消息到达 | SQLite readonly | 无 |
