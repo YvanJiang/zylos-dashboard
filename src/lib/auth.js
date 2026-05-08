@@ -1,0 +1,371 @@
+import crypto from 'node:crypto';
+import fs from 'node:fs';
+import { browserBaseFromRequest, browserPath, browserRoot, isPathWithinBase } from './browser-base.js';
+import { sendHtml, sendJson, sendText } from './http.js';
+
+const SCRYPT_KEYLEN = 64;
+const COOKIE_NAME = '__Host-zylos_dashboard_session';
+const SESSION_ABSOLUTE_MS = 86_400_000;
+const SESSION_IDLE_MS = 3_600_000;
+const CLEANUP_INTERVAL_MS = 300_000;
+const MAX_FAILURES = 5;
+const WINDOW_MS = 60_000;
+const LOCKOUT_MS = 600_000;
+const GLOBAL_MAX_PER_MIN = 30;
+const MAX_LOGIN_BODY_BYTES = 4096;
+
+const sessions = new Map();
+const failedAttempts = new Map();
+let globalFailures = { count: 0, resetAt: Date.now() + 60_000 };
+
+setInterval(() => {
+  const now = Date.now();
+  for (const [hash, session] of sessions) {
+    if (now - session.createdAt > SESSION_ABSOLUTE_MS ||
+        now - session.lastActivityAt > SESSION_IDLE_MS) {
+      sessions.delete(hash);
+    }
+  }
+}, CLEANUP_INTERVAL_MS).unref?.();
+
+export function hashPassword(plaintext) {
+  const salt = crypto.randomBytes(32);
+  const hash = crypto.scryptSync(plaintext, salt, SCRYPT_KEYLEN);
+  return `scrypt:${salt.toString('hex')}:${hash.toString('hex')}`;
+}
+
+function verifyPassword(plaintext, stored) {
+  try {
+    if (!stored || !stored.startsWith('scrypt:')) return false;
+    const parts = stored.split(':');
+    if (parts.length !== 3) return false;
+    const salt = Buffer.from(parts[1], 'hex');
+    const expected = Buffer.from(parts[2], 'hex');
+    if (expected.length !== SCRYPT_KEYLEN) return false;
+    const actual = crypto.scryptSync(plaintext, salt, SCRYPT_KEYLEN);
+    return crypto.timingSafeEqual(expected, actual);
+  } catch {
+    return false;
+  }
+}
+
+function isPlaintext(password) {
+  return typeof password === 'string' && password.length > 0 && !password.startsWith('scrypt:');
+}
+
+export function migratePasswordIfNeeded(config) {
+  if (!isPlaintext(config.auth?.password)) return;
+  const hashed = hashPassword(config.auth.password);
+  try {
+    const existing = fs.existsSync(config.configPath)
+      ? JSON.parse(fs.readFileSync(config.configPath, 'utf8'))
+      : {};
+    existing.auth = { ...(existing.auth || {}), password: hashed };
+    fs.writeFileSync(config.configPath, `${JSON.stringify(existing, null, 2)}\n`);
+    config.auth.password = hashed;
+    console.log('[dashboard] Auth: migrated plaintext password to scrypt hash');
+  } catch (err) {
+    console.error(`[dashboard] Auth: failed to migrate password: ${err.message}`);
+  }
+}
+
+function sha256(data) {
+  return crypto.createHash('sha256').update(data).digest('hex');
+}
+
+function createSession() {
+  const token = crypto.randomBytes(64).toString('hex');
+  const now = Date.now();
+  sessions.set(sha256(token), { createdAt: now, lastActivityAt: now });
+  return token;
+}
+
+function validateSession(token) {
+  if (!token) return false;
+  const hash = sha256(token);
+  const session = sessions.get(hash);
+  if (!session) return false;
+  const now = Date.now();
+  if (now - session.createdAt > SESSION_ABSOLUTE_MS ||
+      now - session.lastActivityAt > SESSION_IDLE_MS) {
+    sessions.delete(hash);
+    return false;
+  }
+  session.lastActivityAt = now;
+  return true;
+}
+
+function destroySession(token) {
+  if (token) sessions.delete(sha256(token));
+}
+
+function parseCookies(header) {
+  const cookies = {};
+  if (!header) return cookies;
+  for (const pair of header.split(';')) {
+    const [name, ...rest] = pair.trim().split('=');
+    if (name) cookies[name.trim()] = rest.join('=');
+  }
+  return cookies;
+}
+
+function getSessionCookie(req) {
+  return parseCookies(req.headers.cookie)[COOKIE_NAME] || null;
+}
+
+function setSessionCookie(res, token) {
+  res.setHeader('Set-Cookie', `${COOKIE_NAME}=${token}; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age=86400`);
+}
+
+function clearSessionCookie(res) {
+  res.setHeader('Set-Cookie', `${COOKIE_NAME}=; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age=0`);
+}
+
+function getClientIp(req) {
+  const remoteIp = req.socket.remoteAddress || '';
+  if (remoteIp === '127.0.0.1' || remoteIp === '::1' || remoteIp === '::ffff:127.0.0.1') {
+    const xff = req.headers['x-forwarded-for'];
+    if (xff) return xff.split(',')[0].trim();
+  }
+  return remoteIp;
+}
+
+function isLockedOut(ip) {
+  const record = failedAttempts.get(ip);
+  if (!record) return false;
+  const now = Date.now();
+  if (record.count >= MAX_FAILURES) {
+    if (now - record.firstFailAt < LOCKOUT_MS) return true;
+    failedAttempts.delete(ip);
+    return false;
+  }
+  if (now - record.firstFailAt > WINDOW_MS) {
+    failedAttempts.delete(ip);
+    return false;
+  }
+  return false;
+}
+
+function isGlobalLimited() {
+  const now = Date.now();
+  if (now > globalFailures.resetAt) {
+    globalFailures = { count: 0, resetAt: now + 60_000 };
+  }
+  return globalFailures.count >= GLOBAL_MAX_PER_MIN;
+}
+
+function recordFailure(ip) {
+  const now = Date.now();
+  const record = failedAttempts.get(ip);
+  if (!record || now - record.firstFailAt > WINDOW_MS) {
+    failedAttempts.set(ip, { count: 1, firstFailAt: now });
+  } else {
+    record.count += 1;
+  }
+  if (now > globalFailures.resetAt) {
+    globalFailures = { count: 1, resetAt: now + 60_000 };
+  } else {
+    globalFailures.count += 1;
+  }
+}
+
+function clearFailures(ip) {
+  failedAttempts.delete(ip);
+}
+
+function htmlEscape(value) {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/"/g, '&quot;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+
+function loginPageHtml(base, error = '', next = '') {
+  const safeNext = next && isPathWithinBase(next, base) ? next : '';
+  return `<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Login - Zylos Dashboard</title>
+    <link rel="stylesheet" href="${browserPath(base, '_assets/css/tokens.css')}">
+    <link rel="stylesheet" href="${browserPath(base, '_assets/css/themes/default.css')}">
+    <link rel="stylesheet" href="${browserPath(base, '_assets/css/dashboard.css')}">
+  </head>
+  <body>
+    <main class="login-shell">
+      <form class="login-panel" method="POST" action="${browserPath(base, 'login')}">
+        <p class="eyebrow">Zylos</p>
+        <h1>Dashboard</h1>
+        ${error ? `<p class="login-error">${htmlEscape(error)}</p>` : ''}
+        <label class="login-label" for="password">Password</label>
+        <input class="login-input" id="password" name="password" type="password" autocomplete="current-password" autofocus required>
+        ${safeNext ? `<input type="hidden" name="next" value="${htmlEscape(safeNext)}">` : ''}
+        <button class="login-button" type="submit">Sign in</button>
+      </form>
+    </main>
+  </body>
+</html>`;
+}
+
+function parseFormBody(req) {
+  return new Promise((resolve, reject) => {
+    let body = '';
+    req.on('data', chunk => {
+      body += chunk.toString();
+      if (body.length > MAX_LOGIN_BODY_BYTES) {
+        reject(new Error('request_too_large'));
+        req.destroy();
+      }
+    });
+    req.on('end', () => resolve(Object.fromEntries(new URLSearchParams(body))));
+    req.on('error', reject);
+  });
+}
+
+function redirect(res, location) {
+  res.writeHead(302, {
+    location,
+    'cache-control': 'no-store'
+  });
+  res.end();
+}
+
+function extractHost(value) {
+  try {
+    return new URL(value).host;
+  } catch {
+    return null;
+  }
+}
+
+function verifyLogoutCsrf(req) {
+  const expectedHost = req.headers.host;
+  const origin = req.headers.origin;
+  const referer = req.headers.referer;
+  if (origin) return extractHost(origin) === expectedHost;
+  if (referer) return extractHost(referer) === expectedHost;
+  return false;
+}
+
+function nextTarget(req, base) {
+  const raw = req.url || '/';
+  const target = raw === '/' ? browserRoot(base) : browserPath(base, raw);
+  return isPathWithinBase(target, base) ? target : browserRoot(base);
+}
+
+export class AuthGate {
+  constructor(config) {
+    this.config = config;
+    migratePasswordIfNeeded(this.config);
+  }
+
+  get enabled() {
+    return Boolean(this.config.auth?.enabled) && Boolean(this.config.auth?.password);
+  }
+
+  isAuthenticated(req) {
+    if (!this.enabled) return true;
+    return validateSession(getSessionCookie(req));
+  }
+
+  async handle(req, res, url) {
+    const base = browserBaseFromRequest(req);
+    const pathname = url.pathname;
+
+    if (pathname === '/api/health' || (req.method === 'GET' && pathname.startsWith('/_assets/'))) {
+      return false;
+    }
+
+    if (pathname === '/login') {
+      return this.handleLogin(req, res, base, url);
+    }
+
+    if (pathname === '/logout') {
+      return this.handleLogout(req, res, base);
+    }
+
+    if (!this.enabled) return false;
+
+    if (validateSession(getSessionCookie(req))) {
+      res.setHeader('Cache-Control', 'no-store');
+      return false;
+    }
+
+    if (pathname.startsWith('/api/')) {
+      sendJson(res, 401, { error: 'unauthorized' });
+      return true;
+    }
+
+    const safeNext = nextTarget(req, base);
+    redirect(res, `${browserPath(base, 'login')}?next=${encodeURIComponent(safeNext)}`);
+    return true;
+  }
+
+  async handleLogin(req, res, base, url) {
+    if (!this.enabled) {
+      redirect(res, browserRoot(base));
+      return true;
+    }
+
+    if (req.method === 'GET' || req.method === 'HEAD') {
+      if (validateSession(getSessionCookie(req))) {
+        redirect(res, browserRoot(base));
+        return true;
+      }
+      sendHtml(res, 200, loginPageHtml(base, '', url.searchParams.get('next') || ''));
+      return true;
+    }
+
+    if (req.method !== 'POST') {
+      sendText(res, 405, 'method not allowed');
+      return true;
+    }
+
+    const ip = getClientIp(req);
+    let body;
+    try {
+      body = await parseFormBody(req);
+    } catch {
+      sendText(res, 400, 'bad request');
+      return true;
+    }
+
+    if (isLockedOut(ip) || isGlobalLimited()) {
+      sendHtml(res, 429, loginPageHtml(base, 'Too many attempts. Try again later.', body.next));
+      return true;
+    }
+
+    if (!verifyPassword(body.password || '', this.config.auth.password)) {
+      recordFailure(ip);
+      sendHtml(res, 200, loginPageHtml(base, 'Incorrect password.', body.next));
+      return true;
+    }
+
+    clearFailures(ip);
+    setSessionCookie(res, createSession());
+    const redirectTo = body.next && isPathWithinBase(body.next, base) ? body.next : browserRoot(base);
+    redirect(res, redirectTo);
+    return true;
+  }
+
+  async handleLogout(req, res, base) {
+    if (req.method !== 'POST') {
+      sendText(res, 405, 'method not allowed');
+      return true;
+    }
+    if (this.enabled && !validateSession(getSessionCookie(req))) {
+      redirect(res, browserPath(base, 'login'));
+      return true;
+    }
+    if (!verifyLogoutCsrf(req)) {
+      sendText(res, 403, 'forbidden');
+      return true;
+    }
+    destroySession(getSessionCookie(req));
+    clearSessionCookie(res);
+    redirect(res, browserPath(base, 'login'));
+    return true;
+  }
+}

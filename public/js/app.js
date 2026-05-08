@@ -2,10 +2,10 @@ import { connectEvents } from './events.js';
 import { updateOverviewChart } from './charts.js';
 
 const $ = (selector) => document.querySelector(selector);
-const basePath = new URL('.', window.location.href);
+const basePath = document.documentElement.dataset.basePath || '';
 
 function apiPath(path) {
-  return new URL(path.replace(/^\//, ''), basePath).pathname;
+  return `${basePath}/${path.replace(/^\/+/, '')}`;
 }
 
 function metric(summary, path) {

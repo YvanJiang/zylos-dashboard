@@ -22,8 +22,8 @@ export function loadConfig() {
     zylosDir,
     dataDir,
     auth: {
-      enabled: false,
-      bearerToken: null,
+      enabled: true,
+      password: null,
       allowUrlTokenOnLocalhost: false
     }
   };

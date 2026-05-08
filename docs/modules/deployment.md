@@ -104,12 +104,15 @@ upgrade:
 
 ## Caddy 路由
 
-走 http_routes marker block，zylos-core 的 route 生成器直接将 `target` 写入 `reverse_proxy`：
+走 http_routes marker block，zylos-core 的 route 生成器直接将 `target` 写入 `reverse_proxy`，并转发 `X-Forwarded-Prefix`：
 
 ```
+redir /dashboard /dashboard/ permanent
 handle /dashboard/* {
     uri strip_prefix /dashboard
-    reverse_proxy localhost:3470
+    reverse_proxy localhost:3470 {
+        header_up X-Forwarded-Prefix /dashboard
+    }
 }
 ```
 
@@ -181,6 +184,96 @@ handle /dashboard/* {
 - **认证**：管理界面登录后发 HttpOnly + SameSite=Strict cookie；REST API 和 SSE 走同源 cookie；CLI 支持 `Authorization: Bearer <token>`
 - **URL token 默认关闭**：有泄露面（浏览器历史、access log、Referer），仅 localhost + 显式配置时可用
 - **绑定 localhost**：server 只监听 127.0.0.1，外部走 Caddy 反代
+
+### Auth 实现规格（参考 zylos-pages）
+
+Dashboard auth 采用与 zylos-pages 一致的 cookie-based session 方案。
+
+#### 密码存储
+
+- 配置路径：`~/zylos/components/dashboard/config.json` → `auth.password`
+- 格式：`scrypt:<salt_hex>:<hash_hex>`
+- 如首次设置为明文，启动时自动迁移为 scrypt hash（`migratePasswordIfNeeded()`）
+- `auth.enabled` 默认 `true`；`auth.password` 为 null 时 auth 不生效（无密码 = 不拦截）
+
+#### Session 管理
+
+- 登录成功后生成 64 字节随机 token，存储 `Map<sha256(token), {createdAt, lastActivityAt}>`
+- Cookie 名：`__Host-zylos_dashboard_session`
+- Cookie 标志：`HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age=86400`
+- 过期策略：24h 绝对过期 + 60min 空闲过期
+
+#### 路由
+
+| 路由 | 方法 | Auth | 说明 |
+|------|------|------|------|
+| `/_assets/*` | GET | 不需要 | 静态资源（CSS/JS/图片） |
+| `/login` | GET | 不需要 | 渲染登录表单 |
+| `/login` | POST | 不需要 | 验证密码、设 cookie |
+| `/logout` | POST | 需要 | 销毁 session、清 cookie、带 CSRF Origin 校验 |
+| `/api/*` | GET | 需要 | REST API |
+| `/api/events` | GET | 需要 | SSE 流 |
+| `/api/health` | GET | 不需要 | 健康检查（Caddy/监控用） |
+| `/*` | GET | 需要 | Web UI 页面 |
+
+#### 暴力破解防护
+
+- Per-IP lockout：5 次失败 / 60 秒 → 10 分钟锁定
+- 全局限速：30 次失败 / 分钟 → 429
+- IP 来源：仅当请求来自 127.0.0.1 时信任 `X-Forwarded-For`（即 Caddy 转发）
+
+#### Logout CSRF 防护
+
+- `POST /logout` 检查 `Origin` header host == `req.headers.host`
+- 回退检查 `Referer` host
+- 两者都缺失 → 拒绝
+
+#### 注意事项
+
+当前 dashboard 使用原生 Node.js `http` 模块（非 Express），auth 中间件需适配原生 request handler 模式。推荐实现为独立模块 `src/lib/auth.js`，在 `createServer` 的 handler 中作为第一层拦截。
+
+### Base Path / X-Forwarded-Prefix 规格
+
+遵循 zylos-component-template COMPONENT-SPEC.md §4 规范。
+
+#### 核心原则
+
+- 组件内部路由保持 `/`（根相对）
+- Caddy 负责外部前缀 `/dashboard`，strip 后转发，同时附带 `X-Forwarded-Prefix: /dashboard`
+- 组件读取 `X-Forwarded-Prefix` header 生成浏览器可见 URL
+
+#### browser-base.js
+
+从 zylos-pages 移植 `src/lib/browser-base.js`，包含：
+
+- `browserBaseFromRequest(req)` — 读取并校验 `X-Forwarded-Prefix`
+- `browserRoot(base)` → `${base}/`
+- `browserPath(base, path)` → `${base}/${cleanPath}`
+- `isPathWithinBase(path, base)` — 重定向安全校验
+
+#### 严格校验（必须拒绝的 prefix 值）
+
+- 查询/片段：`?`, `#`
+- 空白/控制字符：`\x00-\x20`
+- 反斜杠、协议字符串（`://`）、双斜杠（`//`）
+- 点段（`.` 或 `..` 路径分量）
+- 百分号编码
+- HTML 元字符：`"`, `'`, `` ` ``, `<`, `>`, `&`, `%`
+
+#### 影响范围
+
+| 场景 | 需要 base path | 说明 |
+|------|--------------|------|
+| 登录表单 action | 是 | `<form action="${base}/login">` |
+| 静态资源引用 | 是 | `<link href="${base}/_assets/css/...">` |
+| 重定向（登录后跳转） | 是 | `Location: ${base}/` |
+| `next` 参数校验 | 是 | `isPathWithinBase(next, base)` |
+| API 路由 | 否 | Caddy 已 strip prefix，API 内部路径不变 |
+| SSE endpoint | 否 | 前端 JS 拼接 `${base}/api/events` |
+
+#### 直接访问兼容
+
+无 `X-Forwarded-Prefix` 时（如 `localhost:3470` 直接访问），`browserBase` 为空字符串，所有 URL 退化为根相对路径，功能不受影响。
 
 ### 敏感信息保护
 
