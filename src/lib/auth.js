@@ -1,7 +1,7 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import { browserBaseFromRequest, browserPath, browserRoot, isPathWithinBase } from './browser-base.js';
-import { sendJson, sendText } from './http.js';
+import { sendHtml, sendJson, sendText } from './http.js';
 
 const SCRYPT_KEYLEN = 64;
 const COOKIE_NAME = '__Host-zylos_dashboard_session';
@@ -179,14 +179,6 @@ function htmlEscape(value) {
     .replace(/"/g, '&quot;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;');
-}
-
-function sendHtml(res, status, body) {
-  res.writeHead(status, {
-    'content-type': 'text/html; charset=utf-8',
-    'cache-control': 'no-store'
-  });
-  res.end(body);
 }
 
 function loginPageHtml(base, error = '', next = '') {
