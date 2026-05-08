@@ -55,7 +55,7 @@ UI 通过 CSS Custom Properties 实现主题分离。所有视觉元素（颜色
 
 ### zylos 组件规范
 
-Dashboard 是 zylos 组件，遵循 zylos-component-template 规范：ESM only、SKILL.md v2 frontmatter、lifecycle hooks（post-install / pre-upgrade / post-upgrade）、代码与数据分离（skill 目录放代码，components 目录放运行时数据）、PM2 服务管理。
+Dashboard 是 zylos 组件，遵循 zylos-component-template 规范：ESM only、SKILL.md v2 frontmatter、lifecycle hooks（post-install / pre-upgrade / post-upgrade）、代码与数据分离（skill 目录放代码，components 目录放运行时数据）、PM2 服务管理、HTTP Base Path（X-Forwarded-Prefix）支持。
 
 ## 架构
 
@@ -182,13 +182,15 @@ Dashboard 的核心抽象是统一指标模型。所有指标对用户呈现统�
 
 **数据只读保护**：SQLite 三层只读（URI readonly + fileMustExist + PRAGMA query_only），文件系统只 watch 不写入。
 
-**访问控制**：管理端 cookie 认证（HttpOnly + SameSite=Strict），REST/SSE 同源 cookie，CLI 支持 Bearer token。Server 绑定 localhost，外部走 Caddy 反代。
+**访问控制**：与 zylos-pages 一致的 cookie-based session auth。scrypt 密码哈希、内存 session 存储、HttpOnly+SameSite=Strict cookie、暴力破解防护（per-IP lockout + 全局限速）。`/api/health` 和静态资源不需要登录，其余 API 和页面均需认证。CLI 支持 Bearer token。Server 绑定 localhost，外部走 Caddy 反代。
+
+**Base Path**：遵循 zylos-component-template COMPONENT-SPEC.md §4 规范，通过 `X-Forwarded-Prefix` 支持 Caddy strip_prefix 反代下的正确 URL 生成。从 zylos-pages 移植 `browser-base.js` 模块，严格校验 prefix 值。
 
 **敏感信息隔离**：API 只返回聚合数据（状态、计数、时间戳、成本），不返回 prompt 原文、.env 值、消息正文。OTel 数据本地存储，不发外部。
 
 **OTel 安全清单**（Phase 2 前必过）：prompt redaction 验证、collector 仅 localhost、payload 字段审计、exporter flush 验证。
 
-完整安全规格见 → [部署与安全模块文档](modules/deployment.md)
+完整安全规格（含 auth 实现细节和 base path 规格）见 → [部署与安全模块文档](modules/deployment.md)
 
 ## Phase 规划
 
@@ -241,7 +243,8 @@ Dashboard 的核心抽象是统一指标模型。所有指标对用户呈现统�
 | 多 runtime | 指标并集覆盖，unsupported 不假补 | 每个 runtime 有不可用指标，但不会误导用户 |
 | 指标来源 | telemetry > hook > 状态文件 | 遥测精度最高但依赖配置，状态文件兜底 |
 | Resolver 仲裁 | freshness > source priority | fresh 低优来源优于 stale 高优来源，优先保证数据新鲜度 |
-| 认证 | Cookie 为主，URL token 默认关 | URL token 有 Referer/日志泄露风险 |
+| 认证 | 与 zylos-pages 一致的 cookie-based session auth（scrypt 密码、内存 session、暴力破解防护）。URL token 默认关 | URL token 有 Referer/日志泄露风险。复用 Pages 验证过的 auth 方案降低实现风险 |
+| Base Path | X-Forwarded-Prefix + browser-base.js（从 zylos-pages 移植） | 遵循 zylos-component-template COMPONENT-SPEC.md §4 规范 |
 | OTel 存储 | 本地 SQLite | 不污染已有数据库，不依赖外部 SaaS |
 | TelemetryAdapter 分 codec | Claude=metrics pipeline, Codex=log-based aggregation | 两个 runtime OTel 架构根本不同，不强行统一 |
 | capability/availability 拆两层 | 静态能力 vs 动态状态 | 避免"capability=supported 但此刻收不到数据"的混淆 |
@@ -279,6 +282,7 @@ Zylos Dashboard 的 agent 可观测性探索可反哺 COCO Dashboard 的 AI Ops 
 
 ---
 
-*文档版本: v3.1*
+*文档版本: v3.2*
 *创建日期: 2026-05-02*
+*最后更新: 2026-05-08 — 新增 Auth 实现规格和 Base Path 规格*
 *作者: zylos01*
