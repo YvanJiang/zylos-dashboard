@@ -131,7 +131,10 @@ export function createServer() {
   });
 }
 
-const isMain = process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href;
+const isMain = (
+  (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) ||
+  (process.env.pm_exec_path && import.meta.url === pathToFileURL(process.env.pm_exec_path).href)
+);
 
 if (isMain && process.argv.includes('--smoke')) {
   console.log(JSON.stringify({
