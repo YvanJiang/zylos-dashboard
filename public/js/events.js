@@ -4,8 +4,8 @@ export function connectEvents(onSummary, fallbackRefresh) {
     return;
   }
 
-  const basePath = new URL('.', window.location.href);
-  const source = new EventSource(new URL('api/events', basePath).pathname);
+  const basePath = document.documentElement.dataset.basePath || '';
+  const source = new EventSource(`${basePath}/api/events`);
   let fallbackTimer = null;
 
   source.addEventListener('metrics', (event) => {

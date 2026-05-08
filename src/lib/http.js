@@ -27,10 +27,19 @@ export function sendText(res, status, body) {
   res.end(body);
 }
 
+export function sendHtml(res, status, body) {
+  res.writeHead(status, {
+    'content-type': 'text/html; charset=utf-8',
+    'cache-control': 'no-store'
+  });
+  res.end(body);
+}
+
 export function serveStatic(req, res, rootDir) {
   const url = new URL(req.url, 'http://127.0.0.1');
   const pathname = decodeURIComponent(url.pathname);
-  const relative = pathname === '/' ? 'index.html' : pathname.replace(/^\/+/, '');
+  const assetPath = pathname.startsWith('/_assets/') ? pathname.slice('/_assets/'.length) : null;
+  const relative = assetPath || (pathname === '/' ? 'index.html' : pathname.replace(/^\/+/, ''));
   const vendorPrefix = 'vendor/';
   const baseDir = relative.startsWith(vendorPrefix)
     ? path.resolve(rootDir, '..', 'node_modules', 'chart.js', 'dist')

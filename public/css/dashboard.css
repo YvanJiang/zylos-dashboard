@@ -15,6 +15,10 @@ table {
   font: inherit;
 }
 
+.logout-form {
+  margin: 0;
+}
+
 .shell {
   width: min(1280px, calc(100% - 32px));
   margin: 0 auto;
@@ -196,6 +200,61 @@ th {
 
 .chart-wrap {
   height: 280px;
+}
+
+.login-shell {
+  display: grid;
+  min-height: 100vh;
+  place-items: center;
+  padding: var(--space-4);
+}
+
+.login-panel {
+  width: min(360px, 100%);
+  padding: var(--space-5);
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  background: var(--bg-surface);
+}
+
+.login-panel h1 {
+  margin-bottom: var(--space-4);
+}
+
+.login-error {
+  margin-bottom: var(--space-3);
+  color: var(--status-error);
+  font-size: 14px;
+}
+
+.login-label {
+  display: block;
+  margin-bottom: var(--space-2);
+  color: var(--text-secondary);
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.login-input {
+  width: 100%;
+  margin-bottom: var(--space-4);
+  padding: 10px 12px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 6px;
+  background: var(--bg-page);
+  color: var(--text-primary);
+  font: inherit;
+}
+
+.login-button {
+  width: 100%;
+  padding: 10px 12px;
+  border: 0;
+  border-radius: 6px;
+  background: var(--accent);
+  color: #fff;
+  cursor: pointer;
+  font-weight: 700;
 }
 
 .facts {
