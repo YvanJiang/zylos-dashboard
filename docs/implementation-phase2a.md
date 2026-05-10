@@ -376,7 +376,7 @@ export class PM2Collector {
 - **source_health**: Updates `pm2_reader` (signal_type: `collector_liveness`).
 - **Cache**: Latest result stored in memory for state engine access (avoids re-exec on state derivation).
 - **Failure behavior**: exec failure → update source_health to `degraded`, cache remains stale.
-- **Mapped tests**: Used by T-STATE-01~03 (OFFLINE/IDLE depend on PM2 data).
+- **Mapped tests**: Used by T-STATE-03+ (IDLE and other states depend on PM2 data). PM2 does NOT participate in OFFLINE detection — that is AM heartbeat only (D7).
 
 #### 2.6.2 System Collector — `system-collector.js`
 
@@ -584,7 +584,7 @@ _isCollectorLivenessFresh() {
 }
 ```
 
-**AM unavailable and STUCK**: `am_heartbeat` is included in collector liveness because it provides session-level liveness evidence — if AM heartbeat is not fresh, we cannot distinguish "agent stuck" from "agent exited but launcher still running" (PM2 alone can't tell). Therefore: AM unavailable (process not running, no source_health entry) → `_isCollectorLivenessFresh()` returns false → STUCK cannot be confirmed → state degrades to UNKNOWN. This is intentional: STUCK requires all observation channels healthy to be a reliable judgment. If AM is permanently absent (e.g. AM not installed), the system stays at POSSIBLY_STUCK (MEDIUM) without escalating to STUCK — which is the conservative correct behavior.
+**AM unavailable and STUCK**: `am_heartbeat` is included in collector liveness because it provides session-level liveness evidence — if AM heartbeat is not fresh, we cannot distinguish "agent stuck" from "agent session exited." Therefore: AM unavailable (process not running, no source_health entry) → `_isCollectorLivenessFresh()` returns false → STUCK cannot be confirmed → state degrades to UNKNOWN. This is intentional: STUCK requires all observation channels healthy to be a reliable judgment. If AM is permanently absent (e.g. AM not installed), the system stays at POSSIBLY_STUCK (MEDIUM) without escalating to STUCK — which is the conservative correct behavior. Note: PM2 process status is orthogonal — it monitors the launcher process, not the agent session. PM2 belongs in system health/collector_liveness, not in OFFLINE or STUCK resolution logic.
 
 ```javascript
 // For reference: _isCollectorLivenessAvailable() checks if sources have ever reported
@@ -595,18 +595,18 @@ _isCollectorLivenessAvailable() {
 }
 ```
 
-#### OFFLINE Detection — AM Heartbeat Preferred, PM2 Fallback (D7)
+#### OFFLINE Detection — AM Heartbeat Only (D7)
 
-OFFLINE detection uses AM `agent-status.json` as the **preferred source** with PM2 as fallback, per D7.
+OFFLINE detection uses AM `agent-status.json` as the **sole source**. PM2 does not participate in OFFLINE determination.
 
-**Why AM over PM2**: PM2 manages the tmux-launcher process, not the Claude/Codex session itself. PM2 "online" only proves the launcher is alive — the agent session inside could have exited, crashed, or become unresponsive. AM performs actual **heartbeat probes** against the agent session, providing application-level liveness evidence that PM2 cannot.
+**Why PM2 cannot determine OFFLINE**: PM2 manages the tmux-launcher process, not the Claude/Codex session itself. PM2 "online" only proves the launcher is alive — the agent session inside could have exited, crashed, or become unresponsive. PM2 "stopped" means the launcher process isn't running, which is a system/process health fact — not an agent OFFLINE detection. AM performs actual **heartbeat probes** against the agent session, providing application-level liveness evidence that PM2 structurally cannot.
 
-**P1 boundary (Zylos01 × Jinglever consensus)**: This is a scoped P1 exception. The boundary is:
+**P1 boundary (Zylos01 × Jinglever × Howard consensus)**:
 1. `agent-status.json` is used **only** as an agent session heartbeat / application liveness signal, for OFFLINE/UNRESPONSIVE detection.
 2. AM's semantic state judgments (busy/idle/stuck from `proc-state.json` etc.) are **NOT** used. Dashboard derives BUSY/IDLE/STUCK/WAITING_HUMAN from its own hook/OTel/PM2/system/C4 evidence.
 3. In source_health, this source is named `am_heartbeat` (signal_type: `collector_liveness`) — not "AM state", to prevent confusion with AM's legacy semantic state.
-4. Resolver rule: OFFLINE preferred = `am_heartbeat` status; fallback = PM2 launcher status. When AM heartbeat says offline/unresponsive but PM2 says online, AM wins (strong signal: launcher alive but session dead). Owner text: "session 无响应" rather than "进程离线".
-5. AM unavailable (process not running, file missing/stale) → fall back to PM2 with lower confidence.
+4. `am_heartbeat` is the **sole OFFLINE resolver source**. No fallback. AM heartbeat fresh + offline → OFFLINE (HIGH). AM heartbeat fresh + online → not offline. Owner text: "session 无响应" rather than "进程离线".
+5. AM unavailable (process not running, file missing/stale) → UNKNOWN. Cannot determine session liveness without a heartbeat probe. PM2 process status is displayed separately in the system health panel but does **not** substitute for OFFLINE detection.
 
 ```javascript
 _readAMHeartbeat() {
@@ -621,7 +621,7 @@ _readAMHeartbeat() {
       lastCheck: data.lastCheck || data.updated_at
     };
   } catch {
-    this._state.amHeartbeat = null;  // AM not available → PM2 fallback
+    this._state.amHeartbeat = null;  // AM not available → UNKNOWN (no fallback)
   }
 }
 ```
@@ -635,7 +635,7 @@ const signals = {
   amStatus: this._state.amHeartbeat?.status ?? null,
   // ... rest of signals
 };
-// deriveAgentState() checks AM first (if available), then PM2
+// OFFLINE resolved from AM heartbeat only; AM unavailable → UNKNOWN
 ```
 
 #### Restart Recovery (AC-1)
