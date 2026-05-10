@@ -467,6 +467,9 @@ this._state = {
   // PM2 cache (from collector)
   pm2: null,  // latest PM2 data
 
+  // AM heartbeat (D7: application-level liveness only, not semantic state)
+  amHeartbeat: null,  // { status: 'online'|'offline', lastCheck } or null
+
   // Last snapshot cursor
   lastSnapshotCursor: 0,
 };
@@ -539,8 +542,8 @@ Implements §4.3 pseudocode from the spec. Key signals assembled from in-memory 
 ```javascript
 _deriveState() {
   const signals = {
-    amAvailable: false,   // Phase 2a: PM2-only OFFLINE detection (see "OFFLINE Detection" section)
-    amStatus: null,
+    amAvailable: this._state.amHeartbeat !== null,
+    amStatus: this._state.amHeartbeat?.status ?? null,
     pm2Status: this._state.pm2?.runtimeProcess?.pm2_env?.status ?? null,
     pm2SampleAge: this._state.pm2 ? (Date.now() - this._state.pm2.collectedAt) / 1000 : Infinity,
     pm2Cpu: this._state.pm2?.runtimeProcess?.monit?.cpu ?? null,
@@ -571,7 +574,7 @@ _deriveState() {
 _isCollectorLivenessFresh() {
   const health = this.store.getCollectorLiveness();
   // All collector_liveness sources must be fresh (< 30s)
-  const sources = ['pm2_reader', 'system_sampler', 'hook_handler'];
+  const sources = ['pm2_reader', 'system_sampler', 'hook_handler', 'am_heartbeat'];
   return sources.every(name => {
     const h = health.find(s => s.source_name === name);
     return h && h.status !== 'stale' && h.status !== 'error'
@@ -580,16 +583,47 @@ _isCollectorLivenessFresh() {
 }
 ```
 
-#### OFFLINE Detection — PM2 Primary
+#### OFFLINE Detection — AM Heartbeat Preferred, PM2 Fallback (D7)
 
-Phase 2a OFFLINE detection uses **PM2 as the sole primary source**. PM2 `jlist` is already collected by PM2Collector and provides authoritative process-level evidence (status, uptime, restart count). This aligns with the dashboard-owned observability principle (P1): no dependency on external AM status files.
+OFFLINE detection uses AM `agent-status.json` as the **preferred source** with PM2 as fallback, per D7.
 
-**Spec D7 note**: The product spec (§4.2 OFFLINE, D7) designates AM `agent-status.json` as preferred OFFLINE source with PM2 as fallback. Jinglever's review raises a valid concern that this creates a product dependency on AM, contradicting P1. **This implementation chooses PM2-only for Phase 2a.** If Howard wants to reinstate AM as preferred source per D7, the state engine can add `_readAMStatus()` as a supplementary signal without structural changes — the `deriveAgentState()` function already accepts `amAvailable` and `amStatus` parameters.
+**Why AM over PM2**: PM2 manages the tmux-launcher process, not the Claude/Codex session itself. PM2 "online" only proves the launcher is alive — the agent session inside could have exited, crashed, or become unresponsive. AM performs actual **heartbeat probes** against the agent session, providing application-level liveness evidence that PM2 cannot.
+
+**P1 boundary (Zylos01 × Jinglever consensus)**: This is a scoped P1 exception. The boundary is:
+1. `agent-status.json` is used **only** as an agent session heartbeat / application liveness signal, for OFFLINE/UNRESPONSIVE detection.
+2. AM's semantic state judgments (busy/idle/stuck from `proc-state.json` etc.) are **NOT** used. Dashboard derives BUSY/IDLE/STUCK/WAITING_HUMAN from its own hook/OTel/PM2/system/C4 evidence.
+3. In source_health, this source is named `am_heartbeat` (signal_type: `collector_liveness`) — not "AM state", to prevent confusion with AM's legacy semantic state.
+4. Resolver rule: OFFLINE preferred = `am_heartbeat` status; fallback = PM2 launcher status. When AM heartbeat says offline/unresponsive but PM2 says online, AM wins (strong signal: launcher alive but session dead). Owner text: "session 无响应" rather than "进程离线".
+5. AM unavailable (process not running, file missing/stale) → fall back to PM2 with lower confidence.
 
 ```javascript
-// PM2-only OFFLINE in _deriveState():
-// amAvailable = false, amStatus = null (AM not consulted)
-// OFFLINE = pm2Status !== 'online'
+_readAMHeartbeat() {
+  // Read ~/zylos/activity-monitor/data/agent-status.json
+  // Only extract: status (online/offline), last heartbeat timestamp
+  // Do NOT read busy/idle/stuck or any semantic state fields
+  try {
+    const raw = fs.readFileSync(amStatusPath, 'utf8');
+    const data = JSON.parse(raw);
+    this._state.amHeartbeat = {
+      status: data.status,  // 'online' | 'offline'
+      lastCheck: data.lastCheck || data.updated_at
+    };
+  } catch {
+    this._state.amHeartbeat = null;  // AM not available → PM2 fallback
+  }
+}
+```
+
+Called periodically (every 15s, aligned with PM2 collector). source_health updated as `am_heartbeat` (collector_liveness).
+
+**deriveAgentState signals**:
+```javascript
+const signals = {
+  amAvailable: this._state.amHeartbeat !== null,
+  amStatus: this._state.amHeartbeat?.status ?? null,
+  // ... rest of signals
+};
+// deriveAgentState() checks AM first (if available), then PM2
 ```
 
 #### Restart Recovery (AC-1)
