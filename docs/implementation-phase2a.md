@@ -1087,7 +1087,66 @@ export function setLocale(locale) {
 
 **HTML Integration**: All user-visible text uses `data-i18n="key"` attributes. After `initI18n()`, a `renderAll()` pass sets `textContent` for all `[data-i18n]` elements. Dynamic text (state descriptions, metric values) uses `t()` directly in JS.
 
-#### 2.10.4 Block Specifications
+#### 2.10.4 Theme Extension (Multi-Skin Support)
+
+**Goal**: Allow switching between visual themes at runtime. Phase 2a ships with one theme (light); the architecture supports adding more without code changes.
+
+**Mechanism**: Pure CSS custom property override via `data-theme` attribute on `<html>`.
+
+```
+public/
+├── themes/
+│   ├── light.css      # default — tokens from §2.10.1
+│   └── dark.css       # future — overrides same tokens
+```
+
+**Theme File Structure** (each theme overrides `:root` tokens):
+
+```css
+/* themes/light.css */
+:root[data-theme="light"] {
+  --bg: #f7faf9;
+  --text: #101827;
+  --accent: #0d9488;
+  /* ... all tokens from §2.10.1 */
+}
+
+/* themes/dark.css — example future skin */
+:root[data-theme="dark"] {
+  --bg: #0f1419;
+  --text: #e2e8f0;
+  --accent: #2dd4bf;
+  /* ... */
+}
+```
+
+**Switching Logic**:
+
+```javascript
+const THEME_KEY = 'zylos-theme';
+const DEFAULT_THEME = 'light';
+
+function initTheme() {
+  const theme = localStorage.getItem(THEME_KEY) || DEFAULT_THEME;
+  applyTheme(theme);
+}
+
+function applyTheme(theme) {
+  document.documentElement.setAttribute('data-theme', theme);
+  localStorage.setItem(THEME_KEY, theme);
+}
+```
+
+**Conventions**:
+- All color/visual tokens MUST be defined via CSS variables — never hardcode colors in component styles
+- Theme files only contain variable definitions (no selectors, no layout)
+- Adding a new theme = create a new CSS file + add to the theme list
+- Theme switch is instant (no page reload) because all components reference variables
+- State colors (§2.10.1) are also themed — each theme file defines its own `--state-*` values
+
+**Phase 2a scope**: Ship with `light.css` only. Theme switcher UI deferred to a later phase, but the infrastructure (data-theme, localStorage, `applyTheme()`) is built in from day one so no refactoring is needed later.
+
+#### 2.10.5 Block Specifications
 
 #### ① Live Runtime State
 
