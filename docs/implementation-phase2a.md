@@ -158,7 +158,7 @@ export class Sanitizer {
   //       This matches the CanonicalEvent schema and state engine's access pattern.
 
   sanitizePath(fullPath)
-  // "/home/howard/zylos/core/lib/startup.js" → "lib/startup.js"
+  // "/home/howard/zylos/core/lib/startup.js" → "core/lib/startup.js"
 
   redactCredentials(text)
   // replaces sk-*, xoxb-*, ghp_*, Bearer tokens, emails → [REDACTED]/[EMAIL]
@@ -170,7 +170,7 @@ export class Sanitizer {
 
 #### Implementation Details
 
-- **Path sanitization**: Split on `/`, take last 2 segments. If < 2 segments, return as-is.
+- **Path sanitization**: `path.relative(config.zylosDir, fullPath)` — produces the relative path from zylos root. Preserves full directory structure while removing the absolute prefix. If the path is outside zylos dir, `path.basename()` as fallback.
 - **Credential patterns**: Regex array applied to all string values in metadata before storage:
   - `/sk-[a-zA-Z0-9_-]{20,}/g` → `[REDACTED]`
   - `/xoxb-[a-zA-Z0-9-]+/g` → `[REDACTED]`
@@ -212,7 +212,7 @@ export class IngestHandler {
 - **Optional token**: If `config.ingestToken` is set, check `Authorization: Bearer <token>` header. Missing/wrong → 403.
 - **CORS**: No `Access-Control-Allow-Origin` header on `/api/ingest` responses. OPTIONS preflight → no CORS headers → browser rejects.
 - **Base-path isolation**: `/api/ingest` is mounted directly on the server, NOT under the base-path prefix. The existing `browserBaseFromRequest()` logic strips `X-Forwarded-Prefix` for routing — ingest must be excluded from this. Implementation: in `index.js` request handler, check for `/api/ingest` BEFORE applying base-path stripping. If the raw URL starts with the base-path prefix + `/api/ingest` → 404 (ingest not served under base-path).
-- **Body parsing**: Read entire request body (max 64KB, reject larger with 413). `JSON.parse()` with try/catch → 400 on parse failure.
+- **Body parsing**: Use `readJsonBody(req, 64 * 1024)` from existing `src/lib/http.js` utility module (add this function alongside the existing `sendJson`/`sendText`/`serveStatic`). Handles chunk collection, size limit enforcement (413 on overflow), and `JSON.parse()` (400 on failure) in one reusable call.
 - **Processing flow**:
   1. Extract `ingest_id`, `hook_event_name`, remainder from body
   2. Check `hook_event_name` against allowed set (`PreToolUse`, `PostToolUse`, `UserPromptSubmit`, `Stop`, `PermissionRequest`). Unknown → 200 OK (don't break hook-ingest.js) + increment ignored counter in source_health
@@ -392,8 +392,8 @@ export class SystemCollector {
 ```
 
 - **Metrics**: `cpu_pct`, `mem_used_bytes`, `mem_total_bytes`, `disk_used_pct`, `disk_free_bytes`.
-- **CPU calculation**: Compare two consecutive `os.cpus()` snapshots (idle vs total delta).
-- **Disk**: `execFile('df', ['-B1', '--output=size,used,avail', config.zylosDir])` → parse.
+- **CPU calculation**: `os.loadavg()[0]` (1-minute load average). Simple, no state management needed.
+- **Disk**: Node built-in `fs.statfsSync(config.zylosDir)` — `stats.blocks * stats.bsize` for total, `stats.bavail * stats.bsize` for available. No child process or text parsing needed.
 - **source_health**: Updates `system_sampler` (signal_type: `collector_liveness`).
 - **Failure behavior**: Individual metric failure doesn't block others.
 
@@ -944,7 +944,7 @@ export class HookInstaller {
 - **Claude**: Read `~/.claude/settings.json`. Merge into `hooks` object — for each of the 5 event names, append the dashboard command if not already present. Preserve existing user hooks.
 - **Codex**: Read `~/.codex/hooks.json` (array format). Append entries for each of the 5 events if not already present. Preserve existing entries.
 - **Uninstall**: Remove only entries matching the dashboard command pattern. Don't touch other hooks.
-- **Detection**: Check `process.env.ZYLOS_RUNTIME`, then fall back to checking which PM2 process is running (`claude-code` vs `codex`).
+- **Detection**: Read `process.env.ZYLOS_RUNTIME` (canonical interface). Default to `'claude'` if unset. No PM2 fallback — PM2 manages service modules, not the agent runtime.
 - **Idempotent**: Running install twice produces the same result (no duplicate entries).
 
 ---
