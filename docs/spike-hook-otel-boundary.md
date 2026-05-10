@@ -188,13 +188,13 @@ SubagentStart 字段 + ：
 | StopFailure | Stop hook 执行失败 | 未触发（罕见） |
 | UserPromptExpansion | Prompt 展开 | 未触发 |
 | Setup | 首次运行 | 未触发（一次性） |
-| PermissionRequest | 非 bypass 权限模式 | 未触发（我们用 bypass） |
-| PermissionDenied | 权限拒绝 | 未触发（同上） |
+| PermissionRequest | 非 bypass 权限模式 | ✅ **已触发**（Jinglever 补测，default 模式下写文件请求） |
+| PermissionDenied | 权限拒绝 | 未触发（需用户主动拒绝） |
 | TeammateIdle | 队友空闲 | 未触发（多代理场景） |
 | WorktreeCreate | 创建 worktree | 未触发 |
 | WorktreeRemove | 移除 worktree | 未触发 |
-| PreCompact | 上下文压缩前 | 未触发 |
-| PostCompact | 上下文压缩后 | 未触发 |
+| PreCompact | 上下文压缩前 | ✅ **已触发**（Jinglever 补测，manual /compact） |
+| PostCompact | 上下文压缩后 | ✅ **已触发**（Jinglever 补测，manual /compact） |
 | Elicitation | MCP 交互式请求 | 未触发（MCP 场景） |
 | ElicitationResult | MCP 请求结果 | 未触发（MCP 场景） |
 | FileChanged | 文件变更 | 未触发 |
@@ -417,7 +417,7 @@ StatusLine 是 Claude Code 底部状态栏，通过 `settings.json` 配置 shell
 ## 七、待完成项
 
 1. ~~**Claude Code OTel 实测**~~：✅ **已完成**（2026-05-09）——6 指标 / 6 种日志 / 5 种 trace span，数据正常流入 otlp-spike
-2. **更多事件触发**：PermissionRequest（需非 bypass 模式）、WorktreeCreate/Remove、PreCompact/PostCompact（需上下文压缩）。ConfigChange、TaskCreated、TaskCompleted 已在后续 session 中触发
+2. ~~**更多事件触发**~~：✅ PermissionRequest、PreCompact/PostCompact 已由 Jinglever 补测验证（2026-05-10）。ConfigChange、TaskCreated、TaskCompleted 已在后续 session 中触发。剩余未触发：WorktreeCreate/Remove、Elicitation/ElicitationResult（需特定场景）
 3. **脱敏管线设计**：定义每个字段的 strip/hash/keep 策略
 4. **方案文档更新**：将本报告的修正同步到 `docs/solution.md` 的 data-sources 章节
 5. **StatusLine 数据采集**：配置 statusLine 脚本，开始采集 context/cost/rate limit 数据
