@@ -567,11 +567,11 @@ Codex Hook 机制与 Claude Code 类似，通过配置文件注册 shell 命令�
 | `stop_hook_active` | 是否有 stop hook |
 | `last_assistant_message` | 最后回复内容 |
 
-### 🔍 源码确认但未在 spike 中触发
+### ✅ 补测已验证（Jinglever 2026-05-10 隔离 spike）
 
 #### `PermissionRequest`
 
-配置了但未触发（因测试环境为 bypass 模式）。
+在只读 sandbox 下的写文件请求触发。`permission_mode` 为 `default` 时触发，`bypass` 模式不触发。
 
 | 属性 | 说明 |
 |------|------|
@@ -581,14 +581,14 @@ Codex Hook 机制与 Claude Code 类似，通过配置文件注册 shell 命令�
 | `cwd` | 工作目录 |
 | `hook_event_name` | `PermissionRequest` |
 | `model` | 模型名 |
-| `permission_mode` | 权限模式 |
-| `tool_name` | 工具名 |
+| `permission_mode` | 权限模式（实测值：`default`） |
+| `tool_name` | 工具名（实测值：`Bash`） |
 | `tool_input` | 工具输入 |
-| — | **注意：无 tool_use_id** |
+| — | **注意：无 `tool_use_id`**（同一轮的 PreToolUse/PostToolUse 有） |
 
 #### `PreCompact` / `PostCompact`
 
-manual/auto compaction 时触发。
+manual `/compact` 已验证触发。auto compact payload 结构相同（`trigger` 字段区分）。
 
 | 属性 | 说明 |
 |------|------|
@@ -598,7 +598,7 @@ manual/auto compaction 时触发。
 | `cwd` | 工作目录 |
 | `hook_event_name` | `PreCompact` / `PostCompact` |
 | `model` | 模型名 |
-| `trigger` | 触发方式（`manual` / `auto`） |
+| `trigger` | 触发方式（实测值：`manual`；auto compact 同结构） |
 
 ## Hook 输出能力
 
