@@ -57,6 +57,7 @@ export function loadConfig() {
 export function ensureDataDirs(config = loadConfig()) {
   fs.mkdirSync(config.dataDir, { recursive: true });
   fs.mkdirSync(path.join(config.dataDir, 'logs'), { recursive: true });
+  fs.mkdirSync(path.join(config.dataDir, 'spool'), { recursive: true });
 }
 
 export function publicDir() {
