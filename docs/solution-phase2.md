@@ -178,17 +178,47 @@ Overview 是唯一入口页，回答 owner 的四个焦虑问题：
 
 #### ⑥ Communication
 
-**回答**：消息处理及时吗？有没有漏消息？
+**回答**：消息处理链路是否健康？有没有需要 owner 关注的积压？
+
+**设计原则**：不做消息级"是否回复"判定（无法配对：合并回复、SKIP、群消息本不需要回复）。只从系统状态出发，按信号强度分层。
+
+**① Intake Health（接收健康）**
+
+| 指标 | 计算方式 | 数据来源 | 论证 |
+|------|---------|---------|------|
+| 各渠道最近 inbound 时间 | 每个 channel 最后一条 inbound 的 timestamp | c4.db messages 表 | 直接查询，可靠 |
+| Receive/Dispatcher 错误 | status = 'error' 或有 retry 的 inbound | c4.db messages 表 | 直接查询，可靠 |
+
+**② Processing Health（处理健康）**
+
+| 指标 | 计算方式 | 数据来源 | 论证 |
+|------|---------|---------|------|
+| Pending queue 深度 | count(status IN ('pending', 'delivered', 'running')) | c4.db messages 表 | 直接查询，可靠 |
+| 最老未完成项 age | NOW - MIN(timestamp) WHERE status IN ('pending', 'running') | c4.db messages 表 | 直接查询，可靠。超过 5min 标 warning |
+| Queue stuck 项 | count WHERE age > threshold (普通消息 5min, control 30s) | c4.db messages 表 | 直接查询，可靠 |
+
+**③ Response Activity（回复活跃度）**
 
 | 指标 | 计算方式 | 数据来源 | 论证 |
 |------|---------|---------|------|
 | 各渠道消息量 (in/out) | count group by channel, direction | c4.db messages 表 | 直接查询，可靠 |
-| 平均响应延迟 | 对每条 inbound，找最近的同 endpoint outbound 的时间差 | c4.db messages 表 | 可靠，但假设：第一条 outbound 是对该 inbound 的回复。局限：如果多条 inbound 连续到达，或回复是异步的，延迟计算可能不准确 |
-| P50/P95 响应延迟 | 分位数统计 | 同上 | 同上 |
-| 未回复消息数 | inbound messages 无对应 outbound 且超过阈值时间 | c4.db messages 表 | 需要定义"未回复"阈值。建议：5 分钟内无同 endpoint outbound 视为 pending |
-| 失败/重试消息 | status = 'failed' 或 retry_count > 0 | c4.db messages 表 | 直接查询，可靠 |
+| 最近 outbound 时间 | MAX(timestamp) WHERE direction='outbound' per channel | c4.db messages 表 | 直接查询，可靠 |
+| Response density | outbound_count / actionable_inbound_count (15min/1h 窗口) | c4.db messages 表 | 统计比例，标注 inferred。不是配对率 |
+| Conversation-window latency (趋势) | 按 endpoint/thread 把 inbound burst 合并（2min 静默切段），找窗口后第一个 outbound 的时间差 | c4.db messages 表 | inferred，只用于趋势图，不用于告警 |
 
-**待 Howard 决策 [D1]**：Communication 的"未回复"阈值定为多少？建议 5 分钟。某些场景下（如 scheduled task 处理中），可能超过 5 分钟才回复，这算不算"未回复"？
+**④ Attention Required（需要 owner 关注）**
+
+| 指标 | 触发条件 | 论证 |
+|------|---------|------|
+| Send failed | C4 outbound status='failed' 且 retry exhausted | 强证据：系统确认发送失败 |
+| Queue stuck | 最老 pending 项超过阈值 | 强证据：系统内部处理卡住 |
+| Channel down | 某渠道 connector 超过 5min 无心跳 | 强证据：渠道级断连 |
+| Waiting owner | WAITING_HUMAN 状态（来自 §4 状态机） | 强证据：agent 明确等待确认 |
+
+**决策 [D1] — 已确认**：
+- 取消"未回复消息数"指标，改为上述 4 类
+- Conversation-window 聚合窗口：2 分钟
+- Queue stuck 阈值：普通消息 5 分钟、control/heartbeat 30 秒
 
 ---
 
@@ -315,7 +345,7 @@ Overview 是唯一入口页，回答 owner 的四个焦虑问题：
 | **判定逻辑** | `was_possibly_stuck_for >= 300s AND no_runtime_progress_event AND pm2_online AND collector_liveness_all_fresh` |
 | **置信度** | MEDIUM（默认）/ HIGH（600s + CPU=0 + all collector liveness fresh） |
 | **Owner 看到** | 红色指示灯 + "已卡住" + 原因 + 建议动作（如 "Bash 已运行 10 分钟无响应，建议检查终端"） |
-| **待 Howard 决策 [D3]** | STUCK 状态下是否提供自助操作（如"重启 session"）？涉及只读原则 |
+| **决策 [D3] — 已确认** | 第一版只读，不提供操作按钮。后续版本按场景加操作（ESC 恢复 / 杀 session / 其他），先通过只读版积累 stuck 场景→action 映射数据 |
 
 #### OFFLINE — 离线
 
@@ -758,7 +788,7 @@ CREATE TABLE source_health (
 | activity_facts | 365 天 | 定时任务按 timestamp 删除 |
 | source_health | 不清理 | 只有当前状态，无历史 |
 
-**待 Howard 决策 [D2]**：数据保留时长是否合适？30 天事件 + 90 天指标 + 365 天事实，预估 SQLite 文件大小约 50-200MB/年。
+**决策 [D2] — 已确认**：30 天事件 + 90 天指标（日聚合 365 天）+ 365 天事实。预估 SQLite 文件大小约 50-200MB/年。
 
 ### 6.3 不存储的数据
 
@@ -893,14 +923,14 @@ UI 的 Overview 区块通过 SSE 实时更新，无需轮询。
 
 ## 11. 待决策与待验证清单
 
-### 待 Howard 决策
+### Howard 决策（全部已确认，2026-05-10）
 
-| ID | 问题 | 建议 | 影响范围 |
+| ID | 问题 | 决策 | 影响范围 |
 |----|------|------|---------|
-| D1 | Communication "未回复" 阈值 | 5 分钟 | §3.2 ⑥ |
-| D2 | 数据保留时长 (30天事件/90天指标/365天事实) | 如上 | §6.2 |
-| D3 | STUCK 状态下是否提供自助操作（如重启 session） | 第一版不提供（只读），待讨论 | §4.2 |
-| D4 | Dashboard 是否需要认证（Phase 1 已有 basic auth） | 沿用 Phase 1 basic auth | §10 |
+| D1 | Communication 区块设计 | 取消"未回复消息数"指标（无法配对）。改为 4 类：Intake Health / Processing Health / Response Activity / Attention Required。Conversation-window 聚合窗口 2min，queue stuck 阈值普通 5min / control 30s | §3.2 ⑥ |
+| D2 | 数据保留时长 | 事件 30 天 / 指标 90 天（日聚合 365 天）/ 活动事实 365 天 | §6.2 |
+| D3 | STUCK 状态下是否提供自助操作 | 第一版只读。后续版本加操作按钮（按场景区分：ESC 恢复 / 杀 session / 其他）。先通过只读版积累数据，搞清 stuck 场景→action 映射后再做 | §4.2 |
+| D4 | Dashboard 认证方式 | 沿用 Phase 1 basic auth | §10 |
 
 ### 待数据验证
 
