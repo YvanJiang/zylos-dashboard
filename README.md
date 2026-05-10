@@ -1,6 +1,6 @@
 # Zylos Dashboard
 
-Read-only observability dashboard for a local Zylos agent.
+Observability dashboard for a local Zylos agent.
 
 ## Run Locally
 
@@ -10,23 +10,14 @@ npm start
 
 Open `http://127.0.0.1:3470/`.
 
-## Data Sources
+## Status
 
-- `~/zylos/activity-monitor/*.json`
-- `~/zylos/activity-monitor/*.jsonl`
-- `~/zylos/comm-bridge/c4.db`
-- `~/zylos/scheduler/scheduler.db`
-- `pm2 jlist`
-
-The dashboard reads these sources only. It does not mutate upstream databases,
-configuration, or runtime services.
+Phase 1 code has been removed. Phase 2a implementation is in progress — see
+`docs/solution-phase2a.md`, `docs/test-acceptance-phase2a.md`, and
+`docs/implementation-phase2a.md` for the full design.
 
 ## API
 
+Current skeleton:
+
 - `GET /api/health`
-- `GET /api/config`
-- `GET /api/adapters`
-- `GET /api/summary`
-- `GET /api/metrics`
-- `GET /api/metrics/:name`
-- `GET /api/events` (SSE)
