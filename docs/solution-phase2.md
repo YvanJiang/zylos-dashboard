@@ -160,7 +160,7 @@ Overview 是唯一入口页，回答 owner 的四个焦虑问题：
 |------|---------|---------|
 | 活跃时长 | SessionStart 到 SessionEnd/最后事件的时间累加 | Hook events |
 | 工具调用总数 | count(PostToolUse) | Hook events |
-| PR 提交/Review/Merge | 从 Bash tool output 匹配 `gh pr create/review/merge` 或 git push | activity_facts |
+| PR 提交/Review/Merge | 定时调用 `gh pr list --json number,title,state,createdAt,mergedAt --limit 20` 采集 PR 状态变化，写入 activity_facts。不从工具输出推断（隐私原则） | GitHub API (gh CLI) |
 | 消息处理数 | C4 inbound + outbound count | c4.db |
 | Top 项目 | 从工具调用的 file_path 提取 repo/project，按频次排序 | Hook events + projects.md 映射 |
 | Scheduler 任务 | 完成/失败/跳过 | scheduler.db |
@@ -222,38 +222,55 @@ Overview 是唯一入口页，回答 owner 的四个焦虑问题：
 
 ### 4.2 状态定义与证据
 
+每个状态包含完整 contract：Positive Evidence（进入条件）、Counter Evidence（反证/不应进入的情况）、Clear Condition（退出条件）、Runtime Differences（Claude vs Codex 差异）、Freshness Requirement（数据新鲜度要求）、Confidence Downgrade（降级条件）。
+
 #### ACTIVE — 正在工作
 
 | 项 | 内容 |
 |---|------|
 | **含义** | Agent 正在执行工具、调用 API、或生成回复 |
-| **证据条件（全部满足）** | (1) PM2 runtime 进程 status=online; (2) 最近 60s 内收到 Hook 或 OTel 事件 |
-| **判定逻辑** | `pm2_online AND last_event_age < 60s` |
-| **置信度** | HIGH — PM2 状态是权威的，Hook 事件是运行时直接发出的 |
-| **已验证** | PM2 jlist 可靠获取进程状态 ✅; Hook 事件在无头模式下正常触发 ✅ (spike #17 验证) |
-| **Owner 看到** | 绿色指示灯 + "正在工作" + 当前工具描述 |
+| **Positive Evidence（满足任一）** | (1) 有**未结束**的工具调用：收到 PreToolUse 但未收到对应的 PostToolUse/PostToolUseFailure; (2) 收到 UserPromptSubmit 后未收到 Stop（表示正在处理 prompt）; (3) OTel 中有**未关闭**的 `interaction` 或 `llm_request` span |
+| **Counter Evidence（不应判 ACTIVE）** | (1) 仅收到结束型事件（Stop、PostToolUse、SessionEnd、PostCompact）— 这些表示"刚完成"而非"正在工作"; (2) 最后事件是 Stop 且无后续 UserPromptSubmit — 表示 turn 已结束; (3) PM2 进程不在线 |
+| **Clear Condition** | 收到 Stop hook（turn 结束）或 PostToolUse/PostToolUseFailure（工具结束）且无新的 PreToolUse/UserPromptSubmit |
+| **Runtime Differences** | Claude: 可用 SubagentStart（无 SubagentStop）作为 active 信号; Codex: 无 SubagentStart/Stop，仅依赖 PreToolUse/PostToolUse + UserPromptSubmit/Stop |
+| **Freshness Requirement** | 证据事件必须在最近 300s 内。超过 300s 无新事件但工具仍"未结束"，可能是 hook 丢失，降级为 UNKNOWN |
+| **Confidence Downgrade** | 仅有 UserPromptSubmit 无后续工具调用（可能在思考/生成）→ 降为 MEDIUM，因为无中间事件可验证模型仍在运行 |
+| **判定逻辑** | `pm2_online AND (has_running_tool OR has_open_turn) AND evidence_age < 300s` |
+| **置信度** | HIGH（有运行中工具）/ MEDIUM（仅有 open turn 无工具） |
+| **已验证** | PM2 jlist 可靠获取进程状态 ✅; PreToolUse/PostToolUse 配对在无头模式下正常 ✅; UserPromptSubmit/Stop 配对验证 ✅ (spike #17) |
+| **Owner 看到** | 绿色指示灯 + "正在工作" + 当前工具描述（有运行中工具时）或 "正在思考" （open turn 无工具时） |
 
 #### IDLE — 空闲等待
 
 | 项 | 内容 |
 |---|------|
 | **含义** | Agent 在线但没有活动任务，等待新消息 |
-| **证据条件（全部满足）** | (1) PM2 runtime 进程 status=online; (2) 最近事件距今 > 60s; (3) 无 pending PermissionRequest; (4) 无未结束的 PreToolUse（即无运行中的工具） |
-| **反证** | 如果有未结束的 PreToolUse（有 PreToolUse 无对应 PostToolUse），不应判 idle |
-| **判定逻辑** | `pm2_online AND last_event_age >= 60s AND no_pending_permission AND no_running_tool` |
-| **置信度** | MEDIUM — 60s 无事件通常意味着 idle，但也可能是 agent 在长时间思考（无中间事件发出）。已知局限：Claude Code 在生成长回复时不发出中间 Hook 事件 |
-| **待论证 [V1]** | 60s 阈值是否合适？需要统计正常工作时两次 Hook 事件之间的间隔分布。如果 P99 间隔 > 60s，阈值需要调大。建议部署后收集数据验证 |
+| **Positive Evidence（全部满足）** | (1) PM2 runtime 进程 status=online; (2) 最后一个事件是结束型（Stop / PostToolUse / SessionStart 无后续 UserPromptSubmit）; (3) 无 pending PermissionRequest; (4) 无未结束的 PreToolUse |
+| **Counter Evidence** | (1) 有未结束的 PreToolUse → 应为 ACTIVE; (2) 有 pending PermissionRequest → 应为 WAITING_HUMAN; (3) 采集管线中断（source_health 有 stale 源）→ 考虑 UNKNOWN |
+| **Clear Condition** | 收到 UserPromptSubmit 或 PreToolUse → 转为 ACTIVE |
+| **Runtime Differences** | 无显著差异，两个 runtime 的 Stop hook 语义一致 |
+| **Freshness Requirement** | PM2 状态需在最近 30s 内采样。Hook 事件本身可以是旧的（idle 时本来就没有新事件），但 PM2 采样必须新鲜 |
+| **Confidence Downgrade** | 如果最后事件距今 < 120s 且是 Stop，降为 MEDIUM — 可能只是 turn 间隙，agent 即将开始下一个任务。超过 120s 无新事件提升为 HIGH |
+| **判定逻辑** | `pm2_online AND last_event_is_terminal AND no_running_tool AND no_pending_permission AND pm2_sample_fresh` |
+| **置信度** | MEDIUM（< 120s since last Stop）/ HIGH（>= 120s since last terminal event） |
+| **待验证 [V1]** | 120s 阈值是否合适？需要统计正常工作时 Stop 到下一个 UserPromptSubmit 的间隔分布。建议部署后收集数据验证 |
 | **Owner 看到** | 灰色指示灯 + "空闲" + 最后活动时间 |
 
 #### WAITING_HUMAN — 等待人工介入
 
 | 项 | 内容 |
 |---|------|
-| **含义** | Agent 等待 owner 操作才能继续（权限确认、回复等） |
-| **证据条件（满足任一）** | (1) 收到 PermissionRequest hook 且无后续 PostToolUse; (2) 收到 Notification hook 且 type=permission_prompt |
-| **判定逻辑** | `has_pending_permission_request OR has_permission_notification` |
-| **置信度** | HIGH — PermissionRequest hook 是运行时明确发出的等待信号 |
-| **已验证** | PermissionRequest hook 在 Claude Code 和 Codex 均可触发 ✅ (PR #19 验证) |
+| **含义** | Agent 等待 owner 操作才能继续（权限确认等） |
+| **Positive Evidence** | 收到 PermissionRequest hook 事件 |
+| **Counter Evidence** | (1) 收到 PermissionRequest 后紧接着收到 PostToolUse（说明权限已被处理，用户可能已经在终端确认）; (2) 收到 Stop（turn 结束，权限请求可能被跳过/拒绝） |
+| **Clear Condition — Claude Code** | 收到与该权限请求匹配的 PostToolUse（匹配条件：同 session_id + tool_name 匹配 + 时序在 PermissionRequest 之后）或 PostToolUseFailure，或 PermissionDenied hook，或 Stop |
+| **Clear Condition — Codex** | Codex PermissionRequest payload 没有 `tool_use_id`，无法精确匹配。清除条件：收到**任何** PostToolUse（同 session_id，时序在 PermissionRequest 之后）或 Stop。局限：如果 PostToolUse 是另一个工具的结果，可能误清除。因此 Codex 下 WAITING_HUMAN 的 confidence 始终不超过 MEDIUM |
+| **Runtime Differences** | Claude: PermissionRequest payload 含 tool_name + tool_input + permission_mode，可精确描述等待什么；清除逻辑可靠（HIGH）。Codex: payload 含 tool_name + tool_input（无 tool_use_id），清除逻辑是近似的（MEDIUM） |
+| **Freshness Requirement** | PermissionRequest 事件本身必须在最近 600s 内。超过 600s 未清除的 pending permission，降级为 UNKNOWN（可能是 hook 丢失了清除事件） |
+| **Confidence Downgrade** | Codex: 始终 MEDIUM（无精确匹配）。Claude: 默认 HIGH；如果 PermissionRequest 超过 300s 未清除降为 MEDIUM（异常长等待） |
+| **判定逻辑** | `has_uncleared_permission_request AND permission_age < 600s` |
+| **置信度** | Claude: HIGH（< 300s）/ MEDIUM（300-600s）; Codex: MEDIUM |
+| **已验证** | PermissionRequest hook 在 Claude Code ✅ 和 Codex ✅ 均可触发 (PR #19 验证)。Codex 缺少 tool_use_id 已确认 ✅ |
 | **Owner 看到** | 黄色指示灯 + "等待确认" + 具体等待什么（如 "等待 Bash 工具权限确认"） |
 
 #### POSSIBLY_STUCK — 可能卡住
@@ -261,77 +278,161 @@ Overview 是唯一入口页，回答 owner 的四个焦虑问题：
 | 项 | 内容 |
 |---|------|
 | **含义** | Agent 可能遇到问题，但尚不确定 |
-| **证据条件（全部满足）** | (1) PM2 runtime 进程 status=online; (2) 有未结束的工具调用（PreToolUse 无对应 PostToolUse），且持续时间超过该工具类型的 P95 阈值 × 2; (3) 期间无其他 Hook 事件 |
-| **判定逻辑** | `pm2_online AND running_tool_duration > tool_p95_threshold * 2 AND no_recent_other_events` |
-| **置信度** | MEDIUM — 某些工具确实可能运行很长时间（如大型 npm install、复杂 git 操作）。超过 P95×2 是统计异常，但不一定是卡住 |
-| **工具 P95 阈值初始值** | Bash: 120s, Read: 5s, Edit: 5s, Write: 5s, WebSearch: 30s, WebFetch: 30s, Agent: 300s。**待验证 [V2]**：这些初始值基于经验估计，需要从实际 PostToolUse duration_ms 数据统计确认 |
-| **Owner 看到** | 橙色指示灯 + "可能卡住" + 原因（如 "Bash 已运行 5 分钟，超过正常时长"） |
+| **Positive Evidence（满足任一场景）** | **场景 A — 工具卡住**：有未结束的工具调用，持续时间超过该工具类型 P95 阈值 × 2，且期间无其他 Hook 事件。**场景 B — 模型卡住**：收到 UserPromptSubmit 后超过 120s 无 PreToolUse 或 Stop（可能模型在生成极长回复或 API 挂起）。**场景 C — 主循环无进展**：PM2 online + 所有采集源在最近 300s 有数据，但最后的 active 信号（PreToolUse/UserPromptSubmit）距今超过 300s 且 turn 未结束（无 Stop） |
+| **Counter Evidence** | (1) 收到任何新的 Hook/OTel 事件 → 有进展，不卡; (2) 场景 B 中如果 OTel 有活跃的 `llm_request` span，说明模型确实在运行（只是慢），降低 stuck 可能性; (3) 工具是已知长时间工具（如 Agent subagent、大型 npm install）且未超过该工具的硬上限 |
+| **Clear Condition** | 收到任何新 Hook 事件（PostToolUse、Stop、PreToolUse 等） |
+| **Runtime Differences** | Claude: 场景 B 可通过 OTel `llm_request` span 区分"模型在运行"和"API 挂起"。Codex: OTel 有 `codex.api_request` 日志和 `codex.websocket_request` 日志，可检测 websocket 超时（success=false + duration > threshold） |
+| **Freshness Requirement** | PM2 采样必须在 30s 内。如果采集管线本身 stale，应判 UNKNOWN 而非 POSSIBLY_STUCK |
+| **Confidence Downgrade** | 默认 MEDIUM。如果有活跃 OTel span 证明模型/API 仍在通信 → 降为 LOW（可能只是慢，不是卡）。如果采集管线部分 stale → 标注 "部分数据源不可用，判断可能不准确" |
+| **工具 P95 阈值初始值** | Bash: 120s, Read: 5s, Edit: 5s, Write: 5s, WebSearch: 30s, WebFetch: 30s, Agent: 300s。**待验证 [V2]**：需从实际 PostToolUse duration_ms 数据统计确认 |
+| **判定逻辑** | `pm2_online AND ingestion_fresh AND (scenario_a OR scenario_b OR scenario_c) AND no_counter_evidence` |
+| **置信度** | MEDIUM（默认）/ LOW（有活跃 OTel span 或已知长时间工具） |
+| **Owner 看到** | 橙色指示灯 + "可能卡住" + 原因（如 "Bash 已运行 5 分钟，超过正常时长"、"收到消息后 2 分钟无响应"） |
 
 #### STUCK — 已卡住
 
 | 项 | 内容 |
 |---|------|
 | **含义** | Agent 大概率遇到了问题，需要人工关注 |
-| **证据条件（全部满足）** | (1) 已处于 POSSIBLY_STUCK 状态超过 5 分钟; (2) 期间仍无新 Hook/OTel 事件 |
-| **判定逻辑** | `was_possibly_stuck_for >= 300s AND still_no_new_events` |
-| **置信度** | HIGH — 在运行中的工具超过 P95×2 + 额外 5 分钟无任何事件，极大概率是卡住 |
-| **Owner 看到** | 红色指示灯 + "已卡住" + 原因 + 建议动作（如 "建议检查终端或重启 session"） |
-| **待论证 [V3]** | STUCK 状态下是否提供自助操作？如"重启 session"按钮。这涉及 Dashboard 的只读原则（P1 方案是只读，但 Howard 曾讨论过有限的控制能力）。需要 Howard 决策 |
+| **Positive Evidence（全部满足）** | (1) 已处于 POSSIBLY_STUCK 状态超过 300s; (2) 期间无任何新 Hook/OTel 事件; (3) PM2 进程仍 online（如果已 crash 则是 OFFLINE 不是 STUCK）; (4) 采集管线仍 fresh（确保不是采集中断导致的假象） |
+| **Counter Evidence** | (1) 收到任何新事件 → 立即清除 STUCK; (2) 采集管线变 stale → 应降级为 UNKNOWN; (3) PM2 进程 crash → 应转为 OFFLINE |
+| **Clear Condition** | 收到任何新 Hook/OTel 事件，或 PM2 进程状态变化 |
+| **Runtime Differences** | 无显著差异。两个 runtime 的 STUCK 判定逻辑相同 |
+| **Freshness Requirement** | PM2 + 至少一个采集源（hook 或 OTel）必须在 30s 内有新数据或已确认 fresh。如果所有采集源都 stale，不能判 STUCK（应为 UNKNOWN） |
+| **Confidence Downgrade** | 默认 MEDIUM（不使用 HIGH，因为"无事件"是 absence of evidence，不是 evidence of absence。可能有 hook 丢失、OTel 发送延迟等原因）。仅当满足额外条件时提升为 HIGH：POSSIBLY_STUCK 超过 600s + PM2 进程 CPU 为 0% + 所有采集源 confirmed fresh |
+| **判定逻辑** | `was_possibly_stuck_for >= 300s AND no_new_events AND pm2_online AND ingestion_fresh` |
+| **置信度** | MEDIUM（默认）/ HIGH（600s + CPU=0 + all sources fresh） |
+| **Owner 看到** | 红色指示灯 + "已卡住" + 原因 + 建议动作（如 "Bash 已运行 10 分钟无响应，建议检查终端"） |
+| **待 Howard 决策 [D3]** | STUCK 状态下是否提供自助操作（如"重启 session"）？涉及只读原则 |
 
 #### OFFLINE — 离线
 
 | 项 | 内容 |
 |---|------|
 | **含义** | Agent 进程未运行 |
-| **证据条件** | PM2 runtime 进程 status ≠ online（stopped / errored / 不存在） |
-| **判定逻辑** | `NOT pm2_online` |
-| **置信度** | HIGH — PM2 状态是权威来源 |
-| **Owner 看到** | 灰色/红色指示灯 + "离线" + PM2 状态详情 |
+| **Positive Evidence** | PM2 runtime 进程 status ≠ online（stopped / errored / 不存在） |
+| **Counter Evidence** | 无 — PM2 状态是权威来源 |
+| **Clear Condition** | PM2 进程恢复为 online |
+| **Runtime Differences** | Claude: PM2 进程名通常为 `claude-code` 或自定义名。Codex: PM2 进程名通常为 `codex`。Dashboard 需配置当前 runtime 的 PM2 进程名 |
+| **Freshness Requirement** | PM2 jlist 采样必须在 30s 内 |
+| **Confidence Downgrade** | PM2 jlist 调用失败 → UNKNOWN（非 OFFLINE） |
+| **判定逻辑** | `pm2_status != 'online'` |
+| **置信度** | HIGH |
+| **Owner 看到** | 灰色/红色指示灯 + "离线" + PM2 状态详情（如 "进程 errored，已重启 3 次"） |
 
 #### UNKNOWN — 无法判定
 
 | 项 | 内容 |
 |---|------|
-| **含义** | 数据源中断，无法确定 agent 状态 |
-| **证据条件（满足任一）** | (1) PM2 jlist 调用失败; (2) Dashboard 自身采集管线中断（如 Hook handler 未收到任何事件超过阈值，且 PM2 显示进程在线） |
-| **判定逻辑** | `pm2_unavailable OR (pm2_online AND no_events_for > threshold AND ingestion_stale)` |
+| **含义** | 数据源中断或矛盾，无法确定 agent 状态 |
+| **Positive Evidence（满足任一）** | (1) PM2 jlist 调用失败; (2) PM2 online 但所有采集源 stale > 300s（hook + OTel 均无数据，无法判定 active/idle/stuck）; (3) ACTIVE 的运行中工具证据超过 300s 无更新（可能 hook 丢失）; (4) WAITING_HUMAN 的 pending permission 超过 600s 无清除 |
+| **Counter Evidence** | 收到任何新的 fresh 数据 → 重新评估为其他状态 |
+| **Clear Condition** | 任何采集源恢复 fresh 状态，或 PM2 jlist 恢复正常 |
+| **Runtime Differences** | 无差异 |
+| **Freshness Requirement** | N/A（UNKNOWN 本身就是对 freshness 不足的表达） |
+| **Confidence Downgrade** | N/A |
+| **判定逻辑** | `pm2_unavailable OR (pm2_online AND all_sources_stale) OR evidence_too_old` |
 | **置信度** | N/A — 承认不知道比错误判定更可靠 |
-| **Owner 看到** | 灰色问号 + "状态不确定" + 原因（如 "遥测数据中断，请检查系统"） |
+| **Owner 看到** | 灰色问号 + "状态不确定" + 原因（如 "遥测数据中断 5 分钟，无法确认当前状态"） |
 
 ### 4.3 状态判定引擎伪代码
 
 ```javascript
 function deriveAgentState(signals) {
-  const { pm2Status, lastEventAge, runningTool, pendingPermission, 
-          ingestionFresh, possiblyStuckSince } = signals;
+  const { pm2Status, pm2SampleAge, pm2Cpu,
+          runningTool, openTurn, pendingPermission,
+          lastEventAge, lastEventType, ingestionFresh,
+          activeOtelSpan, possiblyStuckSince, runtime } = signals;
 
   // 1. PM2 不可用 → UNKNOWN
-  if (pm2Status === null) return { state: 'UNKNOWN', reason: 'PM2 unavailable' };
+  if (pm2Status === null || pm2SampleAge > 30) {
+    return { state: 'UNKNOWN', confidence: 'N/A', reason: 'PM2 data unavailable' };
+  }
 
   // 2. 进程不在线 → OFFLINE
-  if (pm2Status !== 'online') return { state: 'OFFLINE', reason: `PM2 status: ${pm2Status}` };
+  if (pm2Status !== 'online') {
+    return { state: 'OFFLINE', confidence: 'HIGH', reason: `PM2 status: ${pm2Status}` };
+  }
 
-  // 3. 等待权限 → WAITING_HUMAN
-  if (pendingPermission) return { state: 'WAITING_HUMAN', reason: `Awaiting: ${pendingPermission.tool_name}` };
+  // 3. 等待权限（已验证的 pending permission）
+  if (pendingPermission && pendingPermission.age < 600) {
+    const confidence = runtime === 'codex' ? 'MEDIUM'
+                     : pendingPermission.age < 300 ? 'HIGH' : 'MEDIUM';
+    return { state: 'WAITING_HUMAN', confidence,
+             reason: `Awaiting: ${pendingPermission.tool_name}` };
+  }
+  // permission 超过 600s 未清除 → 证据过期，降级为 UNKNOWN
+  if (pendingPermission && pendingPermission.age >= 600) {
+    return { state: 'UNKNOWN', confidence: 'N/A',
+             reason: 'Permission request stale (>10min), may have missed clear event' };
+  }
 
-  // 4. 有运行中的工具，超过阈值 → STUCK / POSSIBLY_STUCK
-  if (runningTool && runningTool.duration > runningTool.p95Threshold * 2) {
+  // 4. 检查 STUCK / POSSIBLY_STUCK（多场景）
+  const stuckScenario = detectStuckScenario(signals);
+  if (stuckScenario) {
     if (possiblyStuckSince && Date.now() - possiblyStuckSince > 300_000) {
-      return { state: 'STUCK', reason: `${runningTool.name} running ${fmt(runningTool.duration)}` };
+      const confidence = (Date.now() - possiblyStuckSince > 600_000 
+                          && pm2Cpu === 0 && ingestionFresh) ? 'HIGH' : 'MEDIUM';
+      return { state: 'STUCK', confidence, reason: stuckScenario.reason };
     }
-    return { state: 'POSSIBLY_STUCK', reason: `${runningTool.name} running ${fmt(runningTool.duration)}` };
+    // 有活跃 OTel span 说明模型/API 仍在通信 → 降低 confidence
+    const confidence = activeOtelSpan ? 'LOW' : 'MEDIUM';
+    return { state: 'POSSIBLY_STUCK', confidence, reason: stuckScenario.reason };
   }
 
-  // 5. 采集管线中断 → UNKNOWN
+  // 5. 采集管线全部 stale + PM2 online → UNKNOWN
   if (!ingestionFresh && lastEventAge > 300) {
-    return { state: 'UNKNOWN', reason: 'Telemetry stale, unable to determine state' };
+    return { state: 'UNKNOWN', confidence: 'N/A',
+             reason: 'All telemetry stale, unable to determine state' };
   }
 
-  // 6. 有近期事件 → ACTIVE
-  if (lastEventAge < 60) return { state: 'ACTIVE', reason: 'Recent activity detected' };
+  // 6. 有运行中的工具或 open turn → ACTIVE
+  if (runningTool) {
+    return { state: 'ACTIVE', confidence: 'HIGH',
+             reason: `Running: ${runningTool.name} (${fmt(runningTool.duration)})` };
+  }
+  if (openTurn) {
+    // open turn 但无工具 → 可能在思考/生成
+    return { state: 'ACTIVE', confidence: 'MEDIUM',
+             reason: 'Processing prompt (no tool call yet)' };
+  }
 
-  // 7. 无近期事件，无运行中工具 → IDLE
-  return { state: 'IDLE', reason: `Last activity ${fmt(lastEventAge)} ago` };
+  // 7. 运行中工具的证据超过 300s → 可能 hook 丢失
+  if (runningTool && runningTool.evidenceAge > 300) {
+    return { state: 'UNKNOWN', confidence: 'N/A',
+             reason: 'Running tool evidence stale, hook may have been lost' };
+  }
+
+  // 8. 最后事件是结束型，无 pending 状态 → IDLE
+  const isTerminalEvent = ['stop', 'turn_end', 'tool_end', 'session_start'].includes(lastEventType);
+  if (isTerminalEvent || lastEventAge >= 120) {
+    const confidence = lastEventAge >= 120 ? 'HIGH' : 'MEDIUM';
+    return { state: 'IDLE', confidence, reason: `Last activity ${fmt(lastEventAge)} ago` };
+  }
+
+  // 9. 短暂的 turn 间隙 → IDLE (MEDIUM)
+  return { state: 'IDLE', confidence: 'MEDIUM',
+           reason: `Last event: ${lastEventType}, ${fmt(lastEventAge)} ago` };
+}
+
+function detectStuckScenario(signals) {
+  const { runningTool, openTurn, lastEventAge } = signals;
+  // A: 工具卡住
+  if (runningTool && runningTool.duration > runningTool.p95Threshold * 2 && lastEventAge > 60) {
+    return { scenario: 'tool_stuck',
+             reason: `${runningTool.name} running ${fmt(runningTool.duration)}, exceeds expected duration` };
+  }
+  // B: 模型卡住（prompt 后 120s 无工具/stop）
+  if (openTurn && openTurn.age > 120 && !runningTool) {
+    return { scenario: 'model_stuck',
+             reason: `Prompt received ${fmt(openTurn.age)} ago, no response events` };
+  }
+  // C: 主循环无进展（turn 未结束但 300s 无活动）
+  if (openTurn && lastEventAge > 300) {
+    return { scenario: 'loop_stuck',
+             reason: `No progress for ${fmt(lastEventAge)}, turn still open` };
+  }
+  return null;
 }
 ```
 
@@ -434,7 +535,9 @@ function deriveAgentState(signals) {
 
 ### 5.3 Hook Handler 设计
 
-Dashboard 注册自己的 hook handler 到 settings.json，作为 command 类型 hook：
+Dashboard 注册自己的 hook handler，但 Claude Code 和 Codex 使用不同的配置文件和 schema：
+
+**Claude Code**（`~/.claude/settings.json` → `hooks` 字段，支持 project/local/user 三层）：
 
 ```json
 {
@@ -443,18 +546,39 @@ Dashboard 注册自己的 hook handler 到 settings.json，作为 command 类型
     "PostToolUse": [{ "type": "command", "command": "node ~/zylos/components/dashboard/lib/hook-ingest.js" }],
     "PostToolUseFailure": [{ "type": "command", "command": "node ~/zylos/components/dashboard/lib/hook-ingest.js" }],
     "Stop": [{ "type": "command", "command": "node ~/zylos/components/dashboard/lib/hook-ingest.js" }],
+    "StopFailure": [{ "type": "command", "command": "node ~/zylos/components/dashboard/lib/hook-ingest.js" }],
     "SessionStart": [{ "type": "command", "command": "node ~/zylos/components/dashboard/lib/hook-ingest.js" }],
     "SessionEnd": [{ "type": "command", "command": "node ~/zylos/components/dashboard/lib/hook-ingest.js" }],
     "PermissionRequest": [{ "type": "command", "command": "node ~/zylos/components/dashboard/lib/hook-ingest.js" }],
+    "PermissionDenied": [{ "type": "command", "command": "node ~/zylos/components/dashboard/lib/hook-ingest.js" }],
     "SubagentStart": [{ "type": "command", "command": "node ~/zylos/components/dashboard/lib/hook-ingest.js" }],
     "SubagentStop": [{ "type": "command", "command": "node ~/zylos/components/dashboard/lib/hook-ingest.js" }],
     "PostCompact": [{ "type": "command", "command": "node ~/zylos/components/dashboard/lib/hook-ingest.js" }],
     "UserPromptSubmit": [{ "type": "command", "command": "node ~/zylos/components/dashboard/lib/hook-ingest.js" }],
-    "Notification": [{ "type": "command", "command": "node ~/zylos/components/dashboard/lib/hook-ingest.js" }],
-    "StopFailure": [{ "type": "command", "command": "node ~/zylos/components/dashboard/lib/hook-ingest.js" }]
+    "Notification": [{ "type": "command", "command": "node ~/zylos/components/dashboard/lib/hook-ingest.js" }]
   }
 }
 ```
+
+**Codex**（`~/.codex/hooks.json` 或 `<repo>/.codex/hooks.json`，不支持 `type` 字段——只支持 command）：
+
+```json
+[
+  { "event": "SessionStart", "command": "node ~/zylos/components/dashboard/lib/hook-ingest.js" },
+  { "event": "UserPromptSubmit", "command": "node ~/zylos/components/dashboard/lib/hook-ingest.js" },
+  { "event": "PreToolUse", "command": "node ~/zylos/components/dashboard/lib/hook-ingest.js" },
+  { "event": "PostToolUse", "command": "node ~/zylos/components/dashboard/lib/hook-ingest.js" },
+  { "event": "PermissionRequest", "command": "node ~/zylos/components/dashboard/lib/hook-ingest.js" },
+  { "event": "Stop", "command": "node ~/zylos/components/dashboard/lib/hook-ingest.js" },
+  { "event": "PreCompact", "command": "node ~/zylos/components/dashboard/lib/hook-ingest.js" },
+  { "event": "PostCompact", "command": "node ~/zylos/components/dashboard/lib/hook-ingest.js" }
+]
+```
+
+**安装差异**：Dashboard 的 installer 必须分两条路径：
+- `installClaudeHooks()`: 读取/合并 `~/.claude/settings.json` 的 hooks 字段，保留用户已有 hook
+- `installCodexHooks()`: 读取/合并 `~/.codex/hooks.json`（数组格式），保留用户已有 hook
+- Runtime 检测：通过当前 PM2 进程名或 `.env` 中的 `ZYLOS_RUNTIME` 变量确定
 
 `hook-ingest.js` 逻辑：
 1. 从 stdin 读取 JSON payload
