@@ -231,7 +231,7 @@ function renderHealth() {
   const total = services.length || Number(pm2.total) || 0;
   const cpu = system.cpu?.percent ?? system.cpu_pct ?? system.cpu;
   const memory = system.memory?.used_bytes ?? system.mem_used_bytes ?? system.memory?.used ?? system.memory;
-  const disk = system.disk?.used_pct ?? system.disk_pct ?? system.disk?.percent ?? system.disk;
+  const disk = system.disk?.used_pct ?? system.disk_used_pct ?? system.disk_pct ?? system.disk?.percent ?? system.disk;
 
   $('#system-cpu').textContent = formatPercent(cpu);
   $('#system-memory').textContent = typeof memory === 'number' && memory > 100 ? formatBytes(memory) : formatPercent(memory);
