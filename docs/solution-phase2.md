@@ -60,7 +60,7 @@ Overview 是唯一入口页，回答 owner 的四个焦虑问题：
 │  │ Context: 45% ████░░░░░  │      │  │ PM2: 6/6 running       │ │
 │  │ Rate 5h: 72% ████████░  │      │  │ CPU: 23%  Mem: 4.2GB   │ │
 │  │ Rate 7d: 31% ███░░░░░░  │      │  │ Disk: 58% (42GB free)  │ │
-│  │ Today: $2.14 (actual)   │      │  │ C4: connected (3s ago)  │ │
+│  │ Today: $2.14 (actual)   │      │  │ C4: active (3s ago)  │ │
 │  │ Cache: 67% hit rate     │      │  │ OTel: receiving (8s)    │ │
 │  └─────────────────────────┘      │  └────────────────────────┘ │
 ├─────────────────────────────────────────────────────────────────┤
