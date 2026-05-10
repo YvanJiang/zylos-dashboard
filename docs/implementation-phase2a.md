@@ -114,15 +114,7 @@ export class Store {
 - **WAL mode**: `this.db.pragma('journal_mode = WAL')` in constructor.
 - **Prepared statements**: Cache via `this.db.prepare()` for all write paths. Store as instance properties (e.g. `this._insertEvent = this.db.prepare(...)`).
 - **Schema migrations**: `schema_migrations` table checked on startup. Current version = 1 (initial schema). `migrate()` runs all unapplied migrations in a transaction.
-- **event_seq**: `runtime_events` has `event_seq INTEGER` column. Auto-populated via trigger or application-side (INSERT returns lastInsertRowid for the id, but event_seq should be a separate AUTOINCREMENT or manually managed sequence). Implementation: use a ROWID alias or a separate `INTEGER PRIMARY KEY AUTOINCREMENT` column. Since `id` is TEXT (UUID), add `event_seq INTEGER` with a trigger:
-  ```sql
-  -- event_seq populated on insert via application code:
-  -- SELECT COALESCE(MAX(event_seq), 0) + 1 FROM runtime_events
-  -- Wrapped in the same transaction as the INSERT
-  ```
-  Alternative (simpler): use ROWID directly as event_seq, since SQLite ROWIDs are monotonically increasing for a given table. Expose via `SELECT rowid AS event_seq, * FROM runtime_events`. This avoids a separate column.
-
-  **Decision**: Use ROWID as event_seq. No extra column needed. `eventsSince(cursor)` queries `WHERE rowid > ?`. Snapshot stores `last_progress_cursor` = max rowid at snapshot time.
+- **event_seq**: Physical `event_seq INTEGER NOT NULL` column in `runtime_events` (required by PR #22 T-STORE-01 schema contract). Application-assigned on insert: within a transaction, `SELECT COALESCE(MAX(event_seq), 0) + 1 FROM runtime_events`, then `INSERT` with that value. This guarantees monotonically increasing sequence even across restarts. `eventsSince(cursor)` queries `WHERE event_seq > ?`. Snapshot stores `last_progress_cursor` = max event_seq at snapshot time. The schema adds `CREATE INDEX idx_events_seq ON runtime_events(event_seq)` for efficient cursor-based replay.
 
 - **Failure behavior**: All write methods catch `SQLITE_CONSTRAINT` for dedup (expected for INSERT OR IGNORE). Other errors propagate to caller. No silent swallowing.
 - **Retention cleanup**: `deleteEventsOlderThan(30)`, `aggregateDaily(90)` + `deleteMetricsOlderThan(90)`, `deleteFactsOlderThan(365)` — called from a periodic timer in index.js (once per hour).
@@ -159,8 +151,11 @@ CREATE INDEX idx_snapshots_latest ON state_snapshots(runtime, session_id, snapsh
 // src/lib/sanitizer.js
 export class Sanitizer {
   sanitizeHookPayload(hookEventName, rawPayload)
-  // Returns: { tool_name, tool_use_id, duration_ms, summary, session_id, metadata }
+  // Returns: { session_id, duration_ms, summary, metadata }
+  // metadata contains: { tool_name, tool_use_id } (for tool events), plus any other safe fields
   // Strips: tool_input, tool_response, prompt, full paths, credentials
+  // NOTE: tool_name and tool_use_id live inside metadata, NOT as top-level fields.
+  //       This matches the CanonicalEvent schema and state engine's access pattern.
 
   sanitizePath(fullPath)
   // "/home/howard/zylos/core/lib/startup.js" → "lib/startup.js"
@@ -222,10 +217,13 @@ export class IngestHandler {
   1. Extract `ingest_id`, `hook_event_name`, remainder from body
   2. Check `hook_event_name` against allowed set (`PreToolUse`, `PostToolUse`, `UserPromptSubmit`, `Stop`, `PermissionRequest`). Unknown → 200 OK (don't break hook-ingest.js) + increment ignored counter in source_health
   3. `sanitizer.sanitizeHookPayload(hookEventName, body)` → canonical fields
-  4. Build CanonicalEvent: `{ id: uuid(), ingest_id, timestamp, runtime, session_id, event_type, category, summary, duration_ms, metadata, source: 'hook', confidence: 'actual' }`
+  4. Build CanonicalEvent: `{ id: uuid(), ingest_id, timestamp, runtime, session_id, event_type, category, summary, duration_ms, metadata: sanitized.metadata, source: 'hook', confidence: 'actual' }`. Note: `tool_name` and `tool_use_id` are inside `metadata` (placed there by the sanitizer), matching the state engine's `event.metadata.tool_name` / `event.metadata.tool_use_id` access pattern.
   5. `store.insertEvent(event)` — INSERT OR IGNORE handles dedup
   6. `stateEngine.onEvent(event)` — update in-memory state
-  7. `store.upsertSourceHealth('hook_handler', 'collector_liveness', 'healthy', { last_success: now })` or `store.upsertSourceHealth('hook_events', 'runtime_progress', 'healthy', { last_success: now })`
+  7. Update **both** source_health domains (not one or the other):
+     - `store.upsertSourceHealth('hook_handler', 'collector_liveness', 'healthy', { last_success: now })` — proves the hook ingestion pipeline is alive
+     - `store.upsertSourceHealth('hook_events', 'runtime_progress', 'healthy', { last_success: now })` — proves runtime is sending events
+     Both must be updated on every successful ingest. Collector liveness requires `hook_handler` fresh; runtime progress requires `hook_events` fresh. Updating only one would create a gap: a healthy event stream could leave collector liveness stale (blocking STUCK confirmation) or vice versa.
   8. Return 200 `{ ok: true }`
 - **event_type mapping**:
   - `PreToolUse` → `pre_tool_use`, category: `tool`
@@ -321,19 +319,25 @@ echo '<json>' | node ~/zylos/components/dashboard/lib/hook-ingest.js
 ```javascript
 // src/lib/spool-drainer.js
 export class SpoolDrainer {
-  constructor(store, sanitizer, stateEngine, config)
+  constructor(store, sanitizer, config)
 
-  drain()
-  // Rename spool file → process line by line → INSERT OR IGNORE → delete processed file
+  drainToDb()
+  // DB-only: rename spool file → parse → sanitize → store.insertEvent() → delete processed file
+  // Does NOT call stateEngine. Used at startup before StateEngine exists.
   // Returns: { processed: number, duplicates: number, errors: number }
 
-  startPeriodicDrain(intervalMs)  // default 30s
+  drainLive(stateEngine)
+  // Full path: same as drainToDb() but also calls stateEngine.onEvent() for each event.
+  // Used by periodic timer after StateEngine is initialized.
+
+  startPeriodicDrain(stateEngine, intervalMs)  // default 30s
   stopPeriodicDrain()
 }
 ```
 
 #### Implementation Details
 
+- **Two drain modes**: `drainToDb()` writes events to SQLite only (no state engine notification). `drainLive(stateEngine)` does the same plus notifies the state engine. This resolves the startup ordering: spool is drained to DB first, then StateEngine.initialize() replays those events from DB via `eventsSince(cursor)`. No double-apply: StateEngine reads from DB using its cursor, which covers all events regardless of how they were inserted.
 - **Atomic rename**: Before processing, rename `hook-events.jsonl` to `hook-events.processing.jsonl`. This ensures new spool writes go to a fresh file. If rename fails (no file) → nothing to drain.
 - **Line-by-line processing**: Read the renamed file, split by newlines, parse each line as JSON. For each:
   1. Extract `ingest_id`, `hook_event_name`, `data`
@@ -341,11 +345,11 @@ export class SpoolDrainer {
   3. `sanitizer.sanitizeHookPayload(hookEventName, data)` → canonical fields
   4. Build CanonicalEvent (same as IngestHandler)
   5. `store.insertEvent(event)` — INSERT OR IGNORE deduplicates against POST-delivered events
-  6. `stateEngine.onEvent(event)` — update in-memory state
+  6. If `drainLive`: `stateEngine.onEvent(event)` — update in-memory state
 - **Cleanup**: After processing, delete the `.processing` file. If errors during processing, keep the file and log errors (don't lose data).
-- **Startup drain**: Called once in `index.js` after store initialization and before accepting HTTP requests. This ensures any accumulated spool events are replayed into the DB before the state engine starts deriving state.
-- **Periodic drain**: `setInterval(drain, 30_000)`. Catches edge case where spool accumulated while dashboard was running but POST failed transiently.
-- **source_health update**: After successful drain, update `hook_handler` source_health to `healthy` if it was `degraded`.
+- **Startup drain**: `drainToDb()` called once in `index.js` after store initialization but BEFORE StateEngine construction. Events land in DB. StateEngine.initialize() then replays them from DB as part of snapshot+replay (AC-1). This avoids the circular dependency: SpoolDrainer does not need StateEngine at startup.
+- **Periodic drain**: `startPeriodicDrain(stateEngine, 30_000)` — uses `drainLive()` which notifies the already-initialized state engine.
+- **source_health update**: After successful drain (either mode), update `hook_handler` source_health to `healthy` if it was `degraded`. Also update `hook_events` runtime_progress status.
 - **Failure behavior**: Individual line parse failures are logged and skipped (don't abort the entire drain). Final status includes error count.
 
 ---
@@ -463,9 +467,6 @@ this._state = {
   // PM2 cache (from collector)
   pm2: null,  // latest PM2 data
 
-  // AM status (from agent-status.json read)
-  amStatus: null,  // 'online' | 'offline' | null
-
   // Last snapshot cursor
   lastSnapshotCursor: 0,
 };
@@ -538,8 +539,8 @@ Implements §4.3 pseudocode from the spec. Key signals assembled from in-memory 
 ```javascript
 _deriveState() {
   const signals = {
-    amAvailable: this._state.amStatus !== null,
-    amStatus: this._state.amStatus,
+    amAvailable: false,   // Phase 2a: PM2-only OFFLINE detection (see "OFFLINE Detection" section)
+    amStatus: null,
     pm2Status: this._state.pm2?.runtimeProcess?.pm2_env?.status ?? null,
     pm2SampleAge: this._state.pm2 ? (Date.now() - this._state.pm2.collectedAt) / 1000 : Infinity,
     pm2Cpu: this._state.pm2?.runtimeProcess?.monit?.cpu ?? null,
@@ -579,23 +580,17 @@ _isCollectorLivenessFresh() {
 }
 ```
 
-#### AM Status Reading
+#### OFFLINE Detection — PM2 Primary
+
+Phase 2a OFFLINE detection uses **PM2 as the sole primary source**. PM2 `jlist` is already collected by PM2Collector and provides authoritative process-level evidence (status, uptime, restart count). This aligns with the dashboard-owned observability principle (P1): no dependency on external AM status files.
+
+**Spec D7 note**: The product spec (§4.2 OFFLINE, D7) designates AM `agent-status.json` as preferred OFFLINE source with PM2 as fallback. Jinglever's review raises a valid concern that this creates a product dependency on AM, contradicting P1. **This implementation chooses PM2-only for Phase 2a.** If Howard wants to reinstate AM as preferred source per D7, the state engine can add `_readAMStatus()` as a supplementary signal without structural changes — the `deriveAgentState()` function already accepts `amAvailable` and `amStatus` parameters.
 
 ```javascript
-_readAMStatus() {
-  // Read ~/zylos/activity-monitor/data/agent-status.json
-  // D7: AM agent-status.json is preferred for OFFLINE detection
-  try {
-    const raw = fs.readFileSync(amStatusPath, 'utf8');
-    const data = JSON.parse(raw);
-    this._state.amStatus = data.status; // 'online' | 'offline' | ...
-  } catch {
-    this._state.amStatus = null; // AM not available
-  }
-}
+// PM2-only OFFLINE in _deriveState():
+// amAvailable = false, amStatus = null (AM not consulted)
+// OFFLINE = pm2Status !== 'online'
 ```
-
-Called periodically (every 15s, aligned with PM2 collector).
 
 #### Restart Recovery (AC-1)
 
@@ -913,22 +908,22 @@ export class HookInstaller {
 1. loadConfig()
 2. new Store(dbPath) → migrate() → WAL enabled
 3. new Sanitizer()
-4. new SpoolDrainer(store, sanitizer) → drain() [process accumulated spool]
+4. new SpoolDrainer(store, sanitizer) → drainToDb() [DB-only: spool events into runtime_events, no state engine needed]
 5. new PM2Collector(store) → collect() [initial PM2 snapshot]
 6. new SystemCollector(store) → collect() [initial system metrics]
 7. new OTelCollector(store)
-8. new StateEngine(store, collectors) → initialize() [snapshot restore + replay]
+8. new StateEngine(store, collectors) → initialize() [snapshot restore + replay from DB — includes spool-drained events from step 4]
 9. new MetricResolver(store, collectors)
 10. new IngestHandler(store, sanitizer, stateEngine)
 11. Create HTTP server, mount routes
 12. Start periodic collectors (PM2: 15s, System: 30s, OTel: 10s)
 13. Start state snapshot timer (30s)
-14. Start spool periodic drain timer (30s)
+14. spoolDrainer.startPeriodicDrain(stateEngine, 30_000) [live mode: subsequent drains notify state engine]
 15. Start data retention cleanup timer (1h)
 16. server.listen(config.port)
 ```
 
-Order matters: spool drain BEFORE state engine initialize (so replayed spool events are in the DB for snapshot+replay). State engine initialize BEFORE accepting HTTP requests (so first `/api/state` has valid data).
+Order matters: spool `drainToDb()` BEFORE state engine construction (so spool events are in the DB for snapshot+replay — step 4 before step 8). State engine `initialize()` reads from DB and replays all events since last snapshot, including those just drained from spool. No double-apply: the state engine uses its cursor, and spool drain only writes to DB without touching state. After state engine is ready, periodic drain switches to `drainLive()` mode which notifies the state engine directly (step 14). State engine initialize BEFORE accepting HTTP requests (so first `/api/state` has valid data).
 
 ---
 
