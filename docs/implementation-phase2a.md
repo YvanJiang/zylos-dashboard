@@ -943,9 +943,10 @@ export class HookInstaller {
 
 - **Claude**: Read `~/.claude/settings.json`. Merge into `hooks` object — for each of the 5 event names, append the dashboard command if not already present. Preserve existing user hooks.
 - **Codex**: Read `~/.codex/hooks.json` (array format). Append entries for each of the 5 events if not already present. Preserve existing entries.
-- **Uninstall**: Remove only entries matching the dashboard command pattern. Don't touch other hooks.
+- **Uninstall**: Remove only entries whose command path matches the dashboard script pattern (`components/dashboard/lib/hook-ingest.js`). Never touch core skill hooks, other component hooks, or user-created hooks.
+- **Safety boundary**: The HookInstaller operates only on its own entries, identified by script path. It must not read, modify, or remove any entry that does not match the dashboard's own script path. This ensures coexistence with zylos-core's `sync-settings-hooks.js` (which preserves non-core entries), other components, and user customizations. If the dashboard is later absorbed into zylos-core, its hooks migrate naturally into the template and `sync-settings-hooks.js` management.
 - **Detection**: Read `process.env.ZYLOS_RUNTIME` (canonical interface). Default to `'claude'` if unset. No PM2 fallback — PM2 manages service modules, not the agent runtime.
-- **Idempotent**: Running install twice produces the same result (no duplicate entries).
+- **Idempotent**: Running install twice produces the same result (no duplicate entries). Running uninstall twice produces the same result (no errors on missing entries).
 
 ---
 
