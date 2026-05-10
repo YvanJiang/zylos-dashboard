@@ -830,9 +830,9 @@ const METRIC_CHAINS = {
 | `GET /api/health` | store.getSourceHealth() + two-domain formatting | §2.7 |
 | `GET /api/metrics/:name` | MetricResolver.resolve() | §2.8 |
 
-#### Existing Routes (unchanged)
+#### Baseline Routes (from cleanup skeleton)
 
-`/api/summary`, `/api/config`, `/api/stream` — Phase 1 routes remain functional. Phase 2a adds new routes alongside them.
+`/api/health` — retained from PR #24 cleanup. Phase 2a adds new routes on top of the skeleton server (auth + static serving + health).
 
 #### Base-Path Isolation for `/api/ingest`
 
@@ -878,37 +878,44 @@ Phase 2a delivers Overview blocks ①②③ only (Live Runtime State, Capacity &
 
 #### 2.10.1 Visual Design System — Light Mode (ref: hxa-connect-web)
 
-hxa-connect-web 目前只有 dark mode。基于其设计体系（Inter 字体、12px 圆角、glass-card 布局、teal/indigo 强调色）推导 light mode 方案。
+基于 hxa-connect-web 最新 main（PR #59, commit 13994b5）的 light mode CSS 变量。
 
-**Color Palette (Light Mode)**
+**Color Palette (Light Mode) — 源自 hxa-connect-web `globals.css`**
 
 | Token | Value | Usage |
 |-------|-------|-------|
-| `--bg` | `#f8fafc` | Page background |
-| `--bg-card` | `#ffffff` | Card background |
-| `--bg-card-hover` | `#f1f5f9` | Card hover |
-| `--text` | `#0f172a` | Primary text |
-| `--text-dim` | `#64748b` | Secondary/muted text |
-| `--text-label` | `#94a3b8` | Labels, captions |
-| `--accent` | `#0d9488` | Primary accent (teal-600, darker than dark mode's #2dd4bf for contrast) |
-| `--accent-light` | `#ccfbf1` | Accent background tint |
-| `--purple` | `#6366f1` | Secondary accent (indigo-500) |
-| `--border` | `#e2e8f0` | Card/section borders |
-| `--border-focus` | `#0d9488` | Focus ring |
-| `--shadow` | `0 1px 3px rgba(0,0,0,0.08)` | Card shadow |
-| `--shadow-hover` | `0 4px 12px rgba(0,0,0,0.1)` | Card hover shadow |
+| `--bg` | `#f7faf9` | Page background |
+| `--bg-secondary` | `rgba(255, 255, 255, 0.76)` | Secondary surface (frosted) |
+| `--bg-card` | `rgba(255, 255, 255, 0.88)` | Card background |
+| `--bg-elevated` | `#ffffff` | Elevated surfaces |
+| `--bg-code` | `rgba(241, 245, 249, 0.9)` | Code block background |
+| `--text` | `#101827` | Primary text |
+| `--text-dim` | `#526170` | Secondary text |
+| `--text-muted` | `#7a8794` | Tertiary text (labels, captions) |
+| `--accent` | `#0d9488` | Primary accent (teal) |
+| `--accent-dim` | `#ccfbf1` | Accent background tint |
+| `--accent-hover` | `#0f766e` | Accent hover |
+| `--purple` | `#6366f1` | Secondary accent (indigo) |
+| `--green` | `#059669` | Success accent |
+| `--border` | `rgba(15, 118, 110, 0.16)` | Borders (teal-tinted) |
+| `--border-focus` | `rgba(14, 165, 163, 0.45)` | Focus ring |
+| `--nav-bg` | `rgba(255, 255, 255, 0.82)` | Nav background (blur) |
+| `--shadow-card` | `0 18px 42px rgba(15,23,42,0.08), inset 0 1px 0 rgba(255,255,255,0.9)` | Card shadow |
+| `--shadow-card-hover` | `0 24px 52px rgba(15,23,42,0.12), 0 0 24px rgba(13,148,136,0.08)` | Card hover |
 
-**State Colors (per D7, adjusted for light background contrast)**
+**State Colors (per D7, WCAG non-text contrast ≥ 3:1 on `--bg`)**
 
-| State | Color | CSS Variable |
-|-------|-------|-------------|
-| OFFLINE | `#94a3b8` (slate-400) | `--state-offline` |
-| IDLE | `#22c55e` (green-500) | `--state-idle` |
-| BUSY | `#eab308` (yellow-500) | `--state-busy` |
-| WAITING_HUMAN | `#3b82f6` (blue-500, flashing) | `--state-waiting` |
-| POSSIBLY_STUCK | `#f97316` (orange-500) | `--state-possibly-stuck` |
-| STUCK | `#ef4444` (red-500) | `--state-stuck` |
-| UNKNOWN | `#d1d5db` (gray-300) | `--state-unknown` |
+State dots are graphical indicators — must meet WCAG 1.4.11 non-text contrast 3:1 against page background `#f7faf9`. Colors below are for the state dot/icon; text labels use `--text` or `--text-dim`.
+
+| State | Dot Color | Ratio vs `#f7faf9` | CSS Variable |
+|-------|-----------|-------------------|-------------|
+| OFFLINE | `#64748b` (slate-500) | 4.4:1 | `--state-offline` |
+| IDLE | `#16a34a` (green-600) | 3.5:1 | `--state-idle` |
+| BUSY | `#ca8a04` (yellow-600) | 3.2:1 | `--state-busy` |
+| WAITING_HUMAN | `#2563eb` (blue-600, flashing) | 4.6:1 | `--state-waiting` |
+| POSSIBLY_STUCK | `#ea580c` (orange-600) | 3.4:1 | `--state-possibly-stuck` |
+| STUCK | `#dc2626` (red-600) | 4.0:1 | `--state-stuck` |
+| UNKNOWN | `#9ca3af` (gray-400) | 3.0:1 | `--state-unknown` |
 
 **Typography**
 
@@ -937,22 +944,23 @@ Font import via `<link>` from Google Fonts (Inter 400/500/600/700, JetBrains Mon
 | `--space-lg` | `24px` |
 | `--space-xl` | `32px` |
 
-**Card Style**
+**Card Style (glass-card pattern from hxa-connect-web)**
 
 ```css
 .card {
   background: var(--bg-card);
+  backdrop-filter: blur(16px);
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  box-shadow: var(--shadow);
+  box-shadow: var(--shadow-card);
   padding: var(--space-lg);
 }
 .card:hover {
-  box-shadow: var(--shadow-hover);
+  box-shadow: var(--shadow-card-hover);
 }
 ```
 
-No `backdrop-filter` or glass effect in light mode — clean opaque cards with subtle shadow.
+Light mode uses semi-transparent card backgrounds (`rgba(255,255,255,0.88)`) with `backdrop-filter: blur(16px)` for frosted glass effect, matching hxa-connect-web's glass-card pattern.
 
 #### 2.10.2 Responsive Layout (Mobile-First)
 
@@ -986,7 +994,7 @@ No `backdrop-filter` or glass effect in light mode — clean opaque cards with s
 - Status indicator: full-width banner at top (always visible without scrolling)
 - Tool list: collapsed by default, tap to expand
 - Metric values: stack label above value (not side-by-side)
-- System gauges: 2-column grid on mobile (not 3)
+- System gauges: `grid-template-columns: repeat(auto-fit, minmax(140px, 1fr))` — single column on narrow phones, 2 columns when space allows
 - Touch targets: minimum 44px height for all interactive elements
 - Viewport meta: `<meta name="viewport" content="width=device-width, initial-scale=1">`
 
@@ -1009,8 +1017,18 @@ public/
 const translations = {};
 let currentLocale = 'en';
 
+const SUPPORTED = ['en', 'zh'];
+
+function resolveLocale(explicit) {
+  if (explicit && SUPPORTED.includes(explicit)) return explicit;
+  const stored = localStorage.getItem('zylos-dashboard-locale');
+  if (stored && SUPPORTED.includes(stored)) return stored;
+  return navigator.language.startsWith('zh') ? 'zh' : 'en';
+}
+
 export async function initI18n(locale) {
-  currentLocale = locale || navigator.language.startsWith('zh') ? 'zh' : 'en';
+  currentLocale = resolveLocale(locale);
+  localStorage.setItem('zylos-dashboard-locale', currentLocale);
   const resp = await fetch(`${BASE_PATH}/i18n/${currentLocale}.json`);
   Object.assign(translations, await resp.json());
   document.documentElement.lang = currentLocale;
@@ -1063,7 +1081,7 @@ export function setLocale(locale) {
 }
 ```
 
-**Language Switching**: Small button in header (e.g. "EN | 中文"). Stores preference in `localStorage('zylos-dashboard-locale')`. Defaults to browser language.
+**Language Switching**: Small button in header (e.g. "EN | 中文"). Locale resolution order: explicit arg → `localStorage('zylos-dashboard-locale')` → `navigator.language` → `'en'`. `setLocale()` validates against `SUPPORTED` list, writes to localStorage, reloads translations, and re-renders all `[data-i18n]` elements.
 
 **HTML Integration**: All user-visible text uses `data-i18n="key"` attributes. After `initI18n()`, a `renderAll()` pass sets `textContent` for all `[data-i18n]` elements. Dynamic text (state descriptions, metric values) uses `t()` directly in JS.
 
