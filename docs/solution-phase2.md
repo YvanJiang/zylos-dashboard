@@ -27,7 +27,7 @@ Dashboard 不是运维后台，不是 telemetry 技术面板。它是 **owner �
 
 | # | 原则 | 说明 |
 |---|------|------|
-| P1 | **全新组件** | 不依赖 Activity Monitor 状态文件。Dashboard 自建观测数据面，直接从一手数据源采集。AM 的 agent-status.json、proc-state.json 等文件不作为产品数据源。 |
+| P1 | **全新组件** | 不依赖 Activity Monitor 状态文件。Dashboard 自建观测数据面，直接从一手数据源采集。AM 的 proc-state.json 等文件不作为产品数据源。**例外（D7）**：agent-status.json 的 status 字段用于 OFFLINE 判定（AM 对 runtime 离线/在线的感知可靠），但 busy 等其他状态仍由 Dashboard 自行判定。 |
 | P2 | **数据→状态映射必须可论证** | 每个展示给 owner 的状态，背后的信号→状态映射关系必须有明确证据。弱信号不能包装成强语义。不确定的映射标注出来，带给 Howard 论证。 |
 | P3 | **不展示原始 payload** | 默认不展示、不持久化 prompt 原文、工具输出、敏感路径和账号信息。只展示分类、摘要、计数、耗时、状态。Debug capture 是独立的诊断模式，owner 显式开启，短 TTL。 |
 | P4 | **Runtime 并集覆盖** | 同时支持 Claude Code 和 Codex CLI。指标集取并集，不支持的标 unsupported，不假补数据。每个指标标注 actual / estimated / missing。 |
@@ -52,7 +52,7 @@ Overview 是唯一入口页，回答 owner 的四个焦虑问题：
 │  ① Live Runtime State                                          │
 │  ┌──────────────┐  ┌──────────────────────────────────────────┐ │
 │  │  状态指示灯   │  │ 当前活动描述                              │ │
-│  │  ACTIVE ●    │  │ "正在读取 zylos-core 仓库文件 (12s)"      │ │
+│  │  BUSY ●    │  │ "正在读取 zylos-core 仓库文件 (12s)"      │ │
 │  └──────────────┘  └──────────────────────────────────────────┘ │
 ├─────────────────────────────────────────────────────────────────┤
 │  ② Capacity & Cost                │  ③ Health & System          │
@@ -231,13 +231,13 @@ Overview 是唯一入口页，回答 owner 的四个焦虑问题：
 
 ```
                     ┌─────────┐
-         ┌─────────│ OFFLINE │◄──── PM2 not running / runtime down
+         ┌─────────│ OFFLINE │◄──── AM status offline / PM2 not running
          │         └─────────┘
          │              ▲
          │              │ runtime exit / PM2 stop
          ▼              │
     ┌─────────┐    ┌─────────┐    ┌─────────────────┐
-    │  IDLE   │◄──►│ ACTIVE  │───►│ WAITING_HUMAN   │
+    │  IDLE   │◄──►│  BUSY   │───►│ WAITING_HUMAN   │
     └─────────┘    └─────────┘    └─────────────────┘
          ▲              │
          │              ▼
@@ -267,13 +267,13 @@ Overview 是唯一入口页，回答 owner 的四个焦虑问题：
 
 **关键原则**：只有 Collector Liveness 证明管线正常时，Runtime Progress 的"缺失"才是有意义的证据。如果管线本身不健康，runtime event 的缺失不能作为任何判定依据——应为 UNKNOWN。
 
-#### ACTIVE — 正在工作
+#### BUSY — 正在工作
 
 | 项 | 内容 |
 |---|------|
 | **含义** | Agent 正在执行工具、调用 API、或生成回复 |
 | **Positive Evidence（满足任一）** | (1) 有**未结束**的工具调用：收到 PreToolUse 但未收到对应的 PostToolUse/PostToolUseFailure; (2) 收到 UserPromptSubmit 后未收到 Stop（表示正在处理 prompt）; (3) OTel 中有**未关闭**的 `interaction` 或 `llm_request` span |
-| **Counter Evidence（不应判 ACTIVE）** | (1) 仅收到结束型事件（Stop、PostToolUse、SessionEnd、PostCompact）— 这些表示"刚完成"而非"正在工作"; (2) 最后事件是 Stop 且无后续 UserPromptSubmit — 表示 turn 已结束; (3) PM2 进程不在线 |
+| **Counter Evidence（不应判 BUSY）** | (1) 仅收到结束型事件（Stop、PostToolUse、SessionEnd、PostCompact）— 这些表示"刚完成"而非"正在工作"; (2) 最后事件是 Stop 且无后续 UserPromptSubmit — 表示 turn 已结束; (3) PM2 进程不在线 |
 | **Clear Condition** | 收到 Stop hook（turn 结束）或 PostToolUse/PostToolUseFailure（工具结束）且无新的 PreToolUse/UserPromptSubmit |
 | **Runtime Differences** | Claude: 可用 SubagentStart（无 SubagentStop）作为 active 信号; Codex: 无 SubagentStart/Stop，仅依赖 PreToolUse/PostToolUse + UserPromptSubmit/Stop |
 | **Freshness Requirement** | 证据事件必须在最近 300s 内。超过 300s 无新事件但工具仍"未结束"，可能是 hook 丢失，降级为 UNKNOWN |
@@ -281,7 +281,7 @@ Overview 是唯一入口页，回答 owner 的四个焦虑问题：
 | **判定逻辑** | `pm2_online AND (has_running_tool OR has_open_turn) AND evidence_age < 300s` |
 | **置信度** | HIGH（有运行中工具）/ MEDIUM（仅有 open turn 无工具） |
 | **已验证** | PM2 jlist 可靠获取进程状态 ✅; PreToolUse/PostToolUse 配对在无头模式下正常 ✅; UserPromptSubmit/Stop 配对验证 ✅ (spike #17) |
-| **Owner 看到** | 绿色指示灯 + "正在工作" + 当前工具描述（有运行中工具时）或 "正在思考" （open turn 无工具时） |
+| **Owner 看到** | 黄色指示灯 + "正在工作" + 当前工具描述（有运行中工具时）或 "正在思考" （open turn 无工具时） |
 
 #### IDLE — 空闲等待
 
@@ -289,15 +289,15 @@ Overview 是唯一入口页，回答 owner 的四个焦虑问题：
 |---|------|
 | **含义** | Agent 在线但没有活动任务，等待新消息 |
 | **Positive Evidence（全部满足）** | (1) PM2 runtime 进程 status=online; (2) 最后一个事件是结束型（Stop / PostToolUse / SessionStart 无后续 UserPromptSubmit）; (3) 无 pending PermissionRequest; (4) 无未结束的 PreToolUse |
-| **Counter Evidence** | (1) 有未结束的 PreToolUse → 应为 ACTIVE; (2) 有 pending PermissionRequest → 应为 WAITING_HUMAN; (3) 采集管线中断（source_health 有 stale 源）→ 考虑 UNKNOWN |
-| **Clear Condition** | 收到 UserPromptSubmit 或 PreToolUse → 转为 ACTIVE |
+| **Counter Evidence** | (1) 有未结束的 PreToolUse → 应为 BUSY; (2) 有 pending PermissionRequest → 应为 WAITING_HUMAN; (3) 采集管线中断（source_health 有 stale 源）→ 考虑 UNKNOWN |
+| **Clear Condition** | 收到 UserPromptSubmit 或 PreToolUse → 转为 BUSY |
 | **Runtime Differences** | 无显著差异，两个 runtime 的 Stop hook 语义一致 |
 | **Freshness Requirement** | PM2 状态需在最近 30s 内采样。Hook 事件本身可以是旧的（idle 时本来就没有新事件），但 PM2 采样必须新鲜 |
 | **Confidence Downgrade** | 如果最后事件距今 < 120s 且是 Stop，降为 MEDIUM — 可能只是 turn 间隙，agent 即将开始下一个任务。超过 120s 无新事件提升为 HIGH |
 | **判定逻辑** | `pm2_online AND last_event_is_terminal AND no_running_tool AND no_pending_permission AND pm2_sample_fresh` |
 | **置信度** | MEDIUM（< 120s since last Stop）/ HIGH（>= 120s since last terminal event） |
 | **待验证 [V1]** | 120s 阈值是否合适？需要统计正常工作时 Stop 到下一个 UserPromptSubmit 的间隔分布。建议部署后收集数据验证 |
-| **Owner 看到** | 灰色指示灯 + "空闲" + 最后活动时间 |
+| **Owner 看到** | 绿色指示灯 + "空闲" + 最后活动时间 |
 
 #### WAITING_HUMAN — 等待人工介入
 
@@ -314,7 +314,7 @@ Overview 是唯一入口页，回答 owner 的四个焦虑问题：
 | **判定逻辑** | `has_uncleared_permission_request AND permission_age < 600s` |
 | **置信度** | Claude: HIGH（< 300s）/ MEDIUM（300-600s）; Codex: MEDIUM |
 | **已验证** | PermissionRequest hook 在 Claude Code ✅ 和 Codex ✅ 均可触发 (PR #19 验证)。Codex 缺少 tool_use_id 已确认 ✅ |
-| **Owner 看到** | 黄色指示灯 + "等待确认" + 具体等待什么（如 "等待 Bash 工具权限确认"） |
+| **Owner 看到** | 蓝色闪烁指示灯 + "等待确认" + 具体等待什么（如 "等待 Bash 工具权限确认"） |
 
 #### POSSIBLY_STUCK — 可能卡住
 
@@ -352,23 +352,23 @@ Overview 是唯一入口页，回答 owner 的四个焦虑问题：
 
 | 项 | 内容 |
 |---|------|
-| **含义** | Agent 进程未运行 |
-| **Positive Evidence** | PM2 runtime 进程 status ≠ online（stopped / errored / 不存在） |
-| **Counter Evidence** | 无 — PM2 状态是权威来源 |
-| **Clear Condition** | PM2 进程恢复为 online |
+| **含义** | Agent runtime 未运行 |
+| **Positive Evidence** | **首选**：Activity Monitor 的 `agent-status.json` status 字段标记为非活跃（D7 特殊例外：AM 对 runtime 离线/在线的判定是可靠的）。**补充**：PM2 runtime 进程 status ≠ online（stopped / errored / 不存在） |
+| **Counter Evidence** | 无 — AM status 和 PM2 状态在离线判定上都是可信来源 |
+| **Clear Condition** | AM agent-status.json status 恢复为活跃状态，或 PM2 进程恢复为 online |
 | **Runtime Differences** | Claude: PM2 进程名通常为 `claude-code` 或自定义名。Codex: PM2 进程名通常为 `codex`。Dashboard 需配置当前 runtime 的 PM2 进程名 |
-| **Freshness Requirement** | PM2 jlist 采样必须在 30s 内 |
-| **Confidence Downgrade** | PM2 jlist 调用失败 → UNKNOWN（非 OFFLINE） |
-| **判定逻辑** | `pm2_status != 'online'` |
+| **Freshness Requirement** | agent-status.json 文件修改时间在合理范围内（AM 健康时持续更新）。PM2 jlist 采样必须在 30s 内 |
+| **Confidence Downgrade** | AM 本身不在线（PM2 中 activity-monitor 进程非 online）→ 退回仅用 PM2 判定。PM2 jlist 调用也失败 → UNKNOWN |
+| **判定逻辑** | `am_status_offline OR pm2_status != 'online'`（AM 可用时优先 AM；AM 挂了时仅用 PM2） |
 | **置信度** | HIGH |
-| **Owner 看到** | 灰色/红色指示灯 + "离线" + PM2 状态详情（如 "进程 errored，已重启 3 次"） |
+| **Owner 看到** | 灰色指示灯 + "离线" + 状态详情（如 "进程 errored，已重启 3 次"） |
 
 #### UNKNOWN — 无法判定
 
 | 项 | 内容 |
 |---|------|
 | **含义** | 数据源中断或矛盾，无法确定 agent 状态 |
-| **Positive Evidence（满足任一）** | (1) PM2 jlist 调用失败; (2) PM2 online 但 collector liveness 全部 stale（采集管线断了，无法判定 active/idle/stuck）; (3) ACTIVE 的运行中工具证据超过 300s 无更新（可能 hook 丢失）; (4) WAITING_HUMAN 的 pending permission 超过 600s 无清除; (5) 无独立 collector liveness 信号时尝试判定 STUCK（管线不可验证，应为 UNKNOWN） |
+| **Positive Evidence（满足任一）** | (1) PM2 jlist 调用失败; (2) PM2 online 但 collector liveness 全部 stale（采集管线断了，无法判定 busy/idle/stuck）; (3) BUSY 的运行中工具证据超过 300s 无更新（可能 hook 丢失）; (4) WAITING_HUMAN 的 pending permission 超过 600s 无清除; (5) 无独立 collector liveness 信号时尝试判定 STUCK（管线不可验证，应为 UNKNOWN） |
 | **Counter Evidence** | 收到任何新的 runtime progress event 或 collector liveness 恢复 → 重新评估为其他状态 |
 | **Clear Condition** | Collector liveness 恢复 fresh，或 PM2 jlist 恢复正常 |
 | **Runtime Differences** | 无差异 |
@@ -385,18 +385,24 @@ function deriveAgentState(signals) {
   // 两类信号，不可混淆：
   // - collectorLivenessFresh: Dashboard 采集管线是否正常（PM2 reader、system sampler、hook handler、OTel reader）
   // - lastProgressAge: 最后一次 runtime progress event（Hook/OTel 运行时事件）距今多久
-  const { pm2Status, pm2SampleAge, pm2Cpu,
+  const { amAvailable, amStatus,  // D7: AM agent-status.json
+          pm2Status, pm2SampleAge, pm2Cpu,
           runningTool, openTurn, pendingPermission,
           lastProgressAge, lastProgressType,
           collectorLivenessFresh, collectorLivenessAvailable,
           activeOtelSpan, possiblyStuckSince, runtime } = signals;
 
-  // 1. PM2 不可用 → UNKNOWN
+  // 1. AM agent-status.json 可用时优先用 AM 判定离线（D7）
+  if (amAvailable && amStatus === 'offline') {
+    return { state: 'OFFLINE', confidence: 'HIGH', reason: 'AM agent-status: offline' };
+  }
+
+  // 2. PM2 不可用 → UNKNOWN（AM 也不可用的情况）
   if (pm2Status === null || pm2SampleAge > 30) {
     return { state: 'UNKNOWN', confidence: 'N/A', reason: 'PM2 data unavailable' };
   }
 
-  // 2. 进程不在线 → OFFLINE
+  // 3. 进程不在线 → OFFLINE（PM2 兜底）
   if (pm2Status !== 'online') {
     return { state: 'OFFLINE', confidence: 'HIGH', reason: `PM2 status: ${pm2Status}` };
   }
@@ -437,18 +443,18 @@ function deriveAgentState(signals) {
     return { state: 'POSSIBLY_STUCK', confidence, reason: stuckScenario.reason };
   }
 
-  // 6. 有运行中的工具或 open turn → ACTIVE（检查证据新鲜度）
+  // 6. 有运行中的工具或 open turn → BUSY（检查证据新鲜度）
   if (runningTool) {
     if (runningTool.evidenceAge > 300) {
       // 工具 "运行中" 的证据太旧，可能 PostToolUse hook 丢失
       return { state: 'UNKNOWN', confidence: 'N/A',
                reason: 'Running tool evidence stale, hook may have been lost' };
     }
-    return { state: 'ACTIVE', confidence: 'HIGH',
+    return { state: 'BUSY', confidence: 'HIGH',
              reason: `Running: ${runningTool.name} (${fmt(runningTool.duration)})` };
   }
   if (openTurn) {
-    return { state: 'ACTIVE', confidence: 'MEDIUM',
+    return { state: 'BUSY', confidence: 'MEDIUM',
              reason: 'Processing prompt (no tool call yet)' };
   }
 
@@ -937,6 +943,7 @@ UI 的 Overview 区块通过 SSE 实时更新，无需轮询。
 | D4 | Dashboard 认证方式 | 沿用 Phase 1 basic auth | §10 |
 | D5 | 数据源优先级 + 状态粒度 | **OTel 优先，最小化 Hook 侵入**（OTel 通过 runtime 环境变量启用，对用户透明；Hook 写入用户 settings.json，每条都是侵入）。但保留最小 tool lifecycle hook 以支持**工具级实时状态**（Option B）。Hook 最小集：PreToolUse、PostToolUse、UserPromptSubmit、Stop、PermissionRequest。Hook 只存 tool_name/tool_use_id/duration/sanitized summary，不存 tool_input/tool_output 原文。Per-metric resolver：StatusLine 对其独占字段（context%/rate_limit/effort）是 preferred source 而非 OTel fallback。退出条件：OTel 后续支持 tool-start streaming 信号时移除 PreToolUse hook。适用 Claude + Codex 双 runtime。 | §5.2, §5.3, AC-2 |
 | D6 | Work History PR 数据 | 第一版不采集 PR 数据。用户 Git 平台不确定（GitHub/GitLab/Gitea/私有部署），通用方案成本过高。Work History 只展示 Hook/OTel 可直接计算的指标：tool calls、active time、top project。PR 指标后续有需求再考虑 | §3.2 ⑤ |
+| D7 | 状态命名 + 判定来源 + 颜色方案 | **命名**：ACTIVE → BUSY（对齐 Zylos 内部语义）。**OFFLINE 判定**：AM agent-status.json 的 status 字段优先（D7 特殊例外：AM 对 runtime 离线/在线判定可靠），AM 不可用时 PM2 兜底。**BUSY 判定**：Dashboard 自建逻辑（AM 的 busy 判定不可靠）。**颜色方案**：灰色=OFFLINE、绿色=IDLE、黄色=BUSY、蓝色闪烁=WAITING_HUMAN、橙色=POSSIBLY_STUCK、红色=STUCK | §4.1, §4.2 全部状态 |
 
 ### 待数据验证
 
