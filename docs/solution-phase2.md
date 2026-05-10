@@ -91,7 +91,7 @@ Overview 是唯一入口页，回答 owner 的四个焦虑问题：
 | 展示内容 | 数据来源 | 更新频率 |
 |---------|---------|---------|
 | Agent 状态（见 §4 Semantic State Contract） | Hook + Heartbeat + PM2 组合判定 | 实时（事件驱动） |
-| 当前工具名称 + 已运行时长 | PreToolUse / PostToolUse 事件 | 实时 |
+| 当前工具名称 + 已运行时长（实时 ticking） | PreToolUse 的 started_at 时间戳，前端 setInterval 每秒更新计时显示（如 12s → 13s → 14s），PostToolUse 到达后停止计时 | 实时（前端本地计时） |
 | 当前活动的自然语言描述 | 后处理：工具名→动作描述映射 | 实时 |
 | 最后事件时间 | 任何 Hook/OTel 事件的 timestamp | 实时 |
 
