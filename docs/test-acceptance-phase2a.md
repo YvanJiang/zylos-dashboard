@@ -88,7 +88,7 @@ Phase 2a 交付物：Store Module + Hook Ingest + `/api/ingest` Endpoint + State
 **前置条件**: Dashboard 服务正在运行。
 
 **步骤**:
-1. 模拟 Claude Code 调用 `hook-ingest.js`，stdin 输入 PreToolUse payload：
+1. 模拟 Claude Code 调用 `hook-ingest.cjs`，stdin 输入 PreToolUse payload：
    ```json
    {
      "hook_event_name": "PreToolUse",
@@ -101,7 +101,7 @@ Phase 2a 交付物：Store Module + Hook Ingest + `/api/ingest` Endpoint + State
 3. 查询 source_health 表
 
 **预期结果**:
-- `hook-ingest.js` 进程退出码为 0
+- `hook-ingest.cjs` 进程退出码为 0
 - runtime_events 中有一条记录：event_type="pre_tool_use"，category="tool"，source="hook"
 - 记录包含 `ingest_id`（非空）
 - source_health 中 hook_handler 的 last_success 已更新
@@ -213,14 +213,14 @@ Phase 2a 交付物：Store Module + Hook Ingest + `/api/ingest` Endpoint + State
 3. 检查 source_health 中的诊断计数
 
 **预期结果**:
-- `hook-ingest.js` 进程退出码为 0（不崩溃）
+- `hook-ingest.cjs` 进程退出码为 0（不崩溃）
 - runtime_events 中不新增记录（不持久化非最小集事件的 raw payload）
 - source_health 或诊断指标中记录 ignored event count（可选，用于运维排查）
 
 ### T-INGEST-09: 非法 JSON 输入 [MUST]
 
 **步骤**:
-1. 向 hook-ingest.js 的 stdin 传入非法 JSON（如 "not json"）
+1. 向 hook-ingest.cjs 的 stdin 传入非法 JSON（如 "not json"）
 
 **预期结果**:
 - 进程退出码为 0
@@ -230,7 +230,7 @@ Phase 2a 交付物：Store Module + Hook Ingest + `/api/ingest` Endpoint + State
 ### T-INGEST-10: 空 stdin [MUST]
 
 **步骤**:
-1. 向 hook-ingest.js 传入空 stdin（EOF 立即关闭）
+1. 向 hook-ingest.cjs 传入空 stdin（EOF 立即关闭）
 
 **预期结果**:
 - 进程退出码为 0
@@ -314,11 +314,11 @@ Phase 2a 交付物：Store Module + Hook Ingest + `/api/ingest` Endpoint + State
 **前置条件**: Dashboard 服务已停止。
 
 **步骤**:
-1. 运行 hook-ingest.js，stdin 传入有效 PreToolUse payload
+1. 运行 hook-ingest.cjs，stdin 传入有效 PreToolUse payload
 2. 检查 `components/dashboard/spool/hook-events.jsonl` 文件
 
 **预期结果**:
-- hook-ingest.js 退出码为 0
+- hook-ingest.cjs 退出码为 0
 - spool 文件新增一行，包含 `ingest_id`、`received_at`、`runtime`、`hook_event_name`、`data`
 
 ### T-SPOOL-02: Dashboard 恢复后 spool drain [MUST]
@@ -355,14 +355,14 @@ Phase 2a 交付物：Store Module + Hook Ingest + `/api/ingest` Endpoint + State
 **预期结果**:
 - spool 文件大小不超过上限
 - 最早的行被丢弃（或新写入被拒绝——具体策略待实现确认）
-- hook-ingest.js 退出码仍为 0
+- hook-ingest.cjs 退出码仍为 0
 
 ### T-SPOOL-05: Spool drain 的原子性 [MUST]
 
 **步骤**:
 1. spool 中有 N 条事件
 2. 启动 Dashboard 触发 drain
-3. drain 过程中 hook-ingest.js 继续写入新事件
+3. drain 过程中 hook-ingest.cjs 继续写入新事件
 
 **预期结果**:
 - drain 先 rename spool 文件再处理，新事件写入新 spool 文件
@@ -918,7 +918,7 @@ Phase 2a 交付物：Store Module + Hook Ingest + `/api/ingest` Endpoint + State
 
 **步骤**:
 1. Dashboard 运行中
-2. 循环执行 100 次 hook-ingest.js（有效 PreToolUse payload），记录每次耗时
+2. 循环执行 100 次 hook-ingest.cjs（有效 PreToolUse payload），记录每次耗时
 
 **预期结果**:
 - p50 < 50ms
@@ -930,7 +930,7 @@ Phase 2a 交付物：Store Module + Hook Ingest + `/api/ingest` Endpoint + State
 
 **步骤**:
 1. Dashboard 已停止
-2. 循环执行 100 次 hook-ingest.js，记录每次耗时
+2. 循环执行 100 次 hook-ingest.cjs，记录每次耗时
 
 **预期结果**:
 - p50 < 40ms
@@ -943,7 +943,7 @@ Phase 2a 交付物：Store Module + Hook Ingest + `/api/ingest` Endpoint + State
 
 **步骤**:
 1. 模拟 `/api/ingest` 端点永不响应（挂起连接）
-2. 执行 hook-ingest.js
+2. 执行 hook-ingest.cjs
 
 **预期结果**:
 - 200ms POST 超时后走 spool 路径
@@ -952,7 +952,7 @@ Phase 2a 交付物：Store Module + Hook Ingest + `/api/ingest` Endpoint + State
 
 ### T-AC5-04: 始终 exit(0) [MUST]
 
-**步骤**: 以下场景各执行一次 hook-ingest.js：
+**步骤**: 以下场景各执行一次 hook-ingest.cjs：
 1. 正常 POST 成功
 2. POST 超时，spool 写入成功
 3. POST 失败（connection refused），spool 写入成功
@@ -967,7 +967,7 @@ Phase 2a 交付物：Store Module + Hook Ingest + `/api/ingest` Endpoint + State
 
 **步骤**:
 1. 停止 Dashboard
-2. 通过 hook-ingest.js 注入 20 条事件（包括 PreToolUse/PostToolUse/UserPromptSubmit/Stop/PermissionRequest 各至少 2 条）
+2. 通过 hook-ingest.cjs 注入 20 条事件（包括 PreToolUse/PostToolUse/UserPromptSubmit/Stop/PermissionRequest 各至少 2 条）
 3. 验证 spool 有 20 行
 4. 手动将 5 条事件直接写入 runtime_events（模拟 POST 成功但 hook 也 spool 了的竞态），使用其中 5 条相同的 ingest_id
 5. 启动 Dashboard
