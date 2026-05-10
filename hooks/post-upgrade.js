@@ -12,11 +12,10 @@ fs.mkdirSync(path.join(dataDir, 'logs'), { recursive: true });
 if (fs.existsSync(configPath)) {
   const current = JSON.parse(fs.readFileSync(configPath, 'utf8'));
   const next = {
-    port: Number(process.env.DASHBOARD_PORT || current.port || 3470),
+    port: Number(current.port || 3470),
     host: current.host || '127.0.0.1',
-    theme: current.theme || process.env.DASHBOARD_THEME || 'default',
+    theme: current.theme || 'default',
     refreshMs: current.refreshMs || 5000,
-    zylosDir: current.zylosDir || zylosDir,
     auth: {
       enabled: false,
       bearerToken: null,

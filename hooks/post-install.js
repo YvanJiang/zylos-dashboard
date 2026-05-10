@@ -11,11 +11,10 @@ fs.mkdirSync(path.join(dataDir, 'logs'), { recursive: true });
 
 if (!fs.existsSync(configPath)) {
   const config = {
-    port: Number(process.env.DASHBOARD_PORT || 3470),
+    port: 3470,
     host: '127.0.0.1',
-    theme: process.env.DASHBOARD_THEME || 'default',
+    theme: 'default',
     refreshMs: 5000,
-    zylosDir,
     auth: {
       enabled: false,
       bearerToken: null,
