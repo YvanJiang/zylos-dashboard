@@ -12,6 +12,7 @@ lifecycle:
     entry: src/index.js
   data_dir: ~/zylos/components/dashboard
   hooks:
+    configure: hooks/configure.js
     post-install: hooks/post-install.js
     pre-upgrade: hooks/pre-upgrade.js
     post-upgrade: hooks/post-upgrade.js
@@ -27,7 +28,25 @@ http_routes:
 
 config:
   required: []
-  optional: []
+  optional:
+    - name: DASHBOARD_PORT
+      description: Dashboard server port
+      default: "3470"
+    - name: DASHBOARD_HOST
+      description: Dashboard bind address
+      default: "127.0.0.1"
+    - name: DASHBOARD_THEME
+      description: Default theme name
+      default: "default"
+    - name: DASHBOARD_INGEST_TOKEN
+      description: Optional bearer token for /api/ingest endpoint
+      sensitive: true
+    - name: DASHBOARD_AUTH_PASSWORD
+      description: Dashboard login password
+      sensitive: true
+    - name: DASHBOARD_SPOOL_MAX_BYTES
+      description: Maximum spool file size before dropping events
+      default: "10485760"
 
 upgrade:
   repo: zylos-ai/zylos-dashboard
