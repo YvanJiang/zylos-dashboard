@@ -1090,7 +1090,7 @@ export function setLocale(locale) {
 
 #### 2.10.4 Theme Extension (Multi-Skin Support)
 
-**Goal**: Allow switching between visual themes at runtime. Phase 2a ships with one theme (light); the architecture supports adding more without code changes.
+**Goal**: Allow switching between visual themes at runtime. Phase 2a ships with one theme (light); the architecture supports adding more without component style/layout changes.
 
 **Mechanism**: Pure CSS custom property override via `data-theme` attribute on `<html>`.
 
