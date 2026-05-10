@@ -7,7 +7,7 @@ Phase 2a 交付：Store Module + Hook Ingest Pipeline + `/api/ingest` Endpoint +
 ### 1.1 Module Dependency Graph
 
 ```
-hook-ingest.js (独立进程，不依赖 Dashboard)
+hook-ingest.cjs (独立进程，不依赖 Dashboard)
      │ HTTP POST
      ▼
 ┌─────────────────────────────────────────────────┐
@@ -50,7 +50,7 @@ public/
 | 1 | `store.js` | better-sqlite3 | T-STORE-01~05 |
 | 2 | `sanitizer.js` | 无 | T-INGEST-05~07 |
 | 3 | `ingest-handler.js` | store, sanitizer | T-API-INGEST-01~06 |
-| 4 | `hook-ingest.js` | 无（独立进程） | T-INGEST-01~10 |
+| 4 | `hook-ingest.cjs` | 无（独立进程） | T-INGEST-01~10 |
 | 5 | `spool-drainer.js` | store | T-SPOOL-01~05 |
 | 6 | collectors (pm2/system/otel) | store | — |
 | 7 | `state-engine.js` | store, collectors | T-STATE-01~20 |
@@ -221,7 +221,7 @@ export class IngestHandler {
 - **Body parsing**: Use `readJsonBody(req, 64 * 1024)` from existing `src/lib/http.js` utility module (add this function alongside the existing `sendJson`/`sendText`/`serveStatic`). Handles chunk collection, size limit enforcement (413 on overflow), and `JSON.parse()` (400 on failure) in one reusable call.
 - **Processing flow**:
   1. Extract `ingest_id`, `hook_event_name`, remainder from body
-  2. Check `hook_event_name` against allowed set (`PreToolUse`, `PostToolUse`, `UserPromptSubmit`, `Stop`, `PermissionRequest`). Unknown → 200 OK (don't break hook-ingest.js) + increment ignored counter in source_health
+  2. Check `hook_event_name` against allowed set (`PreToolUse`, `PostToolUse`, `UserPromptSubmit`, `Stop`, `PermissionRequest`). Unknown → 200 OK (don't break hook-ingest.cjs) + increment ignored counter in source_health
   3. `sanitizer.sanitizeHookPayload(hookEventName, body)` → canonical fields
   4. Build CanonicalEvent: `{ id: uuid(), ingest_id, timestamp, runtime, session_id, event_type, category, summary, duration_ms, metadata: sanitized.metadata, source: 'hook', confidence: 'actual' }`. Note: `tool_name` and `tool_use_id` are inside `metadata` (placed there by the sanitizer), matching the state engine's `event.metadata.tool_name` / `event.metadata.tool_use_id` access pattern.
   5. `store.insertEvent(event)` — INSERT OR IGNORE handles dedup
@@ -237,13 +237,13 @@ export class IngestHandler {
   - `UserPromptSubmit` → `user_prompt_submit`, category: `turn`
   - `Stop` → `stop`, category: `turn`
   - `PermissionRequest` → `permission_request`, category: `permission`
-- **Failure behavior**: Internal error during processing → log to stderr, return 500. Caller (hook-ingest.js) treats non-200 as failure and spools.
+- **Failure behavior**: Internal error during processing → log to stderr, return 500. Caller (hook-ingest.cjs) treats non-200 as failure and spools.
 
 ---
 
-### 2.4 Hook Ingest Script — `lib/hook-ingest.js`
+### 2.4 Hook Ingest Script — `lib/hook-ingest.cjs`
 
-**Location**: `components/dashboard/lib/hook-ingest.js` (NOT under `src/` — runs as independent process)
+**Location**: `components/dashboard/lib/hook-ingest.cjs` (NOT under `src/` — runs as independent process)
 
 **Owned writes**: Spool file (`components/dashboard/spool/hook-events.jsonl`)
 
@@ -253,7 +253,7 @@ export class IngestHandler {
 
 Standalone script. No exports. Invoked by runtime hooks:
 ```
-echo '<json>' | node ~/zylos/components/dashboard/lib/hook-ingest.js
+echo '<json>' | node ~/zylos/components/dashboard/lib/hook-ingest.cjs
 ```
 
 #### Implementation Details
@@ -270,7 +270,7 @@ echo '<json>' | node ~/zylos/components/dashboard/lib/hook-ingest.js
 
 - **ingest_id generation**: `crypto.randomUUID()` (Node 19+). Stable across retries (generated once per invocation).
 
-- **HTTP POST**: `fetch()` (Node 18+ built-in) to `http://127.0.0.1:${DASHBOARD_PORT}/api/ingest`:
+- **HTTP POST**: `fetch()` (Node 18+ built-in) to `http://127.0.0.1:${port}/api/ingest` (port read from `config.json`):
   - Timeout: 200ms via `AbortController` + `setTimeout`
   - Body: `{ ingest_id, hook_event_name, received_at: new Date().toISOString(), ...payload }`
   - No retry on failure
@@ -286,11 +286,11 @@ echo '<json>' | node ~/zylos/components/dashboard/lib/hook-ingest.js
 
 - **Spool path**: `$ZYLOS_DIR/components/dashboard/spool/hook-events.jsonl` (or `~/zylos/components/dashboard/spool/hook-events.jsonl`). Create directory on first write if missing.
 
-- **Spool size check**: Before appending, `fs.statSync(spoolPath).size`. If > 10MB (configurable via `DASHBOARD_SPOOL_MAX_BYTES`), skip append (data loss accepted — spool overflow). Still exit(0).
+- **Spool size check**: Before appending, `fs.statSync(spoolPath).size`. If > `spoolMaxBytes` from `config.json` (default 10MB), skip append (data loss accepted — spool overflow). Still exit(0).
 
 - **Exit code**: ALWAYS 0. Wrap entire script in try/catch → exit(0).
 
-- **DASHBOARD_PORT**: Read from `process.env.DASHBOARD_PORT || 3470`.
+- **Port**: Read from `config.json` (`port` field, default `3470`). The script reads `config.json` via `fs.readFileSync` — no env var dependency.
 
 - **No dependencies**: No `require` of any dashboard module. Only Node built-ins (`node:fs`, `node:path`, `node:crypto`, global `fetch`). No `better-sqlite3`. This keeps startup time minimal (~30ms for Node process).
 
@@ -1252,7 +1252,7 @@ export class HookInstaller {
 
 - **Claude**: Read `~/.claude/settings.json`. Merge into `hooks` object — for each of the 5 event names, append the dashboard command if not already present. Preserve existing user hooks.
 - **Codex**: Read `~/.codex/hooks.json` (array format). Append entries for each of the 5 events if not already present. Preserve existing entries.
-- **Uninstall**: Remove only entries whose command path matches the dashboard script pattern (`components/dashboard/lib/hook-ingest.js`). Never touch core skill hooks, other component hooks, or user-created hooks.
+- **Uninstall**: Remove only entries whose command path matches the dashboard script pattern (`components/dashboard/lib/hook-ingest.cjs`). Never touch core skill hooks, other component hooks, or user-created hooks.
 - **Safety boundary**: The HookInstaller operates only on its own entries, identified by script path. It reads the full hooks file for merging, but must not modify or remove any entry that does not match the dashboard's own script path. This ensures coexistence with zylos-core's `sync-settings-hooks.js` (which preserves non-core entries), other components, and user customizations. If the dashboard is later absorbed into zylos-core, its hooks migrate naturally into the template and `sync-settings-hooks.js` management.
 - **Detection**: Read `process.env.ZYLOS_RUNTIME` (canonical interface). Default to `'claude'` if unset. No PM2 fallback — PM2 manages service modules, not the agent runtime.
 - **Idempotent**: Running install twice produces the same result (no duplicate entries). Running uninstall twice produces the same result (no errors on missing entries).
@@ -1317,7 +1317,7 @@ components/dashboard/
 ├── spool/
 │   └── hook-events.jsonl     # spool file (created on first POST failure)
 ├── lib/
-│   └── hook-ingest.js        # standalone hook handler (invoked by runtime)
+│   └── hook-ingest.cjs        # standalone hook handler (invoked by runtime)
 ├── config.json               # existing config
 └── ...
 
@@ -1388,7 +1388,7 @@ STUCK tests (T-STATE-14) follow the observable boundary pattern: inject PreToolU
 ### 6.3 Benchmark Tests (AC-5)
 
 `test/benchmark/hook-latency.test.js`:
-- Spawn `hook-ingest.js` 100 times with valid payload
+- Spawn `hook-ingest.cjs` 100 times with valid payload
 - Measure process exit time (p50/p95/p99)
 - Dashboard online: verify < 50ms
 - Dashboard offline: verify < 40ms (spool path)
@@ -1400,17 +1400,17 @@ STUCK tests (T-STATE-14) follow the observable boundary pattern: inject PreToolU
 | Test ID | Module(s) | Implementation Section |
 |---------|-----------|----------------------|
 | T-STORE-01~05 | store.js | §2.1 |
-| T-INGEST-01~04 | hook-ingest.js, ingest-handler.js | §2.4, §2.3 |
+| T-INGEST-01~04 | hook-ingest.cjs, ingest-handler.js | §2.4, §2.3 |
 | T-INGEST-05~07 | sanitizer.js, ingest-handler.js | §2.2, §2.3 |
-| T-INGEST-08~10 | hook-ingest.js | §2.4 |
+| T-INGEST-08~10 | hook-ingest.cjs | §2.4 |
 | T-API-INGEST-01~06 | ingest-handler.js | §2.3 |
-| T-SPOOL-01~05 | hook-ingest.js, spool-drainer.js | §2.4, §2.5 |
+| T-SPOOL-01~05 | hook-ingest.cjs, spool-drainer.js | §2.4, §2.5 |
 | T-STATE-01~20 | state-engine.js, collectors | §2.7, §2.6 |
 | T-AC1-01~07 | state-engine.js, store.js | §2.7 (AC-1 recovery) |
 | T-AC2-01~06 | metric-resolver.js | §2.8 |
 | T-AC3-01~06 | Frontend ① | §2.10 |
 | T-AC4-01~05 | state-engine.js | §2.7 (hook health) |
-| T-AC5-01~06 | hook-ingest.js, spool-drainer.js | §2.4, §2.5 |
+| T-AC5-01~06 | hook-ingest.cjs, spool-drainer.js | §2.4, §2.5 |
 | T-API-STATE-01~06 | index.js, state-engine.js | §2.9 |
 | T-SSE-01~05 | sse.js, state-engine.js | §2.9 |
 | T-UI-01~07 | public/ | §2.10 |
@@ -1425,5 +1425,5 @@ STUCK tests (T-STATE-14) follow the observable boundary pattern: inject PreToolU
 | `better-sqlite3` native compilation fails on target machine | Cannot start store module | Pre-verify: `npm install better-sqlite3` on zylos01 before coding. Fallback: prebuilt binaries via `prebuild-install`. |
 | Hook-ingest.js adds perceptible latency to agent | Agent response time degrades | AC-5 benchmark enforces < 50ms. 500ms hard deadline prevents worst case. Fallback: disable hooks, run hook-free. |
 | OTel data not flowing (env vars missing, collector down) | ② Capacity data incomplete | Graceful degradation: MetricResolver falls back through chain. UI shows "unavailable" for missing metrics. |
-| Spool grows unbounded during extended Dashboard outage | Disk space exhaustion | 10MB cap enforced by hook-ingest.js. Oldest events lost (acceptable — Dashboard was down anyway). |
+| Spool grows unbounded during extended Dashboard outage | Disk space exhaustion | 10MB cap enforced by hook-ingest.cjs. Oldest events lost (acceptable — Dashboard was down anyway). |
 | State engine snapshot corruption | Incorrect state after restart | Validation step in `initialize()` clears stale entries. Worst case: start from UNKNOWN until first event. |

@@ -90,13 +90,7 @@ http_routes:
     strip_prefix: /dashboard
 config:
   required: []
-  optional:
-    - name: DASHBOARD_PORT
-      description: Dashboard server port
-      default: "3470"
-    - name: DASHBOARD_THEME
-      description: Default theme name
-      default: "default"
+  optional: []
 upgrade:
   repo: zylos-ai/zylos-dashboard
   branch: main
