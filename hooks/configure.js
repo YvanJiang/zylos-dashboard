@@ -2,8 +2,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
-const HOME = process.env.HOME;
-const DATA_DIR = path.join(HOME, 'zylos/components/dashboard');
+const DATA_DIR = process.env.ZYLOS_DATA_DIR
+  || path.join(process.env.HOME, 'zylos/components/dashboard');
 const CONFIG_PATH = path.join(DATA_DIR, 'config.json');
 const COMPONENT_PREFIX = 'DASHBOARD_';
 
@@ -50,8 +50,9 @@ function readJsonFile(filePath, fallback) {
 function writeJsonFile(filePath, value) {
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
   const tmpPath = `${filePath}.tmp`;
-  fs.writeFileSync(tmpPath, JSON.stringify(value, null, 2) + '\n');
+  fs.writeFileSync(tmpPath, JSON.stringify(value, null, 2) + '\n', { mode: 0o600 });
   fs.renameSync(tmpPath, filePath);
+  fs.chmodSync(filePath, 0o600);
 }
 
 function configKeyFromName(name) {
