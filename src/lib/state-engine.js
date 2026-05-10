@@ -1,0 +1,596 @@
+import fs from 'node:fs';
+import path from 'node:path';
+
+const STALE_TOOL_THRESHOLD_MS = 300_000;
+const STALE_PERMISSION_THRESHOLD_MS = 600_000;
+const POSSIBLY_STUCK_THRESHOLD_S = 120;
+const STUCK_CONFIRMATION_THRESHOLD_S = 600;
+const COLLECTOR_FRESHNESS_MS = 30_000;
+const SNAPSHOT_INTERVAL_MS = 30_000;
+const AM_HEARTBEAT_INTERVAL_MS = 15_000;
+const AM_HEARTBEAT_STALE_MS = 60_000;
+
+export function deriveAgentState(signals) {
+  const evidence = [];
+  const missing = [];
+
+  if (!signals.amAvailable) {
+    missing.push('am_heartbeat');
+    if (signals.runningTool) {
+      evidence.push(`tool_running:${signals.runningTool.tool_name}:${Math.floor(signals.runningTool.age)}s`);
+    }
+    if (signals.openTurn) {
+      evidence.push(`open_turn:${Math.floor(signals.openTurn.age)}s`);
+    }
+    return {
+      state: 'UNKNOWN',
+      confidence: 'LOW',
+      evidence,
+      missing_evidence: missing,
+      reason: 'AM heartbeat unavailable — session liveness unconfirmed',
+      suggested_action: 'Check activity-monitor service'
+    };
+  }
+
+  evidence.push(`am:${signals.amState}:health=${signals.amHealth}`);
+
+  if (signals.amState === 'offline' || signals.amHealth !== 'ok') {
+    return {
+      state: 'OFFLINE',
+      confidence: 'HIGH',
+      evidence,
+      missing_evidence: missing,
+      reason: signals.amState === 'offline'
+        ? 'Agent session is not responding'
+        : `AM health degraded: ${signals.amHealth}`,
+      suggested_action: 'Check if the agent session is running'
+    };
+  }
+
+  if (signals.pendingPermission) {
+    const ageSec = Math.floor(signals.pendingPermission.age);
+    evidence.push(`permission_pending:${signals.pendingPermission.tool_name}:${ageSec}s`);
+    return {
+      state: 'WAITING_HUMAN',
+      confidence: 'HIGH',
+      evidence,
+      missing_evidence: missing,
+      reason: `Permission requested for ${signals.pendingPermission.tool_name}`,
+      suggested_action: 'Grant or deny the permission request'
+    };
+  }
+
+  if (signals.runningTool) {
+    const ageSec = Math.floor(signals.runningTool.age);
+    evidence.push(`tool_running:${signals.runningTool.tool_name}:${ageSec}s`);
+
+    if (ageSec > POSSIBLY_STUCK_THRESHOLD_S) {
+      if (signals.possiblyStuckSince) {
+        const stuckDuration = (signals.now() - new Date(signals.possiblyStuckSince).getTime()) / 1000;
+        if (stuckDuration >= STUCK_CONFIRMATION_THRESHOLD_S && signals.collectorLivenessFresh) {
+          return {
+            state: 'STUCK',
+            confidence: 'HIGH',
+            evidence,
+            missing_evidence: missing,
+            reason: `${signals.runningTool.tool_name} tool running for ${ageSec}s with no progress`,
+            suggested_action: 'Consider interrupting the stuck operation'
+          };
+        }
+      }
+
+      if (!signals.collectorLivenessFresh) {
+        missing.push('collector_liveness_stale');
+      }
+
+      return {
+        state: 'POSSIBLY_STUCK',
+        confidence: 'MEDIUM',
+        evidence,
+        missing_evidence: missing,
+        reason: `${signals.runningTool.tool_name} tool running for ${ageSec}s`,
+        suggested_action: 'Monitor — may resolve on its own'
+      };
+    }
+
+    return {
+      state: 'BUSY',
+      confidence: 'HIGH',
+      evidence,
+      missing_evidence: missing,
+      reason: `Executing ${signals.runningTool.tool_name} (${ageSec}s)`,
+      suggested_action: null
+    };
+  }
+
+  if (signals.openTurn) {
+    const ageSec = Math.floor(signals.openTurn.age);
+    evidence.push(`open_turn:${ageSec}s`);
+
+    if (signals.lastProgressAge < 60) {
+      return {
+        state: 'BUSY',
+        confidence: 'MEDIUM',
+        evidence,
+        missing_evidence: missing,
+        reason: `Processing turn (${ageSec}s)`,
+        suggested_action: null
+      };
+    }
+
+    if (ageSec > POSSIBLY_STUCK_THRESHOLD_S) {
+      if (signals.possiblyStuckSince) {
+        const stuckDuration = (signals.now() - new Date(signals.possiblyStuckSince).getTime()) / 1000;
+        if (stuckDuration >= STUCK_CONFIRMATION_THRESHOLD_S && signals.collectorLivenessFresh) {
+          return {
+            state: 'STUCK',
+            confidence: 'MEDIUM',
+            evidence,
+            missing_evidence: missing,
+            reason: `Turn open for ${ageSec}s with no progress`,
+            suggested_action: 'Consider sending a new message to the agent'
+          };
+        }
+      }
+
+      return {
+        state: 'POSSIBLY_STUCK',
+        confidence: 'MEDIUM',
+        evidence,
+        missing_evidence: missing,
+        reason: `Turn open for ${ageSec}s without recent activity`,
+        suggested_action: 'Monitor — may be thinking'
+      };
+    }
+
+    return {
+      state: 'BUSY',
+      confidence: 'MEDIUM',
+      evidence,
+      missing_evidence: missing,
+      reason: `Processing turn (${ageSec}s)`,
+      suggested_action: null
+    };
+  }
+
+  if (!signals.collectorLivenessAvailable) {
+    missing.push('collector_liveness');
+  }
+
+  if (signals.lastProgressAge < Infinity) {
+    evidence.push(`last_progress:${Math.floor(signals.lastProgressAge)}s_ago`);
+  }
+
+  return {
+    state: 'IDLE',
+    confidence: 'MEDIUM',
+    evidence,
+    missing_evidence: missing,
+    reason: 'No active task',
+    suggested_action: null
+  };
+}
+
+export class StateEngine {
+  constructor(store, collectors, config, { now = () => Date.now(), onStateChange = null } = {}) {
+    this.store = store;
+    this.collectors = collectors;
+    this._config = config;
+    this._now = now;
+    this._onStateChange = onStateChange;
+    this._snapshotTimer = null;
+    this._amTimer = null;
+    this._lastSnapshotState = null;
+    this._lastSnapshotTime = 0;
+
+    this._state = {
+      runningTools: new Map(),
+      openTurn: null,
+      pendingPermission: null,
+      possiblyStuckSince: null,
+      lastProgressAt: null,
+      pm2: null,
+      amHeartbeat: null,
+      lastSnapshotCursor: 0
+    };
+  }
+
+  onEvent(event) {
+    const now = new Date(this._now());
+
+    switch (event.event_type) {
+      case 'pre_tool_use':
+        if (event.metadata?.tool_use_id) {
+          this._state.runningTools.set(event.metadata.tool_use_id, {
+            tool_name: event.metadata.tool_name,
+            started_at: event.timestamp,
+            session_id: event.session_id
+          });
+        }
+        this._state.lastProgressAt = now;
+        this._clearPossiblyStuck();
+        break;
+
+      case 'post_tool_use':
+        if (event.metadata?.tool_use_id) {
+          this._state.runningTools.delete(event.metadata.tool_use_id);
+        }
+        this._state.lastProgressAt = now;
+        this._clearPossiblyStuck();
+        if (this._state.pendingPermission &&
+            this._state.pendingPermission.tool_name === event.metadata?.tool_name) {
+          this._state.pendingPermission = null;
+        }
+        break;
+
+      case 'user_prompt_submit':
+        this._state.openTurn = { started_at: event.timestamp, session_id: event.session_id };
+        this._state.lastProgressAt = now;
+        this._clearPossiblyStuck();
+        break;
+
+      case 'stop':
+        this._state.openTurn = null;
+        this._state.lastProgressAt = now;
+        this._clearPossiblyStuck();
+        this._state.pendingPermission = null;
+        break;
+
+      case 'permission_request':
+        this._state.pendingPermission = {
+          tool_name: event.metadata?.tool_name,
+          requested_at: event.timestamp,
+          session_id: event.session_id
+        };
+        this._state.lastProgressAt = now;
+        break;
+    }
+
+    this._broadcastStateChange();
+    this._maybeSnapshot();
+  }
+
+  onPM2Update(pm2Data) {
+    this._state.pm2 = pm2Data;
+  }
+
+  onSystemUpdate(_sysData) {
+    // System data consumed via collectors; no state-level tracking needed
+  }
+
+  getState() {
+    const derived = this._deriveState();
+    const now = new Date(this._now()).toISOString();
+
+    const runningTools = [];
+    for (const [id, tool] of this._state.runningTools) {
+      const durationS = Math.floor((this._now() - new Date(tool.started_at).getTime()) / 1000);
+      runningTools.push({
+        tool_use_id: id,
+        tool_name: tool.tool_name,
+        started_at: tool.started_at,
+        duration_s: durationS
+      });
+    }
+
+    return {
+      state: derived.state,
+      confidence: derived.confidence,
+      evidence: derived.evidence,
+      missing_evidence: derived.missing_evidence,
+      reason: derived.reason,
+      suggested_action: derived.suggested_action,
+      updated_at: now,
+      source: this._buildSourceHealth(),
+      running_tools: runningTools
+    };
+  }
+
+  getRunningTools() {
+    const tools = [];
+    for (const [id, tool] of this._state.runningTools) {
+      tools.push({
+        tool_use_id: id,
+        tool_name: tool.tool_name,
+        started_at: tool.started_at,
+        duration_s: Math.floor((this._now() - new Date(tool.started_at).getTime()) / 1000)
+      });
+    }
+    return tools;
+  }
+
+  getSourceHealth() {
+    return this._buildSourceHealth();
+  }
+
+  async initialize() {
+    try {
+      const snapshot = this.store.latestSnapshot(
+        this._config.runtime || 'claude',
+        this._currentSessionId()
+      );
+      if (snapshot) {
+        if (snapshot.running_tool) {
+          const parsed = typeof snapshot.running_tool === 'string'
+            ? JSON.parse(snapshot.running_tool) : snapshot.running_tool;
+          this._state.runningTools = new Map(Object.entries(parsed));
+        }
+        this._state.openTurn = snapshot.open_turn
+          ? (typeof snapshot.open_turn === 'string' ? JSON.parse(snapshot.open_turn) : snapshot.open_turn)
+          : null;
+        this._state.pendingPermission = snapshot.pending_permission
+          ? (typeof snapshot.pending_permission === 'string' ? JSON.parse(snapshot.pending_permission) : snapshot.pending_permission)
+          : null;
+        this._state.possiblyStuckSince = snapshot.possibly_stuck_since
+          ? new Date(snapshot.possibly_stuck_since)
+          : null;
+        this._state.lastSnapshotCursor = snapshot.last_progress_cursor || 0;
+      }
+    } catch (err) {
+      process.stderr.write(`[state-engine] Snapshot restore error: ${err.message}\n`);
+    }
+
+    try {
+      const events = this.store.eventsSince(this._state.lastSnapshotCursor);
+      for (const event of events) {
+        this.onEvent(event);
+      }
+    } catch (err) {
+      process.stderr.write(`[state-engine] Event replay error: ${err.message}\n`);
+    }
+
+    const now = this._now();
+    for (const [id, tool] of this._state.runningTools) {
+      if ((now - new Date(tool.started_at).getTime()) > STALE_TOOL_THRESHOLD_MS) {
+        this._state.runningTools.delete(id);
+      }
+    }
+    if (this._state.pendingPermission) {
+      const age = now - new Date(this._state.pendingPermission.requested_at).getTime();
+      if (age > STALE_PERMISSION_THRESHOLD_MS) {
+        this._state.pendingPermission = null;
+      }
+    }
+
+    this._readAMHeartbeat();
+  }
+
+  startSnapshotTimer() {
+    this.stopSnapshotTimer();
+    this._snapshotTimer = setInterval(() => this._periodicSnapshot(), SNAPSHOT_INTERVAL_MS);
+    this._snapshotTimer.unref();
+    this._amTimer = setInterval(() => this._readAMHeartbeat(), AM_HEARTBEAT_INTERVAL_MS);
+    this._amTimer.unref();
+  }
+
+  stopSnapshotTimer() {
+    if (this._snapshotTimer) {
+      clearInterval(this._snapshotTimer);
+      this._snapshotTimer = null;
+    }
+    if (this._amTimer) {
+      clearInterval(this._amTimer);
+      this._amTimer = null;
+    }
+  }
+
+  _deriveState() {
+    const now = this._now;
+    const oldestTool = this._oldestRunningTool();
+
+    const signals = {
+      amAvailable: this._state.amHeartbeat !== null,
+      amState: this._state.amHeartbeat?.state ?? null,
+      amHealth: this._state.amHeartbeat?.health ?? null,
+      runningTool: oldestTool ? {
+        tool_name: oldestTool.tool_name,
+        age: (now() - new Date(oldestTool.started_at).getTime()) / 1000
+      } : null,
+      openTurn: this._state.openTurn ? {
+        age: (now() - new Date(this._state.openTurn.started_at).getTime()) / 1000
+      } : null,
+      pendingPermission: this._state.pendingPermission ? {
+        tool_name: this._state.pendingPermission.tool_name,
+        age: (now() - new Date(this._state.pendingPermission.requested_at).getTime()) / 1000
+      } : null,
+      lastProgressAge: this._state.lastProgressAt
+        ? (now() - this._state.lastProgressAt.getTime()) / 1000
+        : Infinity,
+      lastProgressType: null,
+      collectorLivenessFresh: this._isCollectorLivenessFresh(),
+      collectorLivenessAvailable: this._isCollectorLivenessAvailable(),
+      activeOtelSpan: false,
+      possiblyStuckSince: this._state.possiblyStuckSince?.toISOString() ?? null,
+      runtime: this._config.runtime || 'claude',
+      now
+    };
+
+    const derived = deriveAgentState(signals);
+
+    if ((derived.state === 'POSSIBLY_STUCK' || derived.state === 'STUCK') &&
+        !this._state.possiblyStuckSince) {
+      this._state.possiblyStuckSince = new Date(now());
+    }
+
+    return derived;
+  }
+
+  _oldestRunningTool() {
+    let oldest = null;
+    for (const [, tool] of this._state.runningTools) {
+      if (!oldest || new Date(tool.started_at) < new Date(oldest.started_at)) {
+        oldest = tool;
+      }
+    }
+    return oldest;
+  }
+
+  _clearPossiblyStuck() {
+    this._state.possiblyStuckSince = null;
+  }
+
+  _isCollectorLivenessFresh() {
+    try {
+      const health = this.store.getCollectorLiveness();
+      const sources = ['pm2_reader', 'system_sampler', 'hook_handler', 'am_heartbeat'];
+      const now = this._now();
+      return sources.every(name => {
+        const h = health.find(s => s.name === name);
+        if (!h) return false;
+        if (h.status === 'stale' || h.status === 'error') return false;
+        const extra = h.extra;
+        const lastSuccess = extra?.last_success;
+        if (!lastSuccess) return false;
+        return (now - new Date(lastSuccess).getTime()) < COLLECTOR_FRESHNESS_MS;
+      });
+    } catch {
+      return false;
+    }
+  }
+
+  _isCollectorLivenessAvailable() {
+    try {
+      const health = this.store.getCollectorLiveness();
+      const sources = ['pm2_reader', 'system_sampler', 'hook_handler', 'am_heartbeat'];
+      return sources.some(name => health.find(s => s.name === name));
+    } catch {
+      return false;
+    }
+  }
+
+  _readAMHeartbeat() {
+    try {
+      const amStatusPath = path.join(
+        this._config.zylosDir,
+        'activity-monitor', 'agent-status.json'
+      );
+      const raw = fs.readFileSync(amStatusPath, 'utf8');
+      const data = JSON.parse(raw);
+      const lastCheckMs = (data.last_check || 0) * 1000;
+      const stale = (this._now() - lastCheckMs) > AM_HEARTBEAT_STALE_MS;
+      if (stale) {
+        this._state.amHeartbeat = null;
+        this.store.upsertSourceHealth('am_heartbeat', 'collector_liveness', 'stale', {
+          last_check: data.last_check,
+          age_s: Math.floor((this._now() - lastCheckMs) / 1000)
+        });
+        return;
+      }
+      this._state.amHeartbeat = {
+        state: data.state,
+        health: data.health,
+        lastCheck: data.last_check,
+        lastActivity: data.last_activity
+      };
+      this.store.upsertSourceHealth('am_heartbeat', 'collector_liveness', 'healthy', {
+        last_success: new Date(this._now()).toISOString(),
+        agent_state: data.state,
+        agent_health: data.health
+      });
+    } catch {
+      this._state.amHeartbeat = null;
+    }
+  }
+
+  _broadcastStateChange() {
+    if (this._onStateChange) {
+      try {
+        this._onStateChange(this.getState());
+      } catch {
+        // broadcast failure is non-fatal
+      }
+    }
+  }
+
+  _maybeSnapshot() {
+    try {
+      const currentState = this._deriveState().state;
+      const now = this._now();
+      if (currentState !== this._lastSnapshotState || now - this._lastSnapshotTime > SNAPSHOT_INTERVAL_MS) {
+        this._saveSnapshot();
+        this._lastSnapshotState = currentState;
+        this._lastSnapshotTime = now;
+      }
+    } catch {
+      // snapshot failure is non-fatal
+    }
+  }
+
+  _periodicSnapshot() {
+    try {
+      this._readAMHeartbeat();
+      this._saveSnapshot();
+      this._lastSnapshotTime = this._now();
+    } catch (err) {
+      process.stderr.write(`[state-engine] Snapshot error: ${err.message}\n`);
+    }
+  }
+
+  _saveSnapshot() {
+    this.store.saveSnapshot({
+      runtime: this._config.runtime || 'claude',
+      session_id: this._currentSessionId(),
+      running_tool: JSON.stringify(Object.fromEntries(this._state.runningTools)),
+      open_turn: JSON.stringify(this._state.openTurn),
+      pending_permission: JSON.stringify(this._state.pendingPermission),
+      possibly_stuck_since: this._state.possiblyStuckSince?.toISOString() || null,
+      last_progress_cursor: this._getMaxEventSeq()
+    });
+  }
+
+  _getMaxEventSeq() {
+    try {
+      const row = this.store.db.prepare('SELECT COALESCE(MAX(event_seq), 0) AS seq FROM runtime_events').get();
+      return row.seq;
+    } catch {
+      return this._state.lastSnapshotCursor;
+    }
+  }
+
+  _currentSessionId() {
+    return process.env.CLAUDE_SESSION_ID || process.env.CODEX_SESSION_ID || null;
+  }
+
+  _buildSourceHealth() {
+    try {
+      const allHealth = this.store.getSourceHealth();
+      const now = this._now();
+
+      const formatEntry = (name) => {
+        const h = allHealth.find(s => s.name === name);
+        if (!h) return { fresh: false, age_s: null, status: 'unknown' };
+        const lastSuccess = h.extra?.last_success;
+        const ageS = lastSuccess ? Math.floor((now - new Date(lastSuccess).getTime()) / 1000) : null;
+        return {
+          fresh: ageS !== null && ageS < 30,
+          age_s: ageS,
+          status: h.status
+        };
+      };
+
+      return {
+        runtime_progress: {
+          hook_events: formatEntry('hook_events'),
+          otel_events: formatEntry('otel_events')
+        },
+        collector_liveness: {
+          pm2_reader: formatEntry('pm2_reader'),
+          system_sampler: formatEntry('system_sampler'),
+          hook_handler: formatEntry('hook_handler'),
+          otel_reader: formatEntry('otel_reader'),
+          am_heartbeat: formatEntry('am_heartbeat')
+        },
+        platform: {
+          statusline: formatEntry('statusline'),
+          c4: formatEntry('c4')
+        }
+      };
+    } catch {
+      return {
+        runtime_progress: {},
+        collector_liveness: {},
+        platform: {}
+      };
+    }
+  }
+}
