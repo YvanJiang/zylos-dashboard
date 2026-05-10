@@ -158,9 +158,10 @@ Overview 是唯一入口页，回答 owner 的四个焦虑问题：
 
 | 指标 | 计算方式 | 数据来源 |
 |------|---------|---------|
-| 活跃时长 | SessionStart 到 SessionEnd/最后事件的时间累加 | Hook events |
+| 活跃时长 | 工具调用时长（PostToolUse duration_ms 累加）+ active turn 时长（UserPromptSubmit 到 Stop 的间隔减去 idle gap）。不能用 SessionStart→SessionEnd，那包含了 idle 等待时间 | Hook events |
 | 工具调用总数 | count(PostToolUse) | Hook events |
-| PR 提交/Review/Merge | 定时调用 `gh pr list --json number,title,state,createdAt,mergedAt --limit 20` 采集 PR 状态变化，写入 activity_facts。不从工具输出推断（隐私原则） | GitHub API (gh CLI) |
+| PR 提交/Merge | 定时调用 `gh pr list --json number,title,state,createdAt,mergedAt --limit 20` 采集 PR 生命周期事件，写入 activity_facts。不从工具输出推断（隐私原则） | GitHub API (gh CLI) |
+| PR Review 事件 | `gh pr list` 只覆盖 PR 元数据，不含 review。Review 事件需 `gh api repos/{owner}/{repo}/pulls/{number}/reviews --jq '.[] | {state,submitted_at,user}'`，按 PR 逐个查询 | GitHub API (gh CLI) |
 | 消息处理数 | C4 inbound + outbound count | c4.db |
 | Top 项目 | 从工具调用的 file_path 提取 repo/project，按频次排序 | Hook events + projects.md 映射 |
 | Scheduler 任务 | 完成/失败/跳过 | scheduler.db |
@@ -224,6 +225,17 @@ Overview 是唯一入口页，回答 owner 的四个焦虑问题：
 
 每个状态包含完整 contract：Positive Evidence（进入条件）、Counter Evidence（反证/不应进入的情况）、Clear Condition（退出条件）、Runtime Differences（Claude vs Codex 差异）、Freshness Requirement（数据新鲜度要求）、Confidence Downgrade（降级条件）。
 
+#### 两类信号的区分
+
+状态判定依赖两类本质不同的信号，不可混淆：
+
+| 信号类型 | 定义 | 来源 | 用途 |
+|---------|------|------|------|
+| **Runtime Progress** | 来自 Agent 的运行时事件，表示 agent 有实际活动 | Hook 事件（PreToolUse、PostToolUse、Stop 等）、OTel runtime spans/logs（interaction、llm_request、api_request） | 判断 agent 是否在工作、是否有进展 |
+| **Collector Liveness** | Dashboard 自身采集管线的健康信号，表示"我们的观测能力正常" | PM2 Reader 的 `pm2 jlist` 成功执行、System Sampler 成功采样、hook-ingest.js 进程存活、OTel Reader 进程存活 | 证明"没收到 runtime event"是因为 agent 真的没动静，而非采集管线断了 |
+
+**关键原则**：只有 Collector Liveness 证明管线正常时，Runtime Progress 的"缺失"才是有意义的证据。如果管线本身不健康，runtime event 的缺失不能作为任何判定依据——应为 UNKNOWN。
+
 #### ACTIVE — 正在工作
 
 | 项 | 内容 |
@@ -278,14 +290,14 @@ Overview 是唯一入口页，回答 owner 的四个焦虑问题：
 | 项 | 内容 |
 |---|------|
 | **含义** | Agent 可能遇到问题，但尚不确定 |
-| **Positive Evidence（满足任一场景）** | **场景 A — 工具卡住**：有未结束的工具调用，持续时间超过该工具类型 P95 阈值 × 2，且期间无其他 Hook 事件。**场景 B — 模型卡住**：收到 UserPromptSubmit 后超过 120s 无 PreToolUse 或 Stop（可能模型在生成极长回复或 API 挂起）。**场景 C — 主循环无进展**：PM2 online + 所有采集源在最近 300s 有数据，但最后的 active 信号（PreToolUse/UserPromptSubmit）距今超过 300s 且 turn 未结束（无 Stop） |
-| **Counter Evidence** | (1) 收到任何新的 Hook/OTel 事件 → 有进展，不卡; (2) 场景 B 中如果 OTel 有活跃的 `llm_request` span，说明模型确实在运行（只是慢），降低 stuck 可能性; (3) 工具是已知长时间工具（如 Agent subagent、大型 npm install）且未超过该工具的硬上限 |
-| **Clear Condition** | 收到任何新 Hook 事件（PostToolUse、Stop、PreToolUse 等） |
+| **Positive Evidence（满足任一场景）** | **场景 A — 工具卡住**：有未结束的工具调用，持续时间超过该工具类型 P95 阈值 × 2，且期间无新的 runtime progress event。**场景 B — 模型卡住**：收到 UserPromptSubmit 后超过 120s 无 PreToolUse 或 Stop（可能模型在生成极长回复或 API 挂起）。**场景 C — 主循环无进展**：PM2 online + turn 未结束（无 Stop），但最后的 runtime progress event（PreToolUse/UserPromptSubmit/PostToolUse）距今超过 300s |
+| **Counter Evidence** | (1) 收到任何新的 runtime progress event → 有进展，不卡; (2) 场景 B 中如果 OTel 有活跃的 `llm_request` span，说明模型确实在运行（只是慢），降低 stuck 可能性; (3) 工具是已知长时间工具（如 Agent subagent、大型 npm install）且未超过该工具的硬上限 |
+| **Clear Condition** | 收到任何新 runtime progress event（PostToolUse、Stop、PreToolUse 等） |
 | **Runtime Differences** | Claude: 场景 B 可通过 OTel `llm_request` span 区分"模型在运行"和"API 挂起"。Codex: OTel 有 `codex.api_request` 日志和 `codex.websocket_request` 日志，可检测 websocket 超时（success=false + duration > threshold） |
-| **Freshness Requirement** | PM2 采样必须在 30s 内。如果采集管线本身 stale，应判 UNKNOWN 而非 POSSIBLY_STUCK |
-| **Confidence Downgrade** | 默认 MEDIUM。如果有活跃 OTel span 证明模型/API 仍在通信 → 降为 LOW（可能只是慢，不是卡）。如果采集管线部分 stale → 标注 "部分数据源不可用，判断可能不准确" |
+| **Freshness Requirement** | **Collector Liveness 必须 fresh**：PM2 Reader 采样 < 30s、System Sampler 采样 < 30s。如果 collector liveness 不 fresh，应判 UNKNOWN 而非 POSSIBLY_STUCK。Runtime progress 的"无事件"本身就是 POSSIBLY_STUCK 的正向证据，不要求 fresh |
+| **Confidence Downgrade** | 默认 MEDIUM。如果有活跃 OTel span 证明模型/API 仍在通信 → 降为 LOW（可能只是慢，不是卡）。如果 collector liveness 部分 degraded → 标注 "部分采集管线不健康，判断可能不准确" |
 | **工具 P95 阈值初始值** | Bash: 120s, Read: 5s, Edit: 5s, Write: 5s, WebSearch: 30s, WebFetch: 30s, Agent: 300s。**待验证 [V2]**：需从实际 PostToolUse duration_ms 数据统计确认 |
-| **判定逻辑** | `pm2_online AND ingestion_fresh AND (scenario_a OR scenario_b OR scenario_c) AND no_counter_evidence` |
+| **判定逻辑** | `pm2_online AND collector_liveness_fresh AND (scenario_a OR scenario_b OR scenario_c) AND no_counter_evidence` |
 | **置信度** | MEDIUM（默认）/ LOW（有活跃 OTel span 或已知长时间工具） |
 | **Owner 看到** | 橙色指示灯 + "可能卡住" + 原因（如 "Bash 已运行 5 分钟，超过正常时长"、"收到消息后 2 分钟无响应"） |
 
@@ -294,14 +306,14 @@ Overview 是唯一入口页，回答 owner 的四个焦虑问题：
 | 项 | 内容 |
 |---|------|
 | **含义** | Agent 大概率遇到了问题，需要人工关注 |
-| **Positive Evidence（全部满足）** | (1) 已处于 POSSIBLY_STUCK 状态超过 300s; (2) 期间无任何新 Hook/OTel 事件; (3) PM2 进程仍 online（如果已 crash 则是 OFFLINE 不是 STUCK）; (4) 采集管线仍 fresh（确保不是采集中断导致的假象） |
-| **Counter Evidence** | (1) 收到任何新事件 → 立即清除 STUCK; (2) 采集管线变 stale → 应降级为 UNKNOWN; (3) PM2 进程 crash → 应转为 OFFLINE |
-| **Clear Condition** | 收到任何新 Hook/OTel 事件，或 PM2 进程状态变化 |
+| **Positive Evidence（全部满足）** | (1) 已处于 POSSIBLY_STUCK 状态超过 300s; (2) 期间无任何新 **runtime progress event**（Hook runtime events + OTel runtime spans/logs）; (3) PM2 进程仍 online（如果已 crash 则是 OFFLINE 不是 STUCK）; (4) **Collector Liveness 全部 fresh**——PM2 Reader 采样 < 30s、System Sampler 采样 < 30s、hook-ingest.js 进程存活（PM2 check）、OTel Reader 进程存活。这证明"没有 runtime event"是因为 agent 真的没动静，而非采集管线断了 |
+| **Counter Evidence** | (1) 收到任何新 runtime progress event → 立即清除 STUCK; (2) 任何 collector liveness 变 stale → 管线断了，不能确认 stuck，应降级为 UNKNOWN; (3) PM2 进程 crash → 应转为 OFFLINE |
+| **Clear Condition** | 收到任何新 runtime progress event，或 PM2 进程状态变化 |
 | **Runtime Differences** | 无显著差异。两个 runtime 的 STUCK 判定逻辑相同 |
-| **Freshness Requirement** | PM2 + 至少一个采集源（hook 或 OTel）必须在 30s 内有新数据或已确认 fresh。如果所有采集源都 stale，不能判 STUCK（应为 UNKNOWN） |
-| **Confidence Downgrade** | 默认 MEDIUM（不使用 HIGH，因为"无事件"是 absence of evidence，不是 evidence of absence。可能有 hook 丢失、OTel 发送延迟等原因）。仅当满足额外条件时提升为 HIGH：POSSIBLY_STUCK 超过 600s + PM2 进程 CPU 为 0% + 所有采集源 confirmed fresh |
-| **判定逻辑** | `was_possibly_stuck_for >= 300s AND no_new_events AND pm2_online AND ingestion_fresh` |
-| **置信度** | MEDIUM（默认）/ HIGH（600s + CPU=0 + all sources fresh） |
+| **Freshness Requirement** | **Collector Liveness**（非 runtime progress）必须全部 fresh：PM2 Reader < 30s、System Sampler < 30s、hook handler process alive、OTel reader process alive。如果无独立的 collector liveness 信号（例如 hook handler 和 OTel reader 没有 heartbeat），则不能判 STUCK，只能 UNKNOWN。Runtime progress 的"无事件"本身是正向证据，不要求 fresh——这正是 STUCK 要检测的状态 |
+| **Confidence Downgrade** | 默认 MEDIUM（不使用 HIGH，因为"无 runtime event"是 absence of evidence，不是 evidence of absence。可能有 hook 丢失、OTel 发送延迟等原因）。仅当满足额外条件时提升为 HIGH：POSSIBLY_STUCK 超过 600s + PM2 进程 CPU 为 0% + 所有 collector liveness fresh |
+| **判定逻辑** | `was_possibly_stuck_for >= 300s AND no_runtime_progress_event AND pm2_online AND collector_liveness_all_fresh` |
+| **置信度** | MEDIUM（默认）/ HIGH（600s + CPU=0 + all collector liveness fresh） |
 | **Owner 看到** | 红色指示灯 + "已卡住" + 原因 + 建议动作（如 "Bash 已运行 10 分钟无响应，建议检查终端"） |
 | **待 Howard 决策 [D3]** | STUCK 状态下是否提供自助操作（如"重启 session"）？涉及只读原则 |
 
@@ -325,9 +337,9 @@ Overview 是唯一入口页，回答 owner 的四个焦虑问题：
 | 项 | 内容 |
 |---|------|
 | **含义** | 数据源中断或矛盾，无法确定 agent 状态 |
-| **Positive Evidence（满足任一）** | (1) PM2 jlist 调用失败; (2) PM2 online 但所有采集源 stale > 300s（hook + OTel 均无数据，无法判定 active/idle/stuck）; (3) ACTIVE 的运行中工具证据超过 300s 无更新（可能 hook 丢失）; (4) WAITING_HUMAN 的 pending permission 超过 600s 无清除 |
-| **Counter Evidence** | 收到任何新的 fresh 数据 → 重新评估为其他状态 |
-| **Clear Condition** | 任何采集源恢复 fresh 状态，或 PM2 jlist 恢复正常 |
+| **Positive Evidence（满足任一）** | (1) PM2 jlist 调用失败; (2) PM2 online 但 collector liveness 全部 stale（采集管线断了，无法判定 active/idle/stuck）; (3) ACTIVE 的运行中工具证据超过 300s 无更新（可能 hook 丢失）; (4) WAITING_HUMAN 的 pending permission 超过 600s 无清除; (5) 无独立 collector liveness 信号时尝试判定 STUCK（管线不可验证，应为 UNKNOWN） |
+| **Counter Evidence** | 收到任何新的 runtime progress event 或 collector liveness 恢复 → 重新评估为其他状态 |
+| **Clear Condition** | Collector liveness 恢复 fresh，或 PM2 jlist 恢复正常 |
 | **Runtime Differences** | 无差异 |
 | **Freshness Requirement** | N/A（UNKNOWN 本身就是对 freshness 不足的表达） |
 | **Confidence Downgrade** | N/A |
@@ -339,9 +351,13 @@ Overview 是唯一入口页，回答 owner 的四个焦虑问题：
 
 ```javascript
 function deriveAgentState(signals) {
+  // 两类信号，不可混淆：
+  // - collectorLivenessFresh: Dashboard 采集管线是否正常（PM2 reader、system sampler、hook handler、OTel reader）
+  // - lastProgressAge: 最后一次 runtime progress event（Hook/OTel 运行时事件）距今多久
   const { pm2Status, pm2SampleAge, pm2Cpu,
           runningTool, openTurn, pendingPermission,
-          lastEventAge, lastEventType, ingestionFresh,
+          lastProgressAge, lastProgressType,
+          collectorLivenessFresh, collectorLivenessAvailable,
           activeOtelSpan, possiblyStuckSince, runtime } = signals;
 
   // 1. PM2 不可用 → UNKNOWN
@@ -361,64 +377,66 @@ function deriveAgentState(signals) {
     return { state: 'WAITING_HUMAN', confidence,
              reason: `Awaiting: ${pendingPermission.tool_name}` };
   }
-  // permission 超过 600s 未清除 → 证据过期，降级为 UNKNOWN
   if (pendingPermission && pendingPermission.age >= 600) {
     return { state: 'UNKNOWN', confidence: 'N/A',
              reason: 'Permission request stale (>10min), may have missed clear event' };
   }
 
-  // 4. 检查 STUCK / POSSIBLY_STUCK（多场景）
+  // 4. Collector liveness 不可用 → 无法判定 stuck，先检查
+  //    如果管线断了且无近期 progress → UNKNOWN
+  if (!collectorLivenessFresh && lastProgressAge > 300) {
+    return { state: 'UNKNOWN', confidence: 'N/A',
+             reason: 'Collector liveness unhealthy, unable to determine state' };
+  }
+
+  // 5. 检查 STUCK / POSSIBLY_STUCK（需要 collector liveness fresh）
   const stuckScenario = detectStuckScenario(signals);
   if (stuckScenario) {
+    // STUCK 必须有 collector liveness，否则只能 UNKNOWN
+    if (!collectorLivenessFresh || !collectorLivenessAvailable) {
+      return { state: 'UNKNOWN', confidence: 'N/A',
+               reason: `${stuckScenario.reason}, but collector liveness unavailable — cannot confirm stuck` };
+    }
     if (possiblyStuckSince && Date.now() - possiblyStuckSince > 300_000) {
-      const confidence = (Date.now() - possiblyStuckSince > 600_000 
-                          && pm2Cpu === 0 && ingestionFresh) ? 'HIGH' : 'MEDIUM';
+      const confidence = (Date.now() - possiblyStuckSince > 600_000
+                          && pm2Cpu === 0 && collectorLivenessFresh) ? 'HIGH' : 'MEDIUM';
       return { state: 'STUCK', confidence, reason: stuckScenario.reason };
     }
-    // 有活跃 OTel span 说明模型/API 仍在通信 → 降低 confidence
     const confidence = activeOtelSpan ? 'LOW' : 'MEDIUM';
     return { state: 'POSSIBLY_STUCK', confidence, reason: stuckScenario.reason };
   }
 
-  // 5. 采集管线全部 stale + PM2 online → UNKNOWN
-  if (!ingestionFresh && lastEventAge > 300) {
-    return { state: 'UNKNOWN', confidence: 'N/A',
-             reason: 'All telemetry stale, unable to determine state' };
-  }
-
-  // 6. 有运行中的工具或 open turn → ACTIVE
+  // 6. 有运行中的工具或 open turn → ACTIVE（检查证据新鲜度）
   if (runningTool) {
+    if (runningTool.evidenceAge > 300) {
+      // 工具 "运行中" 的证据太旧，可能 PostToolUse hook 丢失
+      return { state: 'UNKNOWN', confidence: 'N/A',
+               reason: 'Running tool evidence stale, hook may have been lost' };
+    }
     return { state: 'ACTIVE', confidence: 'HIGH',
              reason: `Running: ${runningTool.name} (${fmt(runningTool.duration)})` };
   }
   if (openTurn) {
-    // open turn 但无工具 → 可能在思考/生成
     return { state: 'ACTIVE', confidence: 'MEDIUM',
              reason: 'Processing prompt (no tool call yet)' };
   }
 
-  // 7. 运行中工具的证据超过 300s → 可能 hook 丢失
-  if (runningTool && runningTool.evidenceAge > 300) {
-    return { state: 'UNKNOWN', confidence: 'N/A',
-             reason: 'Running tool evidence stale, hook may have been lost' };
+  // 7. 最后事件是结束型，无 pending 状态 → IDLE
+  const isTerminalEvent = ['stop', 'turn_end', 'tool_end', 'session_start'].includes(lastProgressType);
+  if (isTerminalEvent || lastProgressAge >= 120) {
+    const confidence = lastProgressAge >= 120 ? 'HIGH' : 'MEDIUM';
+    return { state: 'IDLE', confidence, reason: `Last activity ${fmt(lastProgressAge)} ago` };
   }
 
-  // 8. 最后事件是结束型，无 pending 状态 → IDLE
-  const isTerminalEvent = ['stop', 'turn_end', 'tool_end', 'session_start'].includes(lastEventType);
-  if (isTerminalEvent || lastEventAge >= 120) {
-    const confidence = lastEventAge >= 120 ? 'HIGH' : 'MEDIUM';
-    return { state: 'IDLE', confidence, reason: `Last activity ${fmt(lastEventAge)} ago` };
-  }
-
-  // 9. 短暂的 turn 间隙 → IDLE (MEDIUM)
+  // 8. 短暂的 turn 间隙 → IDLE (MEDIUM)
   return { state: 'IDLE', confidence: 'MEDIUM',
-           reason: `Last event: ${lastEventType}, ${fmt(lastEventAge)} ago` };
+           reason: `Last event: ${lastProgressType}, ${fmt(lastProgressAge)} ago` };
 }
 
 function detectStuckScenario(signals) {
-  const { runningTool, openTurn, lastEventAge } = signals;
-  // A: 工具卡住
-  if (runningTool && runningTool.duration > runningTool.p95Threshold * 2 && lastEventAge > 60) {
+  const { runningTool, openTurn, lastProgressAge } = signals;
+  // A: 工具卡住（无新 runtime progress event）
+  if (runningTool && runningTool.duration > runningTool.p95Threshold * 2 && lastProgressAge > 60) {
     return { scenario: 'tool_stuck',
              reason: `${runningTool.name} running ${fmt(runningTool.duration)}, exceeds expected duration` };
   }
@@ -427,10 +445,10 @@ function detectStuckScenario(signals) {
     return { scenario: 'model_stuck',
              reason: `Prompt received ${fmt(openTurn.age)} ago, no response events` };
   }
-  // C: 主循环无进展（turn 未结束但 300s 无活动）
-  if (openTurn && lastEventAge > 300) {
+  // C: 主循环无进展（turn 未结束但 300s 无 runtime progress）
+  if (openTurn && lastProgressAge > 300) {
     return { scenario: 'loop_stuck',
-             reason: `No progress for ${fmt(lastEventAge)}, turn still open` };
+             reason: `No progress for ${fmt(lastProgressAge)}, turn still open` };
   }
   return null;
 }
@@ -713,8 +731,15 @@ CREATE INDEX idx_facts_type ON activity_facts(fact_type);
 CREATE INDEX idx_facts_project ON activity_facts(project);
 
 -- 采集源健康状态
+-- signal_type 区分两类信号（见 §4.2）：
+--   'collector_liveness': Dashboard 自身采集管线的健康（证明观测能力正常）
+--   'runtime_progress':   来自 Agent 的运行时事件（证明 agent 有活动）
+--   'platform':           平台级数据源（C4、Scheduler 等，不参与 stuck 判定）
 CREATE TABLE source_health (
-  source_name TEXT PRIMARY KEY,   -- 'hook' | 'otel' | 'statusline' | 'rollout' | 'pm2' | 'system' | 'c4' | 'scheduler'
+  source_name TEXT PRIMARY KEY,   -- collector_liveness: 'pm2_reader' | 'system_sampler' | 'hook_handler' | 'otel_reader'
+                                  -- runtime_progress:   'hook_events' | 'otel_events'
+                                  -- platform:           'statusline' | 'rollout' | 'c4' | 'scheduler'
+  signal_type TEXT NOT NULL,      -- 'collector_liveness' | 'runtime_progress' | 'platform'
   status TEXT NOT NULL,           -- 'healthy' | 'degraded' | 'stale' | 'error'
   last_success TEXT,              -- ISO 8601
   last_error TEXT,
