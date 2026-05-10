@@ -383,7 +383,7 @@ export class PM2Collector {
 ```javascript
 export class SystemCollector {
   constructor(store, config)
-  async collect()  // os.cpus(), os.freemem(), df command → metric_points
+  async collect()  // os.loadavg(), os.freemem(), fs.statfsSync() → metric_points
   start(intervalMs)  // default 30s
   stop()
 
@@ -392,7 +392,7 @@ export class SystemCollector {
 ```
 
 - **Metrics**: `cpu_pct`, `mem_used_bytes`, `mem_total_bytes`, `disk_used_pct`, `disk_free_bytes`.
-- **CPU calculation**: `os.loadavg()[0]` (1-minute load average). Simple, no state management needed.
+- **CPU calculation**: `Math.min(100, os.loadavg()[0] / os.cpus().length * 100)` — load-based utilization estimate normalized to 0-100 per core count. Note: this is derived from 1-minute load average, not instantaneous CPU sampling; sufficient for dashboard gauge display.
 - **Disk**: Node built-in `fs.statfsSync(config.zylosDir)` — `stats.blocks * stats.bsize` for total, `stats.bavail * stats.bsize` for available. No child process or text parsing needed.
 - **source_health**: Updates `system_sampler` (signal_type: `collector_liveness`).
 - **Failure behavior**: Individual metric failure doesn't block others.
@@ -944,7 +944,7 @@ export class HookInstaller {
 - **Claude**: Read `~/.claude/settings.json`. Merge into `hooks` object — for each of the 5 event names, append the dashboard command if not already present. Preserve existing user hooks.
 - **Codex**: Read `~/.codex/hooks.json` (array format). Append entries for each of the 5 events if not already present. Preserve existing entries.
 - **Uninstall**: Remove only entries whose command path matches the dashboard script pattern (`components/dashboard/lib/hook-ingest.js`). Never touch core skill hooks, other component hooks, or user-created hooks.
-- **Safety boundary**: The HookInstaller operates only on its own entries, identified by script path. It must not read, modify, or remove any entry that does not match the dashboard's own script path. This ensures coexistence with zylos-core's `sync-settings-hooks.js` (which preserves non-core entries), other components, and user customizations. If the dashboard is later absorbed into zylos-core, its hooks migrate naturally into the template and `sync-settings-hooks.js` management.
+- **Safety boundary**: The HookInstaller operates only on its own entries, identified by script path. It reads the full hooks file for merging, but must not modify or remove any entry that does not match the dashboard's own script path. This ensures coexistence with zylos-core's `sync-settings-hooks.js` (which preserves non-core entries), other components, and user customizations. If the dashboard is later absorbed into zylos-core, its hooks migrate naturally into the template and `sync-settings-hooks.js` management.
 - **Detection**: Read `process.env.ZYLOS_RUNTIME` (canonical interface). Default to `'claude'` if unset. No PM2 fallback — PM2 manages service modules, not the agent runtime.
 - **Idempotent**: Running install twice produces the same result (no duplicate entries). Running uninstall twice produces the same result (no errors on missing entries).
 
