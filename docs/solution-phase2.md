@@ -583,7 +583,7 @@ function detectStuckScenario(signals) {
 
 | 采集源 | 采集方式 | 数据内容 | 适用 Runtime | 已验证 |
 |--------|---------|---------|-------------|--------|
-| **Hook Handler** | 注册为 settings.json 的 command hook，接收 stdin JSON | 工具调用、Turn 边界、权限请求、Subagent、Compact、Session 生命周期 | Claude ✅ Codex ✅ | 17 种 Claude 事件 ✅，8 种 Codex 事件 ✅ (PR #18/#19 验证) |
+| **Hook Handler** | 最小 command hook（D5）：Claude 通过 `~/.claude/settings.json` hooks 字段，Codex 通过 `~/.codex/hooks.json`；hook-ingest.js 读 stdin → HTTP POST 到 Dashboard `/api/ingest` | 仅 5 个事件：PreToolUse（当前工具）、PostToolUse（工具结束）、UserPromptSubmit（Turn 开始）、Stop（Turn 结束）、PermissionRequest（等待确认）| Claude ✅ Codex ✅ | 5 种事件已验证 ✅ (PR #18/#19 + D5 确认) |
 | **OTel Reader** | 读取本地 OTel collector 数据（或直接作为 exporter endpoint） | Token、Cost、Latency、Traces、API errors | Claude ✅ Codex ✅ | Claude 6 metrics + 6 logs + 5 spans ✅; Codex 33 metrics + 13 spans ✅ (spike 验证) |
 | **StatusLine Reader** | Claude Code statusCommand 输出的 JSON | Context%、Rate limits、Cost、Cache、Effort level | Claude ✅ | 已验证 StatusLine 数据结构 ✅ (PR #18 文档) |
 | **Rollout JSONL Reader** | 读取 Codex rollout JSONL 文件 | Token count、Rate limits、Context window | Codex ✅ | Jinglever 确认数据结构 ✅ |
@@ -1046,7 +1046,7 @@ UI 的 Overview 区块通过 SSE 实时更新，无需轮询。
   - `confirmed_normal`：确定在线/空闲/正在执行明确工具
   - `in_progress_uncertain`：正在处理，但缺少中间进展信号（文案："正在处理消息"而非"正在稳定工作"）
   - `needs_attention`：强证据告警，带原因 + 建议动作（如"Bash 已运行 8 分钟，建议再等或检查终端"）
-  - `unknown_degraded`：观测���足，不假装正常（如"遥测数据中断，无法确认状态"）
+  - `unknown_degraded`：观测不足，不假装正常（如"遥测数据中断，无法确认状态"）
 - MEDIUM 异常类状态可上主 UI，但必须附可验证原因和 next action
 - LOW confidence 仅在 detail/diagnostics panel 显示
 
@@ -1055,7 +1055,7 @@ UI 的 Overview 区块通过 SSE 实时更新，无需轮询。
 - PreToolUse 到达后建立 expected closing（PostToolUse / PostToolUseFailure / Stop / timeout）
 - Hook health 三档：
   - `healthy`：近期 hook success 且无 pending expected event 超时
-  - `suspect`：存在 open expectation 超阈值，但无独立 OTel ��证
+  - `suspect`：存在 open expectation 超阈值，但无独立 OTel 旁证
   - `degraded`：OTel 记录 tool_result/hook_execution 但 hook-ingest 缺对应事件（强证据 hook 丢失）
 - 不使用 PM2 CPU + sequence 不增长作为丢 hook 的唯一证据
 - 无法验证时标 degraded/UNKNOWN，不推强结论
