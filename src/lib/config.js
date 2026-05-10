@@ -15,9 +15,9 @@ export function loadConfig() {
   const dataDir = getDataDir(zylosDir);
   const configPath = path.join(dataDir, 'config.json');
   const defaults = {
-    port: Number(process.env.DASHBOARD_PORT || 3470),
-    host: process.env.DASHBOARD_HOST || '127.0.0.1',
-    theme: process.env.DASHBOARD_THEME || 'default',
+    port: 3470,
+    host: '127.0.0.1',
+    theme: 'default',
     refreshMs: 5000,
     zylosDir,
     dataDir,
@@ -40,9 +40,9 @@ export function loadConfig() {
   return {
     ...defaults,
     ...loaded,
-    port: Number(process.env.DASHBOARD_PORT || loaded.port || defaults.port),
-    host: process.env.DASHBOARD_HOST || loaded.host || defaults.host,
-    theme: process.env.DASHBOARD_THEME || loaded.theme || defaults.theme,
+    port: Number(loaded.port || defaults.port),
+    host: loaded.host || defaults.host,
+    theme: loaded.theme || defaults.theme,
     zylosDir: loaded.zylosDir || defaults.zylosDir,
     dataDir,
     auth: {
@@ -57,6 +57,7 @@ export function loadConfig() {
 export function ensureDataDirs(config = loadConfig()) {
   fs.mkdirSync(config.dataDir, { recursive: true });
   fs.mkdirSync(path.join(config.dataDir, 'logs'), { recursive: true });
+  fs.mkdirSync(path.join(config.dataDir, 'spool'), { recursive: true });
 }
 
 export function publicDir() {

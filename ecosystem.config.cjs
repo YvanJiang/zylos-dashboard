@@ -12,8 +12,7 @@ module.exports = {
       cwd: __dirname,
       env: {
         NODE_ENV: 'production',
-        ZYLOS_DIR: zylosDir,
-        DASHBOARD_PORT: process.env.DASHBOARD_PORT || '3470'
+        ZYLOS_DIR: zylosDir
       },
       out_file: path.join(dataDir, 'logs', 'out.log'),
       error_file: path.join(dataDir, 'logs', 'error.log'),

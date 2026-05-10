@@ -35,6 +35,43 @@ export function sendHtml(res, status, body) {
   res.end(body);
 }
 
+export function readJsonBody(req, maxBytes = 64 * 1024) {
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    let size = 0;
+    let overflow = false;
+
+    req.on('data', (chunk) => {
+      size += chunk.length;
+      if (size > maxBytes) {
+        overflow = true;
+        req.resume();
+        return;
+      }
+      if (!overflow) chunks.push(chunk);
+    });
+
+    req.on('end', () => {
+      if (overflow) {
+        const err = new Error('payload_too_large');
+        err.status = 413;
+        reject(err);
+        return;
+      }
+      const raw = Buffer.concat(chunks).toString('utf8');
+      try {
+        resolve(JSON.parse(raw));
+      } catch {
+        const err = new Error('invalid_json');
+        err.status = 400;
+        reject(err);
+      }
+    });
+
+    req.on('error', (err) => reject(err));
+  });
+}
+
 export function serveStatic(req, res, rootDir) {
   const url = new URL(req.url, 'http://127.0.0.1');
   const pathname = decodeURIComponent(url.pathname);

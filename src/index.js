@@ -7,11 +7,43 @@ import { AuthGate } from './lib/auth.js';
 import { browserBaseFromRequest } from './lib/browser-base.js';
 import { ensureDataDirs, loadConfig, publicDir } from './lib/config.js';
 import { sendHtml, sendJson, sendText, serveStatic } from './lib/http.js';
+import { Store } from './lib/store.js';
+import { Sanitizer } from './lib/sanitizer.js';
+import { IngestHandler } from './lib/ingest-handler.js';
+import { SpoolDrainer } from './lib/spool-drainer.js';
 
 const startedAt = new Date();
 const config = loadConfig();
 ensureDataDirs(config);
+
 const auth = new AuthGate(config);
+
+const dbPath = path.join(config.dataDir, 'dashboard.db');
+const store = new Store(dbPath);
+const sanitizer = new Sanitizer(config.zylosDir);
+const ingestHandler = new IngestHandler(store, sanitizer, null, config);
+const spoolDrainer = new SpoolDrainer(store, sanitizer, config);
+
+// Drain spool to DB on startup (before state engine exists)
+const spoolResult = spoolDrainer.drainToDb();
+if (spoolResult.processed > 0) {
+  process.stderr.write(`[startup] Drained ${spoolResult.processed} spool events to DB\n`);
+}
+
+// Periodic spool drain (without state engine for now — PR B will add it)
+spoolDrainer.startPeriodicDrain(null, 30_000);
+
+// Retention cleanup timer (hourly)
+const retentionTimer = setInterval(() => {
+  try {
+    store.deleteEventsOlderThan(30);
+    store.deleteMetricsOlderThan(90);
+    store.deleteFactsOlderThan(365);
+  } catch (err) {
+    process.stderr.write(`[retention] Error: ${err.message}\n`);
+  }
+}, 60 * 60 * 1000);
+retentionTimer.unref();
 
 function handleApi(req, res, pathname) {
   if (pathname === '/api/health') {
@@ -20,7 +52,7 @@ function handleApi(req, res, pathname) {
       service: 'zylos-dashboard',
       startedAt: startedAt.toISOString(),
       uptimeSeconds: Math.round(process.uptime()),
-      phase: 'phase2a-pending'
+      phase: 'phase2a-data-layer'
     });
     return true;
   }
@@ -39,7 +71,20 @@ export function createServer() {
 
   return http.createServer(async (req, res) => {
     const url = new URL(req.url, `http://${req.headers.host || '127.0.0.1'}`);
-    const pathname = url.pathname;
+    let pathname = url.pathname;
+
+    // /api/ingest must be checked before any base-path stripping or auth
+    if (pathname === '/api/ingest' && req.method === 'POST') {
+      await ingestHandler.handle(req, res);
+      return;
+    }
+
+    // Reject ingest under base-path prefix
+    const prefix = req.headers['x-forwarded-prefix'];
+    if (prefix && pathname.startsWith(prefix + '/api/ingest')) {
+      sendJson(res, 404, { error: 'not_found' });
+      return;
+    }
 
     if (await auth.handle(req, res, url)) {
       return;
@@ -77,8 +122,11 @@ if (isMain && process.argv.includes('--smoke')) {
     ok: true,
     port: config.port,
     host: config.host,
-    phase: 'phase2a-pending'
+    phase: 'phase2a-data-layer',
+    db: dbPath,
+    spoolDrained: spoolResult.processed
   }, null, 2));
+  store.close();
 } else if (isMain) {
   const server = createServer();
   server.on('error', (err) => {
@@ -91,6 +139,8 @@ if (isMain && process.argv.includes('--smoke')) {
 
   for (const signal of ['SIGINT', 'SIGTERM']) {
     process.on(signal, () => {
+      spoolDrainer.stopPeriodicDrain();
+      store.close();
       server.close(() => {
         process.exit(0);
       });
