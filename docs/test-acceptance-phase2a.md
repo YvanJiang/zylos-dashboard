@@ -22,10 +22,11 @@ Phase 2a 交付物：Store Module + Hook Ingest + `/api/ingest` Endpoint + State
 
 **预期结果**:
 - 数据库文件已创建
-- 包含 5 张表：`runtime_events`、`metric_points`、`activity_facts`、`source_health`、`schema_migrations`
+- 包含 6 张表：`runtime_events`、`metric_points`、`activity_facts`、`source_health`、`state_snapshots`、`schema_migrations`
+- `state_snapshots` 表包含 AC-1 所需字段：`runtime`、`session_id`、`running_tool`（JSON）、`open_turn`（JSON）、`pending_permission`（JSON）、`possibly_stuck_since`、`last_progress_cursor`（event_seq 高水位）、`snapshot_at`
 - `schema_migrations` 包含初始版本记录（version=1）
 - WAL 模式已启用（`PRAGMA journal_mode` 返回 `wal`）
-- `runtime_events` 表包含 `ingest_id` 列
+- `runtime_events` 表包含 `ingest_id` 列和 `event_seq`（自增序号，用于 replay cursor）
 - `idx_events_ingest_id` 唯一索引存在（partial index，WHERE ingest_id IS NOT NULL）
 
 ### T-STORE-02: 幂等初始化 [MUST]
@@ -162,9 +163,12 @@ Phase 2a 交付物：Store Module + Hook Ingest + `/api/ingest` Endpoint + State
 **预期结果**:
 - runtime_events 中新增 event_type="permission_request"，category="permission"
 - 状态引擎标记 pending permission
-- tool_input 中的 command 已脱敏（截断 30 字符，危险参数已移除）
+- 记录仅存 `tool_name`，不存 `tool_input` 原文（D5 存储约束）
+- summary 为分类描述（如 "Permission requested: Bash"），不含 command 内容
 
-### T-INGEST-06: 数据脱敏 [MUST]
+### T-INGEST-06: 数据存储边界 — 负向契约 [MUST]
+
+**目的**: 验证 D5/D9 存储约束：hooks 仅存 tool_name、tool_use_id、duration_ms、sanitized summary。
 
 **步骤**:
 1. 发送包含敏感数据的 payload：
@@ -177,38 +181,41 @@ Phase 2a 交付物：Store Module + Hook Ingest + `/api/ingest` Endpoint + State
      "tool_response": "HTTP 200 OK\n{\"data\": \"secret\"}"
    }
    ```
-2. 查询 runtime_events 表中该记录
+2. 查询 runtime_events 表中该记录的所有字段（含 summary、metadata）
 
 **预期结果**:
-- `tool_response` / `tool_output` 未存储（不在任何字段中出现）
-- summary 字段是分类描述（如 "Bash tool completed"），不含原始输出
-- metadata 中 command 字段的 `sk-ant-api03-xxx` 被替换为 `[REDACTED]`
-- `Bearer` 后的内容被替换为 `[REDACTED]`
+- `tool_input` 原文不在任何字段中出现（不存 command、file_path 等参数）
+- `tool_response` / `tool_output` 不在任何字段中出现
+- `sk-ant-api03-xxx`、`Bearer` 等 credential 模式不在任何字段中出现
+- summary 为分类描述（如 "Bash tool completed, 1523ms"），不含原始 command 或输出
+- 仅保留：tool_name="Bash"、tool_use_id="toolu_02DEF"、duration_ms、source="hook"
 
-### T-INGEST-07: 文件路径脱敏 [MUST]
+### T-INGEST-07: 数据存储边界 — 路径与 prompt [MUST]
+
+**目的**: 验证完整文件路径和 prompt 内容不被持久化。
 
 **步骤**:
-1. 发送包含完整路径的 payload：
-   ```json
-   {
-     "hook_event_name": "PostToolUse",
-     "tool_name": "Read",
-     "tool_use_id": "toolu_03GHI",
-     "tool_input": { "file_path": "/home/howard/zylos/core/lib/startup.js" }
-   }
-   ```
+1. 发送 PostToolUse（tool_name="Read"，tool_input 含完整路径 `/home/howard/zylos/core/lib/startup.js`）
+2. 发送 UserPromptSubmit（payload 含 prompt 原文）
+3. 查询 runtime_events 表中这两条记录的所有字段
 
 **预期结果**:
-- metadata 中路径脱敏为 `lib/startup.js`（只保留最后两段）
+- 无完整路径出现在任何字段中
+- summary 可包含最后两段路径（如 `lib/startup.js`）作为分类描述，但不强制要求
+- prompt 原文不在任何字段中出现
+- UserPromptSubmit 记录仅标记 turn 开始，不存储 prompt 内容
 
-### T-INGEST-08: 未知事件类型 [SHOULD]
+### T-INGEST-08: 未知事件类型 — 静默忽略 [SHOULD]
 
 **步骤**:
 1. 发送 `hook_event_name` 为非 D5 最小集事件的 payload（如 "SubagentStart"）
+2. 查询 runtime_events 表
+3. 检查 source_health 中的诊断计数
 
 **预期结果**:
 - `hook-ingest.js` 进程退出码为 0（不崩溃）
-- 事件可以被接收和存储（或静默忽略——具体行为待实现确认），不影响后续事件处理
+- runtime_events 中不新增记录（不持久化非最小集事件的 raw payload）
+- source_health 或诊断指标中记录 ignored event count（可选，用于运维排查）
 
 ### T-INGEST-09: 非法 JSON 输入 [MUST]
 
@@ -256,10 +263,14 @@ Phase 2a 交付物：Store Module + Hook Ingest + `/api/ingest` Endpoint + State
 **前置条件**: Dashboard 配置了 base-path（如通过 X-Forwarded-Prefix: /dashboard）。
 
 **步骤**:
-1. 请求 `GET /dashboard/api/ingest`（base-path 前缀）
+1. 发送 `POST /dashboard/api/ingest`（base-path 前缀）并附有效 JSON body
+2. 发送 `GET /dashboard/api/ingest`（base-path 前缀）
+3. 查询 runtime_events 表
 
 **预期结果**:
-- 404 或未路由（ingest 不挂载到 base-path 下）
+- POST 返回 404 或 403（ingest 不挂载到 base-path 下）
+- GET 返回 404
+- 无数据被写入 runtime_events（POST 未被路由到 ingest handler）
 
 ### T-API-INGEST-04: 幂等去重 [MUST]
 
@@ -513,17 +524,22 @@ Phase 2a 交付物：Store Module + Hook Ingest + `/api/ingest` Endpoint + State
 **前置条件**: PM2 online，collector liveness 全部 fresh（< 30s），PM2 CPU = 0。
 
 **步骤**:
-1. 设置 possiblyStuckSince = now - 700s（超过 600s）
-2. 期间无任何 runtime progress event
-3. 调用 `GET /api/state`
+1. 注入 PreToolUse（tool_name="Bash"，timestamp = T0）——引擎进入 BUSY
+2. 使用测试时钟推进（或注入事件时戳），使 T0 距 "当前时间" 超过 Bash P95×2 阈值——引擎应进入 POSSIBLY_STUCK
+3. 调用 `GET /api/state`，确认 `state: "POSSIBLY_STUCK"`
+4. 继续推进时间，使 POSSIBLY_STUCK 持续超过 600s，期间无任何新 runtime progress event
+5. 确保 collector liveness 信号持续 fresh（PM2 Reader + System Sampler 采样 < 30s）
+6. 调用 `GET /api/state`
 
 **预期结果**:
-- `state: "STUCK"`，`confidence: "HIGH"`
+- 步骤 3：`state: "POSSIBLY_STUCK"`
+- 步骤 6：`state: "STUCK"`，`confidence: "HIGH"`（600s + CPU=0 + collector liveness fresh）
 - reason 包含持续时间和原因
+- 引擎通过自身事件序列推导出 STUCK，不依赖外部直接设置内部状态
 
 ### T-STATE-15: STUCK — Collector liveness 不 fresh 时降级 [MUST]
 
-**前置条件**: 与 T-STATE-14 相同，但 PM2 Reader 采样时间 > 30s。
+**前置条件**: 与 T-STATE-14 步骤 1-4 相同（已进入 POSSIBLY_STUCK 超过 300s），但 PM2 Reader 采样时间 > 30s。
 
 **步骤**:
 1. 调用 `GET /api/state`
@@ -584,8 +600,30 @@ Phase 2a 交付物：Store Module + Hook Ingest + `/api/ingest` Endpoint + State
 1. 在任意状态下调用 `GET /api/state`
 
 **预期结果**:
-- 响应包含 §4.4 定义的所有字段：`state`、`confidence`、`evidence`、`missing_evidence`、`reason`、`suggested_action`、`updated_at`、`source`
-- `source` 对象包含各采集源的 `fresh` 和 `age_s`
+- 响应包含 §4.4 定义的所有字段：`state`、`confidence`、`evidence`、`missing_evidence`、`reason`、`suggested_action`、`updated_at`、`source`、`owner_tier`
+- `source` 对象按 §4.2 两信号架构分层，区分 `runtime_progress` 和 `collector_liveness` 两个域：
+  ```json
+  {
+    "source": {
+      "runtime_progress": {
+        "hook_events": { "fresh": true, "age_s": 12 },
+        "otel_events": { "fresh": true, "age_s": 8 }
+      },
+      "collector_liveness": {
+        "pm2_reader": { "fresh": true, "age_s": 5 },
+        "system_sampler": { "fresh": true, "age_s": 10 },
+        "hook_handler": { "fresh": true, "age_s": 12 },
+        "otel_reader": { "fresh": true, "age_s": 8 }
+      },
+      "platform": {
+        "statusline": { "fresh": false, "age_s": 120 },
+        "c4": { "fresh": true, "age_s": 3 },
+        "scheduler": { "fresh": true, "age_s": 15 }
+      }
+    }
+  }
+  ```
+- 该分层结构保证 STUCK 判定的语义有效性可从 API 响应中验证：STUCK 要求 `collector_liveness` 全部 fresh 且 `runtime_progress` 缺失
 
 ---
 
@@ -690,17 +728,32 @@ Phase 2a 交付物：Store Module + Hook Ingest + `/api/ingest` Endpoint + State
 - 返回 value=72.5，selected_source="statusline"
 - alternatives 中包含 otel 的值
 
-### T-AC2-02: OTel 优先字段 [MUST]
+### T-AC2-02: OTel 优先字段 — tool_duration [MUST]
 
-**前置条件**: OTel 和 Hook 同时提供 session_cost 数据。
+**前置条件**: OTel span 和 Hook PostToolUse 同时提供 tool_duration 数据。
 
 **步骤**:
-1. 写入 metric_points：`{metric_name: "session_cost", source: "otel", value: 2.14}`
-2. 写入 metric_points：`{metric_name: "session_cost", source: "hook", value: 2.10}`
+1. 写入 metric_points：`{metric_name: "tool_duration", source: "otel_span", value: 1523, confidence: "actual"}`
+2. 写入 metric_points：`{metric_name: "tool_duration", source: "hook", value: 1520, confidence: "actual"}`
+3. 调用 `GET /api/metrics/tool_duration`
+
+**预期结果**:
+- 返回 value=1523，selected_source="otel_span"（D5：OTel 优先，hook 作为实时补充）
+- alternatives 中包含 hook 的值
+
+### T-AC2-02b: OTel 优先字段 — session_cost [MUST]
+
+**前置条件**: OTel 和 StatusLine 同时提供 session_cost 数据。
+
+**步骤**:
+1. 写入 metric_points：`{metric_name: "session_cost", source: "otel", value: 2.14, confidence: "actual"}`
+2. 写入 metric_points：`{metric_name: "session_cost", source: "statusline", value: 2.10, confidence: "actual"}`
 3. 调用 `GET /api/metrics/session_cost`
 
 **预期结果**:
-- 返回 value=2.14，selected_source="otel"
+- 返回 value=2.14，selected_source="otel"（OTel per-request 精度更高）
+- alternatives 中包含 statusline 的值
+- Hook 不在 session_cost 的 source chain 中（D5：hooks 不提供 cost 数据）
 
 ### T-AC2-03: Fallback 链 [MUST]
 
