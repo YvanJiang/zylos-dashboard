@@ -1,12 +1,12 @@
 export class SseHub {
-  constructor(intervalMs = 5000) {
-    this.intervalMs = intervalMs;
+  constructor(keepaliveMs = 15_000) {
+    this.keepaliveMs = keepaliveMs;
     this.clients = new Set();
-    this.timer = null;
+    this.keepaliveTimer = null;
     this.sequence = 0;
   }
 
-  add(res, producer) {
+  addClient(res) {
     res.writeHead(200, {
       'content-type': 'text/event-stream',
       'cache-control': 'no-store',
@@ -14,38 +14,48 @@ export class SseHub {
       'x-accel-buffering': 'no'
     });
     res.write(': connected\n\n');
-    const client = { res, producer };
-    this.clients.add(client);
-    this.start();
+    this.clients.add(res);
+    this._startKeepalive();
     res.on('close', () => {
-      this.clients.delete(client);
-      if (this.clients.size === 0) this.stop();
+      this.clients.delete(res);
+      if (this.clients.size === 0) this._stopKeepalive();
     });
   }
 
-  start() {
-    if (this.timer) return;
-    this.timer = setInterval(() => this.tick(), this.intervalMs);
+  removeClient(res) {
+    this.clients.delete(res);
+    if (this.clients.size === 0) this._stopKeepalive();
   }
 
-  stop() {
-    if (!this.timer) return;
-    clearInterval(this.timer);
-    this.timer = null;
-  }
-
-  async tick() {
-    for (const client of this.clients) {
+  broadcast(eventType, data) {
+    this.sequence += 1;
+    const payload = `id: ${this.sequence}\nevent: ${eventType}\ndata: ${JSON.stringify(data)}\n\n`;
+    for (const res of this.clients) {
       try {
-        const payload = await client.producer();
-        this.sequence += 1;
-        client.res.write(`id: ${this.sequence}\n`);
-        client.res.write(`event: metrics\n`);
-        client.res.write(`data: ${JSON.stringify(payload)}\n\n`);
-      } catch (err) {
-        client.res.write(`event: error\n`);
-        client.res.write(`data: ${JSON.stringify({ error: err.message })}\n\n`);
+        res.write(payload);
+      } catch {
+        this.clients.delete(res);
       }
     }
+  }
+
+  _startKeepalive() {
+    if (this.keepaliveTimer) return;
+    this.keepaliveTimer = setInterval(() => {
+      for (const res of this.clients) {
+        try {
+          res.write(': keepalive\n\n');
+        } catch {
+          this.clients.delete(res);
+        }
+      }
+    }, this.keepaliveMs);
+    this.keepaliveTimer.unref();
+  }
+
+  _stopKeepalive() {
+    if (!this.keepaliveTimer) return;
+    clearInterval(this.keepaliveTimer);
+    this.keepaliveTimer = null;
   }
 }
