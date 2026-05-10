@@ -584,7 +584,7 @@ _isCollectorLivenessFresh() {
 }
 ```
 
-**AM unavailable and STUCK**: `am_heartbeat` is included in collector liveness because it provides session-level liveness evidence — if AM heartbeat is not fresh, we cannot distinguish "agent stuck" from "agent session exited." Therefore: AM unavailable (process not running, no source_health entry) → `_isCollectorLivenessFresh()` returns false → STUCK cannot be confirmed → state degrades to UNKNOWN. This is intentional: STUCK requires all observation channels healthy to be a reliable judgment. If AM is permanently absent (e.g. AM not installed), the system stays at POSSIBLY_STUCK (MEDIUM) without escalating to STUCK — which is the conservative correct behavior. Note: PM2 process status is orthogonal — it monitors the launcher process, not the agent session. PM2 belongs in system health/collector_liveness, not in OFFLINE or STUCK resolution logic.
+**AM unavailable and STUCK**: `am_heartbeat` is included in collector liveness because it provides session-level liveness evidence — if AM heartbeat is not fresh, we cannot distinguish "agent stuck" from "agent session exited." Therefore: AM unavailable (process not running, no source_health entry) → `_isCollectorLivenessFresh()` returns false → STUCK cannot be confirmed → state degrades to UNKNOWN. This is intentional: STUCK requires all observation channels healthy to be a reliable judgment. If AM is permanently absent (e.g. AM not installed), the system stays at POSSIBLY_STUCK (MEDIUM) without escalating to STUCK — which is the conservative correct behavior. Note: PM2 process status is orthogonal — it monitors service modules (AM, comm-bridge, etc.), not the agent runtime's tmux session. PM2 belongs in system health/collector_liveness, not in OFFLINE or STUCK resolution logic.
 
 ```javascript
 // For reference: _isCollectorLivenessAvailable() checks if sources have ever reported
@@ -599,7 +599,7 @@ _isCollectorLivenessAvailable() {
 
 OFFLINE detection uses AM `agent-status.json` as the **sole source**. PM2 does not participate in OFFLINE determination.
 
-**Why PM2 cannot determine OFFLINE**: PM2 manages the tmux-launcher process, not the Claude/Codex session itself. PM2 "online" only proves the launcher is alive — the agent session inside could have exited, crashed, or become unresponsive. PM2 "stopped" means the launcher process isn't running, which is a system/process health fact — not an agent OFFLINE detection. AM performs actual **heartbeat probes** against the agent session, providing application-level liveness evidence that PM2 structurally cannot.
+**Why PM2 cannot determine OFFLINE**: PM2 manages service modules (activity-monitor, comm-bridge, etc.) — it does **not** manage the agent runtime's tmux session. The Claude/Codex session runs inside a tmux session whose lifecycle is independent of PM2. PM2 "online" or "stopped" reflects service module status, not agent runtime status — PM2 has zero visibility into whether the agent session is alive, exited, or unresponsive. AM performs actual **heartbeat probes** against the agent session, providing application-level liveness evidence that PM2 structurally cannot.
 
 **P1 boundary (Zylos01 × Jinglever × Howard consensus)**:
 1. `agent-status.json` is used **only** as an agent session heartbeat / application liveness signal, for OFFLINE/UNRESPONSIVE detection.
