@@ -1,20 +1,144 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-theme="light" data-base-path="__BASE_PATH__">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Zylos Dashboard</title>
-<style>
-  body { font-family: system-ui, sans-serif; background: #1a1a2e; color: #e0e0e0; display: flex; justify-content: center; align-items: center; min-height: 100vh; margin: 0; }
-  .container { text-align: center; }
-  h1 { font-size: 1.5rem; font-weight: 400; margin-bottom: 0.5rem; }
-  p { color: #888; font-size: 0.9rem; }
-</style>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="__ASSET_ROOT__/css/style.css?v=phase2a">
+<link rel="stylesheet" href="__ASSET_ROOT__/themes/light.css?v=phase2a">
+<script type="module" src="__ASSET_ROOT__/js/app.js?v=phase2a"></script>
 </head>
 <body>
-<div class="container">
-  <h1>Zylos Dashboard</h1>
-  <p>Phase 2a — under construction</p>
-</div>
+<header class="app-header">
+  <div>
+    <p class="eyebrow">Zylos</p>
+    <h1 data-i18n="app.title">Zylos Dashboard</h1>
+  </div>
+  <div class="header-actions">
+    <span class="connection-pill" id="connection-status" data-state="connecting" data-i18n="status.connecting">Connecting</span>
+    <button class="language-button" id="locale-toggle" type="button" data-i18n="lang.switch">中文</button>
+  </div>
+</header>
+
+<nav class="dashboard-tabs" aria-label="Dashboard sections">
+  <button class="tab active" type="button" data-tab="overview" data-i18n="tab.overview">Overview</button>
+  <button class="tab" type="button" data-tab="trends" data-i18n="tab.trends">Trends</button>
+</nav>
+
+<main>
+  <section class="tab-panel active" id="tab-overview">
+    <div class="overview-grid">
+      <section class="panel runtime-panel" aria-labelledby="runtime-title">
+        <div class="panel-heading">
+          <h2 id="runtime-title" data-i18n="block.runtime">Runtime State</h2>
+          <span class="freshness" id="state-updated">--</span>
+        </div>
+        <div class="runtime-hero">
+          <span class="state-dot state-unknown" id="state-dot" aria-hidden="true"></span>
+          <div>
+            <p class="state-title" id="state-title">--</p>
+            <p class="state-reason" id="state-reason">--</p>
+          </div>
+        </div>
+        <div class="runtime-meta">
+          <div>
+            <span class="label" data-i18n="label.confidence">Confidence</span>
+            <strong id="state-confidence">--</strong>
+          </div>
+          <div>
+            <span class="label" data-i18n="label.action">Action</span>
+            <strong id="state-action">--</strong>
+          </div>
+        </div>
+        <details class="tool-details" id="tool-details">
+          <summary>
+            <span data-i18n="label.running_tools">Running tools</span>
+            <span class="badge" id="tool-count">0</span>
+          </summary>
+          <div class="tool-list" id="tool-list"></div>
+        </details>
+      </section>
+
+      <section class="panel" aria-labelledby="capacity-title">
+        <div class="panel-heading">
+          <h2 id="capacity-title" data-i18n="block.capacity">Capacity & Cost</h2>
+          <span class="freshness" id="metrics-updated">--</span>
+        </div>
+        <div class="metric-stack">
+          <article class="metric-row">
+            <div class="metric-topline">
+              <span class="label" data-i18n="label.context">Context</span>
+              <strong id="metric-context-value">--</strong>
+            </div>
+            <div class="bar"><span id="metric-context-bar"></span></div>
+            <small id="metric-context-source">--</small>
+          </article>
+          <article class="metric-row">
+            <div class="metric-topline">
+              <span class="label" data-i18n="label.rate_limit_5h">5h Rate Limit</span>
+              <strong id="metric-rate-5h-value">--</strong>
+            </div>
+            <div class="bar"><span id="metric-rate-5h-bar"></span></div>
+          </article>
+          <article class="metric-row">
+            <div class="metric-topline">
+              <span class="label" data-i18n="label.rate_limit_7d">7d Rate Limit</span>
+              <strong id="metric-rate-7d-value">--</strong>
+            </div>
+            <div class="bar"><span id="metric-rate-7d-bar"></span></div>
+          </article>
+          <div class="metric-pair">
+            <article>
+              <span class="label" data-i18n="label.cost">Cost</span>
+              <strong id="metric-cost-value">--</strong>
+              <small id="metric-cost-source">--</small>
+            </article>
+            <article>
+              <span class="label" data-i18n="label.cache_hit">Cache Hit Rate</span>
+              <strong id="metric-cache-value">--</strong>
+              <small id="metric-cache-source">--</small>
+            </article>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel" aria-labelledby="health-title">
+        <div class="panel-heading">
+          <h2 id="health-title" data-i18n="block.health">Health & System</h2>
+          <span class="freshness" id="health-updated">--</span>
+        </div>
+        <div class="system-grid">
+          <article class="system-tile">
+            <span class="label" data-i18n="label.cpu">CPU</span>
+            <strong id="system-cpu">--</strong>
+          </article>
+          <article class="system-tile">
+            <span class="label" data-i18n="label.memory">Memory</span>
+            <strong id="system-memory">--</strong>
+          </article>
+          <article class="system-tile">
+            <span class="label" data-i18n="label.disk">Disk</span>
+            <strong id="system-disk">--</strong>
+          </article>
+          <article class="system-tile">
+            <span class="label" data-i18n="label.pm2">PM2 Services</span>
+            <strong id="system-pm2">--</strong>
+          </article>
+        </div>
+        <div class="source-list" id="source-list"></div>
+      </section>
+    </div>
+  </section>
+
+  <section class="tab-panel" id="tab-trends" hidden>
+    <section class="panel empty-panel">
+      <h2 data-i18n="tab.trends">Trends</h2>
+      <p data-i18n="trends.placeholder">Trend charts are scheduled for the next phase.</p>
+    </section>
+  </section>
+</main>
 </body>
 </html>
