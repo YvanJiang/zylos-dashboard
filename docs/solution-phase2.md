@@ -38,7 +38,7 @@ Dashboard 不是运维后台，不是 telemetry 技术面板。它是 **owner �
 
 ## 3. Owner View 信息架构
 
-Overview 是唯一入口页，回答 owner 的四个焦虑问题：
+Dashboard 采用多 Tab 结构（D8）。**Overview** 是默认 tab 和主入口，回答 owner 的四个焦虑问题；**Trends** tab 展示历史趋势图。Overview 回答的四个问题：
 
 1. **它活着吗？**
 2. **它在干什么？**
@@ -150,11 +150,11 @@ Overview 是唯一入口页，回答 owner 的四个焦虑问题：
 
 **脱敏规则**：file_path 只取最后两段（如 `cli/lib/startup.js`）；Bash command 截断 30 字符，隐藏参数中的路径和 token；不展示工具输出内容。
 
-#### ⑤ Work History & Trends
+#### ⑤ Work History（今日摘要）
 
-**回答**：它今天/本周做了什么？使用趋势如何？
+**回答**：它今天做了什么？
 
-**今日摘要卡片**（从 activity_facts 表聚合）：
+**今日摘要卡片**（从 activity_facts 表聚合，在 Overview tab 展示）：
 
 | 指标 | 计算方式 | 数据来源 |
 |------|---------|---------|
@@ -166,6 +166,10 @@ Overview 是唯一入口页，回答 owner 的四个焦虑问题：
 | 消息处理数 | C4 inbound + outbound count | c4.db |
 | Top 项目 | 从工具调用的 file_path 提取 repo/project，按频次排序 | Hook events + projects.md 映射 |
 | Scheduler 任务 | 完成/失败/跳过 | scheduler.db |
+
+### 3.3 Trends Tab（趋势页）
+
+> **D8（Howard, 2026-05-10）：Dashboard 支持多 Tab。趋势图放在独立的 Trends tab**，不在 Overview 页内展开。Overview 只放今日摘要卡片，保持整洁。点击 tab 切换到趋势页查看历史数据。
 
 **趋势图**（从 metric_points 表聚合）：
 
@@ -944,6 +948,7 @@ UI 的 Overview 区块通过 SSE 实时更新，无需轮询。
 | D5 | 数据源优先级 + 状态粒度 | **OTel 优先，最小化 Hook 侵入**（OTel 通过 runtime 环境变量启用，对用户透明；Hook 写入用户 settings.json，每条都是侵入）。但保留最小 tool lifecycle hook 以支持**工具级实时状态**（Option B）。Hook 最小集：PreToolUse、PostToolUse、UserPromptSubmit、Stop、PermissionRequest。Hook 只存 tool_name/tool_use_id/duration/sanitized summary，不存 tool_input/tool_output 原文。Per-metric resolver：StatusLine 对其独占字段（context%/rate_limit/effort）是 preferred source 而非 OTel fallback。退出条件：OTel 后续支持 tool-start streaming 信号时移除 PreToolUse hook。适用 Claude + Codex 双 runtime。 | §5.2, §5.3, AC-2 |
 | D6 | Work History PR 数据 | 第一版不采集 PR 数据。用户 Git 平台不确定（GitHub/GitLab/Gitea/私有部署），通用方案成本过高。Work History 只展示 Hook/OTel 可直接计算的指标：tool calls、active time、top project。PR 指标后续有需求再考虑 | §3.2 ⑤ |
 | D7 | 状态命名 + 判定来源 + 颜色方案 | **命名**：ACTIVE → BUSY（对齐 Zylos 内部语义）。**OFFLINE 判定**：AM agent-status.json 的 status 字段优先（D7 特殊例外：AM 对 runtime 离线/在线判定可靠），AM 不可用时 PM2 兜底。**BUSY 判定**：Dashboard 自建逻辑（AM 的 busy 判定不可靠）。**颜色方案**：灰色=OFFLINE、绿色=IDLE、黄色=BUSY、蓝色闪烁=WAITING_HUMAN、橙色=POSSIBLY_STUCK、红色=STUCK | §4.1, §4.2 全部状态 |
+| D8 | 页面结构：多 Tab | Dashboard 支持多 Tab。Overview tab 放实时状态 + 今日摘要（①②③④⑤⑥）。Trends tab 放趋势图（日活跃时长、工具调用数、Token 消耗、费用、消息量）。趋势图不在 Overview 内展开，保持 Overview 整洁 | §3.2 ⑤, §3.3 |
 
 ### 待数据验证
 
