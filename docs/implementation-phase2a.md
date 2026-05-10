@@ -577,9 +577,21 @@ _isCollectorLivenessFresh() {
   const sources = ['pm2_reader', 'system_sampler', 'hook_handler', 'am_heartbeat'];
   return sources.every(name => {
     const h = health.find(s => s.source_name === name);
-    return h && h.status !== 'stale' && h.status !== 'error'
+    if (!h) return false;  // source never reported → not fresh
+    return h.status !== 'stale' && h.status !== 'error'
       && (Date.now() - new Date(h.last_success)) < 30_000;
   });
+}
+```
+
+**AM unavailable and STUCK**: `am_heartbeat` is included in collector liveness because it provides session-level liveness evidence — if AM heartbeat is not fresh, we cannot distinguish "agent stuck" from "agent exited but launcher still running" (PM2 alone can't tell). Therefore: AM unavailable (process not running, no source_health entry) → `_isCollectorLivenessFresh()` returns false → STUCK cannot be confirmed → state degrades to UNKNOWN. This is intentional: STUCK requires all observation channels healthy to be a reliable judgment. If AM is permanently absent (e.g. AM not installed), the system stays at POSSIBLY_STUCK (MEDIUM) without escalating to STUCK — which is the conservative correct behavior.
+
+```javascript
+// For reference: _isCollectorLivenessAvailable() checks if sources have ever reported
+_isCollectorLivenessAvailable() {
+  const health = this.store.getCollectorLiveness();
+  const sources = ['pm2_reader', 'system_sampler', 'hook_handler', 'am_heartbeat'];
+  return sources.some(name => health.find(s => s.source_name === name));
 }
 ```
 
@@ -710,7 +722,8 @@ Matches §4.4 + T-STATE-20 (two-domain source structure):
       "pm2_reader": { "fresh": true, "age_s": 5, "status": "healthy" },
       "system_sampler": { "fresh": true, "age_s": 12, "status": "healthy" },
       "hook_handler": { "fresh": true, "age_s": 3, "status": "healthy" },
-      "otel_reader": { "fresh": true, "age_s": 8, "status": "healthy" }
+      "otel_reader": { "fresh": true, "age_s": 8, "status": "healthy" },
+      "am_heartbeat": { "fresh": true, "age_s": 6, "status": "healthy" }
     },
     "platform": {
       "statusline": { "fresh": true, "age_s": 15, "status": "healthy" },
