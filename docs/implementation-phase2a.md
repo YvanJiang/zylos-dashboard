@@ -891,7 +891,7 @@ Phase 2a delivers Overview blocks ①②③ only (Live Runtime State, Capacity &
 | `--bg-code` | `rgba(241, 245, 249, 0.9)` | Code block background |
 | `--text` | `#101827` | Primary text |
 | `--text-dim` | `#526170` | Secondary text |
-| `--text-muted` | `#7a8794` | Tertiary text (labels, captions) |
+| `--text-muted` | `#7a8794` | Tertiary text (non-critical, ≥16px only) |
 | `--accent` | `#0d9488` | Primary accent (teal) |
 | `--accent-dim` | `#ccfbf1` | Accent background tint |
 | `--accent-hover` | `#0f766e` | Accent hover |
@@ -911,11 +911,11 @@ State dots are graphical indicators — must meet WCAG 1.4.11 non-text contrast 
 |-------|-----------|-------------------|-------------|
 | OFFLINE | `#64748b` (slate-500) | 4.4:1 | `--state-offline` |
 | IDLE | `#16a34a` (green-600) | 3.5:1 | `--state-idle` |
-| BUSY | `#ca8a04` (yellow-600) | 3.2:1 | `--state-busy` |
+| BUSY | `#a16207` (yellow-700) | 4.7:1 | `--state-busy` |
 | WAITING_HUMAN | `#2563eb` (blue-600, flashing) | 4.6:1 | `--state-waiting` |
 | POSSIBLY_STUCK | `#ea580c` (orange-600) | 3.4:1 | `--state-possibly-stuck` |
 | STUCK | `#dc2626` (red-600) | 4.0:1 | `--state-stuck` |
-| UNKNOWN | `#9ca3af` (gray-400) | 3.0:1 | `--state-unknown` |
+| UNKNOWN | `#6b7280` (gray-500) | 4.6:1 | `--state-unknown` |
 
 **Typography**
 
@@ -928,6 +928,8 @@ State dots are graphical indicators — must meet WCAG 1.4.11 non-text contrast 
 | Metric value | Inter | 24px | 700 |
 | Metric unit | Inter | 12px | 400 |
 | Monospace | JetBrains Mono, monospace | 13px | 400 |
+
+Labels (12px) use `--text-dim` (#526170, 5.1:1 vs `--bg`) to meet WCAG AA 4.5:1 for small text. `--text-muted` (#7a8794, 3.5:1) is reserved for non-critical text at ≥16px where AA large-text 3:1 applies.
 
 Font import via `<link>` from Google Fonts (Inter 400/500/600/700, JetBrains Mono 400).
 
