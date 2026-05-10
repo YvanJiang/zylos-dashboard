@@ -642,16 +642,42 @@ Claude Code 和 Codex 使用不同的配置文件和 schema：
 - `installCodexHooks()`: 读取/合并 `~/.codex/hooks.json`（数组格式），保留用户已有 hook
 - Runtime 检测：通过当前 PM2 进程名或 `.env` 中的 `ZYLOS_RUNTIME` 变量确定
 
-`hook-ingest.js` 逻辑：
+`hook-ingest.js` 逻辑（轻量 HTTP 客户端，不直接操作 SQLite）：
 1. 从 stdin 读取 JSON payload
-2. 脱敏（§8 规则）
-3. 标准化为 canonical event 格式
-4. 写入 SQLite runtime_events 表
-5. 更新 source_health 表的 hook 采集源状态
-6. 如果是 PreToolUse，记录 running tool 状态；PostToolUse 清除
-7. 如果是 PermissionRequest，记录 pending permission
+2. 生成 `ingest_id`（UUIDv4 或 content hash + received_at，用于幂等去重）
+3. 基础脱敏（仅处理跨进程边界前必须的字段，如 credentials）
+4. 分类 event name / runtime
+5. HTTP POST 到 `127.0.0.1:${DASHBOARD_PORT}/api/ingest`，body 包含 `ingest_id` + 脱敏后 payload
+6. 如果 POST 失败（Dashboard 不在线或超时），追加一行到本地 JSONL spool 文件
 
-**性能约束**：hook handler 是同步阻塞的（尤其 Codex），必须快速完成。目标 < 50ms。SQLite WAL 模式 + 简单 INSERT 可以满足。
+**spool 容灾设计**：
+- 路径：`components/dashboard/spool/hook-events.jsonl`
+- 行格式：`{ ingest_id, received_at, runtime, hook_event_name, payload_version, data }`
+- 上限：按文件大小（默认 10MB）或行数限制，超出后丢弃最早行
+- 服务端 drain：Dashboard 启动时及定期检查 spool，rename 文件后逐行处理，`INSERT OR IGNORE` 基于 `ingest_id` 唯一索引去重
+- 幂等保证：hook POST 成功但进程未观察到 200 响应时可能同时 spool，服务端 drain 时靠 `ingest_id` 避免重复写入
+
+**Dashboard 服务端 `/api/ingest` 端点**：
+- 接收 POST body → 深度脱敏（§8 规则）→ 标准化 canonical event → 写入 SQLite runtime_events 表
+- 更新 source_health 表的 hook 采集源状态
+- 如果是 PreToolUse，记录 running tool 状态；PostToolUse 清除
+- 如果是 PermissionRequest，记录 pending permission
+- SQLite 连接由 Dashboard 服务端长驻持有（better-sqlite3，WAL 模式，prepared statement 缓存）
+
+**Ingest 端点安全约束**：
+- 仅接受 loopback remoteAddress（127.0.0.1 / ::1），拒绝非本地请求
+- 可选：从 env/runtime config 读取 local ingest token，POST 须携带
+- 不通过 base-path/proxy 路由暴露（不挂载到公网路径下）
+- CORS 设为 none，不接受浏览器 credentials
+
+**性能约束**：hook handler 是同步阻塞的（尤其 Codex），必须快速完成。目标 < 50ms。hook-ingest.js 仅做 stdin 读取 + HTTP POST（Node 启动 ~30ms + POST ~5ms），不加载 SQLite 库。服务端写入 < 1ms（WAL + prepared INSERT）。
+
+**故障隔离（关键约束）**：hook-ingest.js 运行在主 agent session 的 hook 链中，任何阻塞或崩溃都会影响 agent 的响应循环。必须保证：
+- HTTP POST 超时 **200ms**（含 DNS + 连接 + 响应），超时后立即走 spool 路径，**不重试**
+- 进程总生命周期硬上限 **500ms**（在入口处设 `setTimeout(() => process.exit(0), 500)`），无论任何异常都不会长时间挂起
+- **始终 exit(0)**：hook-ingest.js 不管成功、POST 失败、spool 写入失败，都返回 exit code 0，不阻断 runtime 的 hook 链
+- 不使用 `node:http`/`node:https` 的默认超时（过长），使用 `AbortController` + `setTimeout` 精确控制
+- spool 写入使用 `appendFileSync`（同步但极快，< 1ms），确保退出前数据已落盘
 
 ### 5.4 Runtime Adapter
 
@@ -723,6 +749,7 @@ interface CanonicalEvent {
 -- 脱敏后存储，不含原始 payload
 CREATE TABLE runtime_events (
   id TEXT PRIMARY KEY,            -- UUID
+  ingest_id TEXT,                 -- 幂等去重 key（hook-ingest.js 生成，spool drain 时 INSERT OR IGNORE）
   timestamp TEXT NOT NULL,        -- ISO 8601
   runtime TEXT NOT NULL,          -- 'claude' | 'codex'
   session_id TEXT,
@@ -736,6 +763,7 @@ CREATE TABLE runtime_events (
   created_at TEXT DEFAULT (datetime('now'))
 );
 
+CREATE UNIQUE INDEX idx_events_ingest_id ON runtime_events(ingest_id) WHERE ingest_id IS NOT NULL;
 CREATE INDEX idx_events_time ON runtime_events(timestamp);
 CREATE INDEX idx_events_type ON runtime_events(event_type);
 CREATE INDEX idx_events_session ON runtime_events(session_id);
@@ -791,9 +819,27 @@ CREATE TABLE source_health (
   event_count_1h INTEGER DEFAULT 0,
   updated_at TEXT DEFAULT (datetime('now'))
 );
+
+-- Schema 版本管理（从第一天建立，支持后续迭代）
+CREATE TABLE schema_migrations (
+  version INTEGER PRIMARY KEY,
+  applied_at TEXT DEFAULT (datetime('now')),
+  description TEXT
+);
 ```
 
-### 6.2 数据保留策略
+### 6.2 技术依赖
+
+| 依赖 | 版本 | 用途 | 决策依据 |
+|------|------|------|---------|
+| `better-sqlite3` | latest | Dashboard 自有 SQLite DB 的读写 | D9：产品级数据不用 experimental API；WAL + prepared stmt 满足 < 50ms hook 写入；native addon 编译风险可控 |
+| `chart.js` | 4.4.9 | 前端图表（已有） | Phase 1 已引入 |
+
+前端保持 Vanilla JS 零构建方案。不引入前端框架或构建工具。
+
+现有 `sqlite-cli.js`（CLI 只读查询 c4.db / scheduler.db）保留不动。Dashboard 自有 DB 通过独立的 `src/lib/store.js` 模块管理，使用 `better-sqlite3` 长驻连接。
+
+### 6.3 数据保留策略
 
 | 表 | 保留时长 | 清理方式 |
 |---|---------|---------|
@@ -804,7 +850,7 @@ CREATE TABLE source_health (
 
 **决策 [D2] — 已确认**：30 天事件 + 90 天指标（日聚合 365 天）+ 365 天事实。预估 SQLite 文件大小约 50-200MB/年。
 
-### 6.3 不存储的数据
+### 6.4 不存储的数据
 
 以下数据 **不** 写入 Dashboard 存储：
 
@@ -949,6 +995,7 @@ UI 的 Overview 区块通过 SSE 实时更新，无需轮询。
 | D6 | Work History PR 数据 | 第一版不采集 PR 数据。用户 Git 平台不确定（GitHub/GitLab/Gitea/私有部署），通用方案成本过高。Work History 只展示 Hook/OTel 可直接计算的指标：tool calls、active time、top project。PR 指标后续有需求再考虑 | §3.2 ⑤ |
 | D7 | 状态命名 + 判定来源 + 颜色方案 | **命名**：ACTIVE → BUSY（对齐 Zylos 内部语义）。**OFFLINE 判定**：AM agent-status.json 的 status 字段优先（D7 特殊例外：AM 对 runtime 离线/在线判定可靠），AM 不可用时 PM2 兜底。**BUSY 判定**：Dashboard 自建逻辑（AM 的 busy 判定不可靠）。**颜色方案**：灰色=OFFLINE、绿色=IDLE、黄色=BUSY、蓝色闪烁=WAITING_HUMAN、橙色=POSSIBLY_STUCK、红色=STUCK | §4.1, §4.2 全部状态 |
 | D8 | 页面结构：多 Tab | Dashboard 支持多 Tab。Overview tab 放实时状态 + 今日摘要（①②③④⑤⑥）。Trends tab 放趋势图（日活跃时长、工具调用数、Token 消耗、费用、消息量）。趋势图不在 Overview 内展开，保持 Overview 整洁 | §3.2 ⑤, §3.3 |
+| D9 | 技术架构改造 + Hook 接收架构 | **SQLite 选型**：`better-sqlite3`（产品级数据不依赖 experimental API；WAL 模式 + 单连接常驻 + prepared stmt；`node:sqlite` 留作未来简化候选）。**Hook ingest**：hook-ingest.js 轻量 HTTP POST 到 `127.0.0.1:$DASHBOARD_PORT/api/ingest`（不直接操作 SQLite），失败时追加到 bounded JSONL spool。服务端长驻 SQLite 连接处理写入。**Ingest 安全**：loopback-only + 可选 local token + 不暴露到 proxy/base-path + CORS none。**幂等去重**：`ingest_id` 唯一索引 + `INSERT OR IGNORE`。**独立 store 模块**：现有 sqlite-cli.js 只读适配器不改动。**Schema 迁移**：schema_migrations 表从第一天建立。**积压降级**：spool 增长时 source_health 标 degraded，状态引擎降级为 UNKNOWN | §5.3, §6.1, §6.2, AC-5 |
 
 ### 待数据验证
 
@@ -1012,3 +1059,11 @@ UI 的 Overview 区块通过 SSE 实时更新，无需轮询。
   - `degraded`：OTel 记录 tool_result/hook_execution 但 hook-ingest 缺对应事件（强证据 hook 丢失）
 - 不使用 PM2 CPU + sequence 不增长作为丢 hook 的唯一证据
 - 无法验证时标 degraded/UNKNOWN，不推强结论
+
+**AC-5: Hook 延迟基准 + Spool 恢复测试**（与 Jinglever 论证确认，2026-05-10）
+- hook-ingest.js 端到端延迟基准：p50/p95/p99 < 50ms（Dashboard 在线），p50/p95/p99 < 40ms（Dashboard 离线，spool 写入路径）
+- HTTP POST 超时 **200ms**（含连接建立），超时后立即走 spool 路径，不重试
+- hook-ingest.js 总进程生命周期硬上限 **500ms**（setTimeout + process.exit(0)），防止任何异常阻塞主 agent session
+- hook-ingest.js **始终 exit(0)**，不因自身错误影响 runtime hook 链
+- 失败模式测试：Dashboard 停止 → N 个事件产生（spool 累积）→ Dashboard 重启 → spool drain → `ingest_id` 去重验证无重复写入 → 状态引擎 replay 恢复正确状态 → `source_health` 从 degraded 转为 healthy
+- 验证 runtime 不因 hook 正常执行而观察到可感知的延迟（即 hook 开销对 agent 用户体验无影响）
