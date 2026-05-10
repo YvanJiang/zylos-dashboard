@@ -203,8 +203,9 @@ function renderMetrics() {
   const cache = state.metrics.get('cache_hit_rate');
   const contextValue = metricValue(context);
   const rateValue = metricValue(rate);
-  const rate5h = typeof rateValue === 'object' ? (rateValue['5h'] ?? rateValue.five_hour ?? rateValue.short ?? rateValue.value) : rateValue;
-  const rate7d = typeof rateValue === 'object' ? (rateValue['7d'] ?? rateValue.seven_day ?? rateValue.long ?? rateValue.value) : null;
+  const rateObject = rateValue && typeof rateValue === 'object';
+  const rate5h = rateObject ? (rateValue['5h'] ?? rateValue.five_hour ?? rateValue.short ?? rateValue.value) : rateValue;
+  const rate7d = rateObject ? (rateValue['7d'] ?? rateValue.seven_day ?? rateValue.long ?? rateValue.value) : null;
 
   $('#metric-context-value').textContent = formatPercent(contextValue);
   $('#metric-context-bar').style.width = `${barPercent(contextValue)}%`;
@@ -327,7 +328,8 @@ async function refreshAll() {
     refreshHealth()
   ]);
   const ok = results.some((result) => result.status === 'fulfilled');
-  renderConnection(ok ? 'polling' : 'degraded');
+  const sseOpen = state.eventSource?.readyState === EventSource.OPEN;
+  renderConnection(ok ? (sseOpen ? 'live' : 'polling') : 'degraded');
 }
 
 function applySsePayload(eventName, payload) {
