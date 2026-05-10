@@ -950,3 +950,43 @@ UI 的 Overview 区块通过 SSE 实时更新，无需轮询。
 | **Phase 2a** | Hook Handler + SQLite schema + 状态判定引擎 + Overview 区块 ①②③ | 实时状态 + 健康 + 容量，能回答"活着吗？卡了吗？" |
 | **Phase 2b** | Timeline + Work History + Communication | 区块 ④⑤⑥，能回答"在做什么？做了什么？" |
 | **Phase 2c** | 趋势图 + OTel 深度集成 + Runtime adapter 完善 | 完整 Overview + 历史趋势 |
+
+### Phase 2a Acceptance Criteria
+
+以下为 Phase 2a 编码完成后的验收条件（与 Jinglever 论证确认，2026-05-10）：
+
+**AC-1: 状态引擎重启恢复**
+- Schema 包含 `event_seq`（自增序号）和 `state_snapshots` 表（每 30s 或状态变更写入：runningTool / openTurn / pendingPermission / possiblyStuckSince / lastProgressCursor）
+- 重启时��最新 snapshot 恢复 → 从 cursor 往后 replay events → high-watermark catch-up → 切 live
+- 无 snapshot 时从最近 SessionStart（或 max(now-2h, oldest boundary)）回放
+- 测试覆盖：open tool 恢复、open turn 恢复、pending permission ��复、missing close event 降级为 UNKNOWN
+- replay 期间新事件正常入库但不进内存状态，catch-up 后再处理
+- State key 为 runtime + session_id，不使用全局状态
+
+**AC-2: 指标源优先级解析（metric_resolver）**
+- 核心指标逐个定��� preferred source chain（不依赖全局 actual>estimated 兜底）：
+  - `context_pct`: statusline.actual > rollout.actual > derived_token_estimate.estimated
+  - `session_cost`: statusline.actual > otel_cost_sum.actual > token_price_estimated
+  - `daily_cost`: otel_cost_sum.actual > statusline_delta.inferred > token_price_estimated
+  - `cache_hit_rate`: otel_token_usage.actual > statusline_current_usage.actual
+- 存储层保留所有原始 metric_points
+- API 输出包含：selected_source、freshness、confidence、alternatives、fallback_reason
+
+**AC-3: Owner UX 不暴露原始 confidence 标签**
+- UI 不显示 HIGH/MEDIUM/LOW，映射为 owner 可理解的 4 层：
+  - `confirmed_normal`：确定在线/空闲/正在执行明确工具
+  - `in_progress_uncertain`：正在处理，但缺少中间进展信号（文案："正在处理消息"而非"正在稳定工作"）
+  - `needs_attention`：强证据告警，带原因 + 建议动作（如"Bash 已运行 8 分钟，建议再等或检查终端"）
+  - `unknown_degraded`：观测���足，不假装正常（如"遥测数据中断，无法确认状态"）
+- MEDIUM 异常类状态可上主 UI，但必须附可验证原因和 next action
+- LOW confidence 仅在 detail/diagnostics panel 显示
+
+**AC-4: Hook 健康检测（expected-event pairing + OTel 交叉验证）**
+- hook-ingest.js 记录 last_success / last_duration_ms / last_error 到 source_health
+- PreToolUse 到达后建立 expected closing（PostToolUse / PostToolUseFailure / Stop / timeout）
+- Hook health 三档：
+  - `healthy`：近期 hook success 且无 pending expected event 超时
+  - `suspect`：存在 open expectation 超阈值，但无独立 OTel ��证
+  - `degraded`：OTel 记录 tool_result/hook_execution 但 hook-ingest 缺对应事件（强证据 hook 丢失）
+- 不使用 PM2 CPU + sequence 不增长作为丢 hook 的唯一证据
+- 无法验证时标 degraded/UNKNOWN，不推强结论
