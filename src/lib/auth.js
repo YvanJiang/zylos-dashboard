@@ -189,9 +189,18 @@ function loginPageHtml(base, error = '', next = '') {
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Login - Zylos Dashboard</title>
-    <link rel="stylesheet" href="${browserPath(base, '_assets/css/tokens.css')}">
-    <link rel="stylesheet" href="${browserPath(base, '_assets/css/themes/default.css')}">
-    <link rel="stylesheet" href="${browserPath(base, '_assets/css/dashboard.css')}">
+    <style>
+      body { font-family: system-ui, sans-serif; background: #1a1a2e; color: #e0e0e0; display: flex; justify-content: center; align-items: center; min-height: 100vh; margin: 0; }
+      .login-shell { width: 100%; max-width: 360px; padding: 1rem; }
+      .login-panel { background: #16213e; border-radius: 8px; padding: 2rem; }
+      .eyebrow { font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.1em; color: #888; margin: 0 0 0.25rem; }
+      h1 { margin: 0 0 1.5rem; font-size: 1.5rem; font-weight: 500; }
+      .login-error { color: #e74c3c; font-size: 0.85rem; margin: 0 0 1rem; }
+      .login-label { display: block; font-size: 0.85rem; color: #aaa; margin-bottom: 0.5rem; }
+      .login-input { width: 100%; padding: 0.6rem; border: 1px solid #333; border-radius: 4px; background: #0f1a30; color: #e0e0e0; font-size: 1rem; box-sizing: border-box; }
+      .login-button { width: 100%; padding: 0.7rem; margin-top: 1rem; border: none; border-radius: 4px; background: #3498db; color: #fff; font-size: 1rem; cursor: pointer; }
+      .login-button:hover { background: #2980b9; }
+    </style>
   </head>
   <body>
     <main class="login-shell">
