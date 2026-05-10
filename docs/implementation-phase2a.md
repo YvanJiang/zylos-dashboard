@@ -29,10 +29,16 @@ hook-ingest.js (独立进程，不依赖 Dashboard)
 │   ├── pm2-collector.js     ← pm2 jlist polling  │
 │   ├── system-collector.js  ← CPU/mem/disk       │
 │   └── otel-collector.js    ← OTel reader        │
-├─────────────────────────────────────────────────┤
-│ src/adapters/*  (Phase 1, unchanged)             │
-│ src/lib/sqlite-cli.js  (Phase 1, unchanged)      │
 └─────────────────────────────────────────────────┘
+
+public/
+├── css/style.css            ← layout, components, base (no color values)
+├── themes/light.css         ← token overrides for light theme
+├── js/app.js                ← SSE client, state rendering, ticking timer
+├── js/i18n.js               ← i18n loader + t()
+├── i18n/en.json             ← English
+├── i18n/zh.json             ← Chinese
+└── index.html               ← responsive layout, data-i18n attributes
 ```
 
 ### 1.2 Implementation Order
@@ -825,9 +831,9 @@ const METRIC_CHAINS = {
 | `GET /api/health` | store.getSourceHealth() + two-domain formatting | §2.7 |
 | `GET /api/metrics/:name` | MetricResolver.resolve() | §2.8 |
 
-#### Existing Routes (unchanged)
+#### Baseline Routes (from cleanup skeleton)
 
-`/api/summary`, `/api/config`, `/api/stream` — Phase 1 routes remain functional. Phase 2a adds new routes alongside them.
+`/api/health` — retained from PR #24 cleanup. Phase 2a adds new routes on top of the skeleton server (auth + static serving + health).
 
 #### Base-Path Isolation for `/api/ingest`
 
@@ -871,9 +877,310 @@ State engine calls `sse.broadcast()` after each state derivation. Collectors cal
 
 Phase 2a delivers Overview blocks ①②③ only (Live Runtime State, Capacity & Cost, Health & System). Blocks ④⑤⑥ are Phase 2b.
 
+#### 2.10.1 Visual Design System — Light Mode (ref: hxa-connect-web)
+
+基于 hxa-connect-web 最新 main（PR #59, commit 13994b5）的 light mode CSS 变量。
+
+**Color Palette (Light Mode) — 源自 hxa-connect-web `globals.css`**
+
+| Token | Value | Usage |
+|-------|-------|-------|
+| `--bg` | `#f7faf9` | Page background |
+| `--bg-secondary` | `rgba(255, 255, 255, 0.76)` | Secondary surface (frosted) |
+| `--bg-card` | `rgba(255, 255, 255, 0.88)` | Card background |
+| `--bg-elevated` | `#ffffff` | Elevated surfaces |
+| `--bg-code` | `rgba(241, 245, 249, 0.9)` | Code block background |
+| `--text` | `#101827` | Primary text |
+| `--text-dim` | `#526170` | Secondary text |
+| `--text-muted` | `#7a8794` | Tertiary text (non-critical, ≥16px only) |
+| `--accent` | `#0d9488` | Primary accent (teal) |
+| `--accent-dim` | `#ccfbf1` | Accent background tint |
+| `--accent-hover` | `#0f766e` | Accent hover |
+| `--purple` | `#6366f1` | Secondary accent (indigo) |
+| `--green` | `#059669` | Success accent |
+| `--border` | `rgba(15, 118, 110, 0.16)` | Borders (teal-tinted) |
+| `--border-focus` | `rgba(14, 165, 163, 0.45)` | Focus ring |
+| `--nav-bg` | `rgba(255, 255, 255, 0.82)` | Nav background (blur) |
+| `--shadow-card` | `0 18px 42px rgba(15,23,42,0.08), inset 0 1px 0 rgba(255,255,255,0.9)` | Card shadow |
+| `--shadow-card-hover` | `0 24px 52px rgba(15,23,42,0.12), 0 0 24px rgba(13,148,136,0.08)` | Card hover |
+
+**State Colors (per D7, WCAG non-text contrast ≥ 3:1 on `--bg`)**
+
+State dots are graphical indicators — must meet WCAG 1.4.11 non-text contrast 3:1 against page background `#f7faf9`. Colors below are for the state dot/icon; text labels use `--text` or `--text-dim`.
+
+| State | Dot Color | Ratio vs `#f7faf9` | CSS Variable |
+|-------|-----------|-------------------|-------------|
+| OFFLINE | `#64748b` (slate-500) | 4.4:1 | `--state-offline` |
+| IDLE | `#16a34a` (green-600) | 3.5:1 | `--state-idle` |
+| BUSY | `#a16207` (yellow-700) | 4.7:1 | `--state-busy` |
+| WAITING_HUMAN | `#2563eb` (blue-600, flashing) | 4.6:1 | `--state-waiting` |
+| POSSIBLY_STUCK | `#ea580c` (orange-600) | 3.4:1 | `--state-possibly-stuck` |
+| STUCK | `#dc2626` (red-600) | 4.0:1 | `--state-stuck` |
+| UNKNOWN | `#6b7280` (gray-500) | 4.6:1 | `--state-unknown` |
+
+**Typography**
+
+| Element | Font | Size | Weight |
+|---------|------|------|--------|
+| Body | Inter, system-ui, sans-serif | 14px | 400 |
+| H1 (page title) | Inter | 20px | 600 |
+| H2 (block title) | Inter | 16px | 600 |
+| Label | Inter | 12px | 500 |
+| Metric value | Inter | 24px | 700 |
+| Metric unit | Inter | 12px | 400 |
+| Monospace | JetBrains Mono, monospace | 13px | 400 |
+
+Labels (12px) use `--text-dim` (#526170, 5.1:1 vs `--bg`) to meet WCAG AA 4.5:1 for small text. `--text-muted` (#7a8794, 3.5:1) is reserved for non-critical text at ≥16px where AA large-text 3:1 applies.
+
+Font import via `<link>` from Google Fonts (Inter 400/500/600/700, JetBrains Mono 400).
+
+**Spacing & Layout**
+
+| Token | Value |
+|-------|-------|
+| `--radius` | `12px` (cards, panels) |
+| `--radius-sm` | `8px` (buttons, badges) |
+| `--radius-xs` | `4px` (inputs, inline elements) |
+| `--space-xs` | `4px` |
+| `--space-sm` | `8px` |
+| `--space-md` | `16px` |
+| `--space-lg` | `24px` |
+| `--space-xl` | `32px` |
+
+**Card Style (glass-card pattern from hxa-connect-web)**
+
+```css
+.card {
+  background: var(--bg-card);
+  backdrop-filter: blur(16px);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-card);
+  padding: var(--space-lg);
+}
+.card:hover {
+  box-shadow: var(--shadow-card-hover);
+}
+```
+
+Light mode uses semi-transparent card backgrounds (`rgba(255,255,255,0.88)`) with `backdrop-filter: blur(16px)` for frosted glass effect, matching hxa-connect-web's glass-card pattern.
+
+#### 2.10.2 Responsive Layout (Mobile-First)
+
+**Breakpoints**
+
+| Name | Width | Layout |
+|------|-------|--------|
+| Mobile | < 640px | Single column, stacked blocks |
+| Tablet | 640–1023px | 2-column grid |
+| Desktop | ≥ 1024px | 3-column grid for ①②③ |
+
+**Grid**
+
+```css
+.overview-grid {
+  display: grid;
+  gap: var(--space-md);
+  grid-template-columns: 1fr;
+}
+@media (min-width: 640px) {
+  .overview-grid { grid-template-columns: 1fr 1fr; }
+}
+@media (min-width: 1024px) {
+  .overview-grid { grid-template-columns: 1fr 1fr 1fr; }
+}
+```
+
+**Mobile Adaptations**
+
+- Tab bar: horizontal scroll if tabs overflow, sticky at top
+- Status indicator: full-width banner at top (always visible without scrolling)
+- Tool list: collapsed by default, tap to expand
+- Metric values: stack label above value (not side-by-side)
+- System gauges: `grid-template-columns: repeat(auto-fit, minmax(140px, 1fr))` — single column on narrow phones, 2 columns when space allows
+- Touch targets: minimum 44px height for all interactive elements
+- Viewport meta: `<meta name="viewport" content="width=device-width, initial-scale=1">`
+
+#### 2.10.3 Internationalization (i18n) — EN + ZH
+
+**Architecture**: Lightweight client-side i18n. No framework dependency.
+
+```
+public/
+├── i18n/
+│   ├── en.json
+│   └── zh.json
+├── js/
+│   └── i18n.js       # loader + t() function
+```
+
+**Loader (`i18n.js`)**
+
+```javascript
+const translations = {};
+let currentLocale = 'en';
+
+const SUPPORTED = ['en', 'zh'];
+
+function resolveLocale(explicit) {
+  if (explicit && SUPPORTED.includes(explicit)) return explicit;
+  const stored = localStorage.getItem('zylos-dashboard-locale');
+  if (stored && SUPPORTED.includes(stored)) return stored;
+  return navigator.language.startsWith('zh') ? 'zh' : 'en';
+}
+
+export async function initI18n(locale) {
+  currentLocale = resolveLocale(locale);
+  localStorage.setItem('zylos-dashboard-locale', currentLocale);
+  const resp = await fetch(`${BASE_PATH}/i18n/${currentLocale}.json`);
+  Object.assign(translations, await resp.json());
+  document.documentElement.lang = currentLocale;
+}
+
+export function t(key, params = {}) {
+  let text = translations[key] || key;
+  for (const [k, v] of Object.entries(params)) {
+    text = text.replace(`{${k}}`, v);
+  }
+  return text;
+}
+
+export function setLocale(locale) {
+  initI18n(locale).then(() => renderAll());
+}
+```
+
+**Translation File Structure** (`en.json` / `zh.json`)
+
+```json
+{
+  "app.title": "Zylos Dashboard",
+  "tab.overview": "Overview",
+  "tab.trends": "Trends",
+  "block.runtime": "Runtime State",
+  "block.capacity": "Capacity & Cost",
+  "block.health": "Health & System",
+  "state.offline": "Offline",
+  "state.idle": "Idle",
+  "state.busy": "Executing {tool}",
+  "state.waiting": "Waiting for user input",
+  "state.possibly_stuck": "Possibly stuck — {reason}",
+  "state.stuck": "Stuck — {reason}",
+  "state.unknown": "Status uncertain — {reason}",
+  "label.context": "Context",
+  "label.rate_limit_5h": "5h Rate Limit",
+  "label.rate_limit_7d": "7d Rate Limit",
+  "label.cost": "Cost",
+  "label.cache_hit": "Cache Hit Rate",
+  "label.cpu": "CPU",
+  "label.memory": "Memory",
+  "label.disk": "Disk",
+  "label.pm2": "PM2 Services",
+  "label.running": "{count}/{total} running",
+  "confidence.actual": "actual",
+  "confidence.estimated": "estimated",
+  "confidence.unavailable": "unavailable",
+  "lang.switch": "中文"
+}
+```
+
+**Language Switching**: Small button in header (e.g. "EN | 中文"). Locale resolution order: explicit arg → `localStorage('zylos-dashboard-locale')` → `navigator.language` → `'en'`. `setLocale()` validates against `SUPPORTED` list, writes to localStorage, reloads translations, and re-renders all `[data-i18n]` elements.
+
+**HTML Integration**: All user-visible text uses `data-i18n="key"` attributes. After `initI18n()`, a `renderAll()` pass sets `textContent` for all `[data-i18n]` elements. Dynamic text (state descriptions, metric values) uses `t()` directly in JS.
+
+#### 2.10.4 Theme Extension (Multi-Skin Support)
+
+**Goal**: Allow switching between visual themes at runtime. Phase 2a ships with one theme (light); the architecture supports adding more without component style/layout changes.
+
+**Mechanism**: Pure CSS custom property override via `data-theme` attribute on `<html>`.
+
+```
+public/
+├── themes/
+│   ├── light.css      # default — tokens from §2.10.1
+│   └── dark.css       # future — overrides same tokens
+```
+
+**Theme File Structure** (each theme overrides `:root` tokens):
+
+```css
+/* themes/light.css */
+:root[data-theme="light"] {
+  --bg: #f7faf9;
+  --text: #101827;
+  --accent: #0d9488;
+  /* ... all tokens from §2.10.1 */
+}
+
+/* themes/dark.css — example future skin */
+:root[data-theme="dark"] {
+  --bg: #0f1419;
+  --text: #e2e8f0;
+  --accent: #2dd4bf;
+  /* ... */
+}
+```
+
+**Loading Strategy**: All theme CSS files are preloaded via `<link>` in `index.html`. Switching only changes the `data-theme` attribute — no dynamic stylesheet injection needed. This keeps the mechanism simple and avoids FOUC (flash of unstyled content).
+
+```html
+<!-- index.html -->
+<link rel="stylesheet" href="css/style.css">       <!-- layout, components, base -->
+<link rel="stylesheet" href="themes/light.css">    <!-- token overrides for light -->
+<!-- future: <link rel="stylesheet" href="themes/dark.css"> -->
+```
+
+`style.css` contains component/layout/base styles (no color values). Theme files contain only `:root[data-theme=X]` token overrides.
+
+**Switching Logic**:
+
+```javascript
+const THEME_KEY = 'zylos-theme';
+const DEFAULT_THEME = 'light';
+const THEMES = ['light']; // extend when adding skins
+
+function resolveTheme(explicit) {
+  if (explicit && THEMES.includes(explicit)) return explicit;
+  const stored = localStorage.getItem(THEME_KEY);
+  if (stored && THEMES.includes(stored)) return stored;
+  return DEFAULT_THEME;
+}
+
+function initTheme(theme) {
+  const resolved = resolveTheme(theme);
+  applyTheme(resolved);
+}
+
+function applyTheme(theme) {
+  if (!THEMES.includes(theme)) {
+    theme = DEFAULT_THEME;
+    localStorage.setItem(THEME_KEY, theme);
+  }
+  document.documentElement.setAttribute('data-theme', theme);
+  localStorage.setItem(THEME_KEY, theme);
+}
+```
+
+Adding a new theme:
+1. Create `themes/<name>.css` with `:root[data-theme="<name>"] { ... }` token overrides
+2. Add `<link rel="stylesheet" href="themes/<name>.css">` to `index.html`
+3. Add `'<name>'` to the `THEMES` array
+
+**Conventions**:
+- All color/visual tokens MUST be defined via CSS variables — never hardcode colors in component styles
+- Theme files only contain variable definitions (no selectors, no layout)
+- `style.css` contains layout/component/base styles — references variables but never defines color values
+- Theme switch is instant (no page reload) because all components reference variables
+- State colors (§2.10.1) are also themed — each theme file defines its own `--state-*` values
+- Invalid/unknown theme values in localStorage are corrected to `DEFAULT_THEME` on load
+
+**Phase 2a scope**: Ship with `themes/light.css` only. Theme switcher UI deferred to a later phase, but the infrastructure (data-theme, localStorage, THEMES whitelist, `resolveTheme()`) is built in from day one so no refactoring is needed later.
+
+#### 2.10.5 Block Specifications
+
 #### ① Live Runtime State
 
-- **Status indicator**: Colored circle (CSS class per state: `state-offline`, `state-idle`, `state-busy`, `state-waiting`, `state-possibly-stuck`, `state-stuck`, `state-unknown`). Color scheme per D7.
+- **Status indicator**: Colored circle (CSS class per state: `state-offline`, `state-idle`, `state-busy`, `state-waiting`, `state-possibly-stuck`, `state-stuck`, `state-unknown`). Color scheme per D7 / §2.10.1.
 - **Ticking timer**: For BUSY state with running tool:
   ```javascript
   let timerInterval;
@@ -886,11 +1193,11 @@ Phase 2a delivers Overview blocks ①②③ only (Live Runtime State, Capacity &
   ```
   Stopped on PostToolUse arrival via SSE `state_change` event.
 - **Concurrent tools**: Show latest tool prominently. If `running_tools.length > 1`, show "+N tools running" badge. Expandable list.
-- **Natural language**: Map state to owner text (AC-3):
-  - `confirmed_normal` → "在线" / "空闲" / "正在执行 {tool}"
-  - `in_progress_uncertain` → "正在处理消息"
-  - `needs_attention` → "可能卡住 — {reason}" / "已卡住 — {reason}"
-  - `unknown_degraded` → "状态不确定 — {reason}"
+- **Natural language**: Map state to owner text (AC-3). All text through `t()`:
+  - `confirmed_normal` → `t('state.idle')` / `t('state.busy', { tool })`
+  - `in_progress_uncertain` → `t('state.waiting')`
+  - `needs_attention` → `t('state.possibly_stuck', { reason })` / `t('state.stuck', { reason })`
+  - `unknown_degraded` → `t('state.unknown', { reason })`
 - **WAITING_HUMAN**: Blue flashing animation via CSS `@keyframes` on the status circle.
 
 #### ② Capacity & Cost
@@ -903,7 +1210,7 @@ Phase 2a delivers Overview blocks ①②③ only (Live Runtime State, Capacity &
 
 #### ③ Health & System
 
-- **PM2 services**: List from `/api/system`, showing `{count}/{total} running`.
+- **PM2 services**: List from `/api/system`, showing `t('label.running', { count, total })`.
 - **CPU/Mem/Disk**: Gauges or text from `/api/system`.
 - **C4 / OTel status**: From `/api/health`, showing age since last activity.
 - **Data refresh**: Via SSE or periodic fetch (30s).
@@ -912,8 +1219,10 @@ Phase 2a delivers Overview blocks ①②③ only (Live Runtime State, Capacity &
 
 ```html
 <nav class="dashboard-tabs">
-  <button class="tab active" data-tab="overview">Overview</button>
-  <button class="tab" data-tab="trends">Trends</button>
+  <button class="tab active" data-tab="overview" data-i18n="tab.overview">Overview</button>
+  <button class="tab" data-tab="trends" data-i18n="tab.trends">Trends</button>
+  <div class="tab-spacer"></div>
+  <button class="lang-switch" onclick="toggleLocale()">中文</button>
 </nav>
 <div class="tab-content" id="tab-overview"> ... ①②③ ... </div>
 <div class="tab-content hidden" id="tab-trends"> ... charts (Phase 2c) ... </div>
@@ -990,9 +1299,13 @@ Order matters: spool `drainToDb()` BEFORE state engine construction (so spool ev
 
 `better-sqlite3` is the only new dependency. It requires native compilation (node-gyp). Build prerequisites: Python 3 + C++ compiler. Both are present on zylos01 (verified).
 
-### 4.2 No new frontend dependencies
+### 4.2 Frontend dependencies
 
-Frontend remains vanilla JS + Chart.js. No build step.
+Frontend remains vanilla JS + Chart.js. No build step, no bundler.
+
+- **Fonts**: Inter + JetBrains Mono via Google Fonts CDN `<link>` (no npm package)
+- **i18n**: Custom `i18n.js` (~30 lines), no framework
+- **Responsive**: CSS custom properties + `@media` queries, no CSS framework
 
 ---
 
@@ -1018,7 +1331,6 @@ src/
 │   ├── ingest-handler.js     # NEW: POST /api/ingest handler
 │   ├── spool-drainer.js      # NEW: spool processing
 │   ├── hook-installer.js     # NEW: Claude + Codex hook management
-│   ├── sqlite-cli.js         # UNCHANGED: Phase 1 CLI adapter
 │   ├── auth.js               # UNCHANGED
 │   ├── browser-base.js       # UNCHANGED
 │   ├── config.js             # MODIFIED: add store config, ingest token
@@ -1030,13 +1342,20 @@ src/
 │       ├── pm2-collector.js      # NEW
 │       ├── system-collector.js   # NEW
 │       └── otel-collector.js     # NEW
-├── adapters/                 # UNCHANGED (Phase 1)
 └── ...
 
 public/
-├── index.html                # MODIFIED: add tabs, ①②③ layout
-├── app.js                    # MODIFIED: SSE state updates, ticking timer
-└── style.css                 # MODIFIED: state colors, tabs, animations
+├── index.html                # REWRITTEN: responsive layout, i18n attributes, tabs, ①②③
+├── js/
+│   ├── app.js                # NEW: SSE state updates, ticking timer, tab switching
+│   └── i18n.js               # NEW: i18n loader, t() function, locale switching
+├── css/
+│   └── style.css             # NEW: layout, components, base styles (no color values)
+├── themes/
+│   └── light.css             # NEW: token overrides for light theme (§2.10.4)
+└── i18n/
+    ├── en.json               # NEW: English translations
+    └── zh.json               # NEW: Chinese translations
 ```
 
 ---
