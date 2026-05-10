@@ -130,7 +130,7 @@ CREATE TABLE state_snapshots (
   open_turn TEXT,             -- JSON: { started_at } or null
   pending_permission TEXT,    -- JSON: { tool_name, requested_at } or null
   possibly_stuck_since TEXT,  -- ISO 8601 or null
-  last_progress_cursor INTEGER NOT NULL,  -- max rowid at snapshot time
+  last_progress_cursor INTEGER NOT NULL,  -- max event_seq at snapshot time
   snapshot_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
