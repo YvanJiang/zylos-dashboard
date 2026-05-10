@@ -293,7 +293,7 @@ Phase 2a 交付物：Store Module + Hook Ingest + `/api/ingest` Endpoint + State
 
 ### T-API-INGEST-06: 可选 Local Token [SHOULD]
 
-**前置条件**: 配置了 `DASHBOARD_INGEST_TOKEN=secret123`。
+**前置条件**: 在 `~/zylos/components/dashboard/config.json` 中设置 `"ingestToken": "secret123"`。
 
 **步骤**:
 1. 不带 token 发送 POST
