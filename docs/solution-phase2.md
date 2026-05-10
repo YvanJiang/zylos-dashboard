@@ -583,7 +583,22 @@ function detectStuckScenario(signals) {
 
 ### 5.3 Hook Handler 设计
 
-Dashboard 注册自己的 hook handler，但 Claude Code 和 Codex 使用不同的配置文件和 schema：
+**D5 原则：最小 Hook 集**
+
+Dashboard 遵循 OTel 优先原则（D5），只注册 OTel 无法提供的最小 hook 集。OTel span 在工具结束后才完整落地，无法提供实时 tool-start 信号，因此保留 PreToolUse/PostToolUse 用于实时 current tool 显示。其他生命周期事件（SessionStart/SessionEnd/SubagentStart/SubagentStop/PostCompact/Notification 等）通过 OTel spans/logs 获取，不安装 hook。
+
+**最小 Hook 集（5 个事件）**：
+| Hook | 用途 | OTel 无法替代的原因 |
+|------|------|-------------------|
+| PreToolUse | 实时 current tool 显示 | OTel span 工具结束后才完整，无 tool-start streaming |
+| PostToolUse | 结束 current tool、计算 duration | 配合 PreToolUse 完成工具生命周期 |
+| UserPromptSubmit | Turn 开始信号 | OTel 无对应 prompt boundary event |
+| Stop | Turn/response 结束信号 | OTel 无精确对应（注：Stop ≠ session end，SessionEnd 是独立事件） |
+| PermissionRequest | WAITING_HUMAN 强证据 | OTel 无对应 permission waiting signal |
+
+**数据存储约束**：Hook 只存 tool_name、tool_use_id、duration_ms、sanitized summary。**不存** tool_input / tool_output 原文。
+
+Claude Code 和 Codex 使用不同的配置文件和 schema：
 
 **Claude Code**（`~/.claude/settings.json` → `hooks` 字段，支持 project/local/user 三层）：
 
@@ -592,18 +607,9 @@ Dashboard 注册自己的 hook handler，但 Claude Code 和 Codex 使用不同�
   "hooks": {
     "PreToolUse": [{ "type": "command", "command": "node ~/zylos/components/dashboard/lib/hook-ingest.js" }],
     "PostToolUse": [{ "type": "command", "command": "node ~/zylos/components/dashboard/lib/hook-ingest.js" }],
-    "PostToolUseFailure": [{ "type": "command", "command": "node ~/zylos/components/dashboard/lib/hook-ingest.js" }],
-    "Stop": [{ "type": "command", "command": "node ~/zylos/components/dashboard/lib/hook-ingest.js" }],
-    "StopFailure": [{ "type": "command", "command": "node ~/zylos/components/dashboard/lib/hook-ingest.js" }],
-    "SessionStart": [{ "type": "command", "command": "node ~/zylos/components/dashboard/lib/hook-ingest.js" }],
-    "SessionEnd": [{ "type": "command", "command": "node ~/zylos/components/dashboard/lib/hook-ingest.js" }],
-    "PermissionRequest": [{ "type": "command", "command": "node ~/zylos/components/dashboard/lib/hook-ingest.js" }],
-    "PermissionDenied": [{ "type": "command", "command": "node ~/zylos/components/dashboard/lib/hook-ingest.js" }],
-    "SubagentStart": [{ "type": "command", "command": "node ~/zylos/components/dashboard/lib/hook-ingest.js" }],
-    "SubagentStop": [{ "type": "command", "command": "node ~/zylos/components/dashboard/lib/hook-ingest.js" }],
-    "PostCompact": [{ "type": "command", "command": "node ~/zylos/components/dashboard/lib/hook-ingest.js" }],
     "UserPromptSubmit": [{ "type": "command", "command": "node ~/zylos/components/dashboard/lib/hook-ingest.js" }],
-    "Notification": [{ "type": "command", "command": "node ~/zylos/components/dashboard/lib/hook-ingest.js" }]
+    "Stop": [{ "type": "command", "command": "node ~/zylos/components/dashboard/lib/hook-ingest.js" }],
+    "PermissionRequest": [{ "type": "command", "command": "node ~/zylos/components/dashboard/lib/hook-ingest.js" }]
   }
 }
 ```
@@ -612,14 +618,11 @@ Dashboard 注册自己的 hook handler，但 Claude Code 和 Codex 使用不同�
 
 ```json
 [
-  { "event": "SessionStart", "command": "node ~/zylos/components/dashboard/lib/hook-ingest.js" },
-  { "event": "UserPromptSubmit", "command": "node ~/zylos/components/dashboard/lib/hook-ingest.js" },
   { "event": "PreToolUse", "command": "node ~/zylos/components/dashboard/lib/hook-ingest.js" },
   { "event": "PostToolUse", "command": "node ~/zylos/components/dashboard/lib/hook-ingest.js" },
-  { "event": "PermissionRequest", "command": "node ~/zylos/components/dashboard/lib/hook-ingest.js" },
+  { "event": "UserPromptSubmit", "command": "node ~/zylos/components/dashboard/lib/hook-ingest.js" },
   { "event": "Stop", "command": "node ~/zylos/components/dashboard/lib/hook-ingest.js" },
-  { "event": "PreCompact", "command": "node ~/zylos/components/dashboard/lib/hook-ingest.js" },
-  { "event": "PostCompact", "command": "node ~/zylos/components/dashboard/lib/hook-ingest.js" }
+  { "event": "PermissionRequest", "command": "node ~/zylos/components/dashboard/lib/hook-ingest.js" }
 ]
 ```
 
@@ -931,6 +934,7 @@ UI 的 Overview 区块通过 SSE 实时更新，无需轮询。
 | D2 | 数据保留时长 | 事件 30 天 / 指标 90 天（日聚合 365 天）/ 活动事实 365 天 | §6.2 |
 | D3 | STUCK 状态下是否提供自助操作 | 第一版只读。后续版本加操作按钮（按场景区分：ESC 恢复 / 杀 session / 其他）。先通过只读版积累数据，搞清 stuck 场景→action 映射后再做 | §4.2 |
 | D4 | Dashboard 认证方式 | 沿用 Phase 1 basic auth | §10 |
+| D5 | 数据源优先级 + 状态粒度 | **OTel 优先，最小化 Hook 侵入**（OTel 通过 runtime 环境变量启用，对用户透明；Hook 写入用户 settings.json，每条都是侵入）。但保留最小 tool lifecycle hook 以支持**工具级实时状态**（Option B）。Hook 最小集：PreToolUse、PostToolUse、UserPromptSubmit、Stop、PermissionRequest。Hook 只存 tool_name/tool_use_id/duration/sanitized summary，不存 tool_input/tool_output 原文。Per-metric resolver：StatusLine 对其独占字段（context%/rate_limit/effort）是 preferred source 而非 OTel fallback。退出条件：OTel 后续支持 tool-start streaming 信号时移除 PreToolUse hook。适用 Claude + Codex 双 runtime。 | §5.2, §5.3, AC-2 |
 
 ### 待数据验证
 
@@ -963,13 +967,17 @@ UI 的 Overview 区块通过 SSE 实时更新，无需轮询。
 - replay 期间新事件正常入库但不进内存状态，catch-up 后再处理
 - State key 为 runtime + session_id，不使用全局状态
 
-**AC-2: 指标源优先级解析（metric_resolver）**
-- 核心指标逐个定��� preferred source chain（不依赖全局 actual>estimated 兜底）：
-  - `context_pct`: statusline.actual > rollout.actual > derived_token_estimate.estimated
-  - `session_cost`: statusline.actual > otel_cost_sum.actual > token_price_estimated
+**AC-2: 指标源优先级解析（metric_resolver）— 遵循 D5 OTel 优先原则**
+- 核心原则（D5）：OTel 优先，最小化 Hook 侵入。对用户 settings.json 的修改越少越好。OTel 通过 runtime 环境变量启用，对用户完全透明。
+- 不使用全局 OTel > StatusLine > Hook 机械排序；按 metric_name 逐个定义 preferred source chain，依据语义准确性和数据鲜度：
+  - `context_pct`: statusline.actual > rollout.actual > derived_token_estimate.estimated（StatusLine 独占字段，是 preferred source）
+  - `rate_limit`: statusline.actual > rollout.actual（StatusLine 独占字段）
+  - `effort_level`: statusline.actual（StatusLine 独占字段，无其他源）
+  - `session_cost`: otel_cost_sum.actual > statusline.actual > token_price_estimated（OTel 优先，per-request 精度更高）
   - `daily_cost`: otel_cost_sum.actual > statusline_delta.inferred > token_price_estimated
   - `cache_hit_rate`: otel_token_usage.actual > statusline_current_usage.actual
-- 存储层保留所有原始 metric_points
+  - `tool_duration`: otel_span.actual > hook_postToolUse.actual（OTel 优先，hook 作为实时补充）
+- 存储层保留所有原始 metric_points（不丢数据）
 - API 输出包含：selected_source、freshness、confidence、alternatives、fallback_reason
 
 **AC-3: Owner UX 不暴露原始 confidence 标签**
