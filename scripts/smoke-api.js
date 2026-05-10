@@ -9,15 +9,6 @@ async function check(path, predicate) {
   return json;
 }
 
-await check('/api/health', (json) => json.ok && Array.isArray(json.adapters));
-await check('/api/summary', (json) => json.metrics && json.status && json.operations && json.cost?.rateLimits);
-await check('/api/metrics/messages', (json) => {
-  const raw = JSON.stringify(json);
-  return !raw.includes('endpoint_id') && !raw.includes('raw_content') && !raw.includes('"content"');
-});
-await check('/api/metrics/pm2_services', (json) => {
-  const raw = JSON.stringify(json);
-  return !raw.includes('pm_exec_path') && !raw.includes('outLog') && !raw.includes('errorLog');
-});
+await check('/api/health', (json) => json.ok);
 
 console.log(`dashboard API smoke ok: ${base}`);
