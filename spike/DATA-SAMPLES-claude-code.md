@@ -94,7 +94,7 @@
 
 ### 1.3 Stop
 
-**触发条件**：Claude 完成一轮 turn（助手输出结束，等待用户输入时）触发。在无头/C4-dispatch 模式下可能不触发（已确认：headless 模式下 Stop 事件不稳定）。
+**触发条件**：Claude 完成一轮 turn（助手输出结束，等待用户输入时）触发。无头/C4-dispatch 模式下也可正常触发，前提是 hook 在 session 启动前已注册；Claude Code 不会对已运行 session 热加载新 hook。
 **配置要求**：在 `hooks.Stop` 数组中注册脚本
 **提取方式**：`jq 'select(.payload.hook_event_name == "Stop")' hook-events.jsonl`
 **敏感字段**：`session_id`、`transcript_path`、`cwd`、`last_assistant_message`（含助手响应文本）
@@ -120,7 +120,7 @@
 
 ### 1.4 UserPromptSubmit
 
-**触发条件**：用户提交 prompt（发送消息）时触发。在无头/C4-dispatch 模式下可能不触发（已确认：headless 模式下此事件不稳定）。
+**触发条件**：用户提交 prompt（发送消息）时触发。无头/C4-dispatch 模式下也可正常触发，前提是 hook 在 session 启动前已注册；Claude Code 不会对已运行 session 热加载新 hook。
 **配置要求**：在 `hooks.UserPromptSubmit` 数组中注册脚本
 **提取方式**：`jq 'select(.payload.hook_event_name == "UserPromptSubmit")' hook-events.jsonl`
 **敏感字段**：`session_id`、`transcript_path`、`cwd`、`prompt`（用户原始输入，含私密内容）
@@ -555,9 +555,9 @@ OTEL_LOGS_EXPORTER=otlp
 OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318
 OTEL_EXPORTER_OTLP_PROTOCOL=http/json
 # 可选：启用 prompt/tool 内容日志
-OTel_LOG_USER_PROMPTS=true
-OTel_LOG_TOOL_DETAILS=true
-OTel_LOG_TOOL_CONTENT=true
+OTEL_LOG_USER_PROMPTS=true
+OTEL_LOG_TOOL_DETAILS=true
+OTEL_LOG_TOOL_CONTENT=true
 ```
 
 **提取方式**：
@@ -1197,7 +1197,7 @@ claude_code.interaction          (根 span，一次 turn)
 #### 2.3.3 tool（工具调用 span）
 
 **触发条件**：每个工具调用对应一个 tool span，包含工具执行完整信息。
-**Dashboard 建议**：`full_command` 含实际执行命令（需脱敏）；`events[].name == "tool.output"` 含完整输出（启用 `OTel_LOG_TOOL_CONTENT=true` 时）；`duration_ms` 是工具整体耗时（含权限等待）；tool span 的时间范围包含 `tool.blocked_on_user` 和 `tool.execution` 两个子 span
+**Dashboard 建议**：`full_command` 含实际执行命令（需脱敏）；`events[].name == "tool.output"` 含完整输出（启用 `OTEL_LOG_TOOL_CONTENT=true` 时）；`duration_ms` 是工具整体耗时（含权限等待）；tool span 的时间范围包含 `tool.blocked_on_user` 和 `tool.execution` 两个子 span
 
 ```json
 {
