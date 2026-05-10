@@ -32,7 +32,8 @@ hook-ingest.js (独立进程，不依赖 Dashboard)
 └─────────────────────────────────────────────────┘
 
 public/
-├── css/style.css            ← design tokens, responsive grid
+├── css/style.css            ← layout, components, base (no color values)
+├── themes/light.css         ← token overrides for light theme
 ├── js/app.js                ← SSE client, state rendering, ticking timer
 ├── js/i18n.js               ← i18n loader + t()
 ├── i18n/en.json             ← English
@@ -1120,31 +1121,60 @@ public/
 }
 ```
 
+**Loading Strategy**: All theme CSS files are preloaded via `<link>` in `index.html`. Switching only changes the `data-theme` attribute — no dynamic stylesheet injection needed. This keeps the mechanism simple and avoids FOUC (flash of unstyled content).
+
+```html
+<!-- index.html -->
+<link rel="stylesheet" href="css/style.css">       <!-- layout, components, base -->
+<link rel="stylesheet" href="themes/light.css">    <!-- token overrides for light -->
+<!-- future: <link rel="stylesheet" href="themes/dark.css"> -->
+```
+
+`style.css` contains component/layout/base styles (no color values). Theme files contain only `:root[data-theme=X]` token overrides.
+
 **Switching Logic**:
 
 ```javascript
 const THEME_KEY = 'zylos-theme';
 const DEFAULT_THEME = 'light';
+const THEMES = ['light']; // extend when adding skins
 
-function initTheme() {
-  const theme = localStorage.getItem(THEME_KEY) || DEFAULT_THEME;
-  applyTheme(theme);
+function resolveTheme(explicit) {
+  if (explicit && THEMES.includes(explicit)) return explicit;
+  const stored = localStorage.getItem(THEME_KEY);
+  if (stored && THEMES.includes(stored)) return stored;
+  return DEFAULT_THEME;
+}
+
+function initTheme(theme) {
+  const resolved = resolveTheme(theme);
+  applyTheme(resolved);
 }
 
 function applyTheme(theme) {
+  if (!THEMES.includes(theme)) {
+    theme = DEFAULT_THEME;
+    localStorage.setItem(THEME_KEY, theme);
+  }
   document.documentElement.setAttribute('data-theme', theme);
   localStorage.setItem(THEME_KEY, theme);
 }
 ```
 
+Adding a new theme:
+1. Create `themes/<name>.css` with `:root[data-theme="<name>"] { ... }` token overrides
+2. Add `<link rel="stylesheet" href="themes/<name>.css">` to `index.html`
+3. Add `'<name>'` to the `THEMES` array
+
 **Conventions**:
 - All color/visual tokens MUST be defined via CSS variables — never hardcode colors in component styles
 - Theme files only contain variable definitions (no selectors, no layout)
-- Adding a new theme = create a new CSS file + add to the theme list
+- `style.css` contains layout/component/base styles — references variables but never defines color values
 - Theme switch is instant (no page reload) because all components reference variables
 - State colors (§2.10.1) are also themed — each theme file defines its own `--state-*` values
+- Invalid/unknown theme values in localStorage are corrected to `DEFAULT_THEME` on load
 
-**Phase 2a scope**: Ship with `light.css` only. Theme switcher UI deferred to a later phase, but the infrastructure (data-theme, localStorage, `applyTheme()`) is built in from day one so no refactoring is needed later.
+**Phase 2a scope**: Ship with `themes/light.css` only. Theme switcher UI deferred to a later phase, but the infrastructure (data-theme, localStorage, THEMES whitelist, `resolveTheme()`) is built in from day one so no refactoring is needed later.
 
 #### 2.10.5 Block Specifications
 
@@ -1320,7 +1350,9 @@ public/
 │   ├── app.js                # NEW: SSE state updates, ticking timer, tab switching
 │   └── i18n.js               # NEW: i18n loader, t() function, locale switching
 ├── css/
-│   └── style.css             # NEW: design tokens, responsive grid, state colors, animations
+│   └── style.css             # NEW: layout, components, base styles (no color values)
+├── themes/
+│   └── light.css             # NEW: token overrides for light theme (§2.10.4)
 └── i18n/
     ├── en.json               # NEW: English translations
     └── zh.json               # NEW: Chinese translations
