@@ -147,7 +147,10 @@ export function createServer() {
   const rootDir = publicDir();
 
   function renderIndex(req, res) {
-    const html = fs.readFileSync(path.join(rootDir, 'index.html'), 'utf8');
+    const browserBase = browserBaseFromRequest(req);
+    const html = fs.readFileSync(path.join(rootDir, 'index.html'), 'utf8')
+      .replaceAll('__BASE_PATH__', browserBase)
+      .replaceAll('__ASSET_ROOT__', browserBase ? `${browserBase}/_assets` : '/_assets');
     sendHtml(res, 200, html);
   }
 
