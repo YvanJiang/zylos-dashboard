@@ -73,8 +73,8 @@ Overview 是唯一入口页，回答 owner 的四个焦虑问题：
 ├─────────────────────────────────────────────────────────────────┤
 │  ⑤ Work History (今日摘要)         │  ⑥ Communication            │
 │  ┌─────────────────────────┐      │  ┌────────────────────────┐ │
-│  │ 3 PR reviews            │      │  │ TG: 12 in / 8 out      │ │
-│  │ 1 PR submitted          │      │  │ Lark: 3 in / 2 out     │ │
+│  │ 128 messages processed  │      │  │ TG: 12 in / 8 out      │ │
+│  │ 3 scheduler tasks       │      │  │ Lark: 3 in / 2 out     │ │
 │  │ 45 tool calls           │      │  │ HXA: 24 in / 18 out    │ │
 │  │ 2.3h active time        │      │  │ Avg response: 14s      │ │
 │  │ Top project: zylos-core │      │  │ Pending: 0             │ │
@@ -160,8 +160,9 @@ Overview 是唯一入口页，回答 owner 的四个焦虑问题：
 |------|---------|---------|
 | 活跃时长 | 工具调用时长（PostToolUse duration_ms 累加）+ active turn 时长（UserPromptSubmit 到 Stop 的间隔减去 idle gap）。不能用 SessionStart→SessionEnd，那包含了 idle 等待时间 | Hook events |
 | 工具调用总数 | count(PostToolUse) | Hook events |
-| PR 提交/Merge | 定时调用 `gh pr list --json number,title,state,createdAt,mergedAt --limit 20` 采集 PR 生命周期事件，写入 activity_facts。不从工具输出推断（隐私原则） | GitHub API (gh CLI) |
-| PR Review 事件 | `gh pr list` 只覆盖 PR 元数据，不含 review。Review 事件需 `gh api repos/{owner}/{repo}/pulls/{number}/reviews --jq '.[] | {state,submitted_at,user}'`，按 PR 逐个查询 | GitHub API (gh CLI) |
+
+> **D6（Howard, 2026-05-10）：PR 数据暂不采集**。用户的 Git 平台不确定（GitHub/GitLab/Gitea/私有部署），做通用方案成本过高。第一版 Work History 只展示能从 Hook/OTel 直接算出的指标（tool calls、active time、top project）。PR 相关指标后续有需求再考虑。
+
 | 消息处理数 | C4 inbound + outbound count | c4.db |
 | Top 项目 | 从工具调用的 file_path 提取 repo/project，按频次排序 | Hook events + projects.md 映射 |
 | Scheduler 任务 | 完成/失败/跳过 | scheduler.db |
@@ -935,6 +936,7 @@ UI 的 Overview 区块通过 SSE 实时更新，无需轮询。
 | D3 | STUCK 状态下是否提供自助操作 | 第一版只读。后续版本加操作按钮（按场景区分：ESC 恢复 / 杀 session / 其他）。先通过只读版积累数据，搞清 stuck 场景→action 映射后再做 | §4.2 |
 | D4 | Dashboard 认证方式 | 沿用 Phase 1 basic auth | §10 |
 | D5 | 数据源优先级 + 状态粒度 | **OTel 优先，最小化 Hook 侵入**（OTel 通过 runtime 环境变量启用，对用户透明；Hook 写入用户 settings.json，每条都是侵入）。但保留最小 tool lifecycle hook 以支持**工具级实时状态**（Option B）。Hook 最小集：PreToolUse、PostToolUse、UserPromptSubmit、Stop、PermissionRequest。Hook 只存 tool_name/tool_use_id/duration/sanitized summary，不存 tool_input/tool_output 原文。Per-metric resolver：StatusLine 对其独占字段（context%/rate_limit/effort）是 preferred source 而非 OTel fallback。退出条件：OTel 后续支持 tool-start streaming 信号时移除 PreToolUse hook。适用 Claude + Codex 双 runtime。 | §5.2, §5.3, AC-2 |
+| D6 | Work History PR 数据 | 第一版不采集 PR 数据。用户 Git 平台不确定（GitHub/GitLab/Gitea/私有部署），通用方案成本过高。Work History 只展示 Hook/OTel 可直接计算的指标：tool calls、active time、top project。PR 指标后续有需求再考虑 | §3.2 ⑤ |
 
 ### 待数据验证
 
