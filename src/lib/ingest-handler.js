@@ -76,9 +76,9 @@ export class IngestHandler {
         confidence: 'actual'
       };
 
-      this.store.insertEvent(event);
+      const { inserted } = this.store.insertEvent(event);
 
-      if (this.stateEngine) {
+      if (inserted && this.stateEngine) {
         this.stateEngine.onEvent(event);
       }
 

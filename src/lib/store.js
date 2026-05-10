@@ -201,7 +201,7 @@ export class Store {
 
   insertEvent(event) {
     const seq = this._nextSeq.get().seq;
-    this._insertEvent.run({
+    const info = this._insertEvent.run({
       id: event.id,
       ingest_id: event.ingest_id,
       event_seq: seq,
@@ -216,6 +216,7 @@ export class Store {
       source: event.source || 'hook',
       confidence: event.confidence || 'actual'
     });
+    return { inserted: info.changes > 0, event_seq: seq };
   }
 
   queryEvents({ since, until, types, sessionId, limit = 100, offset = 0 }) {

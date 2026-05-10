@@ -63,6 +63,8 @@ export class SpoolDrainer {
       return result;
     }
 
+    const failedLines = [];
+
     for (const line of lines) {
       try {
         const record = JSON.parse(line);
@@ -89,19 +91,32 @@ export class SpoolDrainer {
           confidence: 'actual'
         };
 
-        this.store.insertEvent(event);
-        result.processed++;
+        const { inserted } = this.store.insertEvent(event);
 
-        if (stateEngine) {
-          stateEngine.onEvent(event);
+        if (inserted) {
+          result.processed++;
+          if (stateEngine) {
+            stateEngine.onEvent(event);
+          }
+        } else {
+          result.duplicates++;
         }
       } catch (err) {
         if (err.message && err.message.includes('UNIQUE')) {
           result.duplicates++;
         } else {
           result.errors++;
+          failedLines.push(line);
           process.stderr.write(`[spool-drainer] Line error: ${err.message}\n`);
         }
+      }
+    }
+
+    if (failedLines.length > 0) {
+      try {
+        fs.writeFileSync(this.spoolPath, failedLines.join('\n') + '\n', { flag: 'a' });
+      } catch (err) {
+        process.stderr.write(`[spool-drainer] Failed to requeue ${failedLines.length} lines: ${err.message}\n`);
       }
     }
 
