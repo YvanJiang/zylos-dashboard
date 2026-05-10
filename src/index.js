@@ -259,8 +259,9 @@ if (isMain && process.argv.includes('--smoke')) {
       otelCollector.stop();
       stateEngine.stopSnapshotTimer();
       spoolDrainer.stopPeriodicDrain();
-      store.close();
+      sse.closeAll();
       server.close(() => {
+        store.close();
         process.exit(0);
       });
     });

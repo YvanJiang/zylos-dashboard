@@ -39,6 +39,14 @@ export class SseHub {
     }
   }
 
+  closeAll() {
+    this._stopKeepalive();
+    for (const res of this.clients) {
+      try { res.end(); } catch { /* already closed */ }
+    }
+    this.clients.clear();
+  }
+
   _startKeepalive() {
     if (this.keepaliveTimer) return;
     this.keepaliveTimer = setInterval(() => {

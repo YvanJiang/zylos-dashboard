@@ -8,19 +8,41 @@ const STUCK_CONFIRMATION_THRESHOLD_S = 600;
 const COLLECTOR_FRESHNESS_MS = 30_000;
 const SNAPSHOT_INTERVAL_MS = 30_000;
 const AM_HEARTBEAT_INTERVAL_MS = 15_000;
+const AM_HEARTBEAT_STALE_MS = 60_000;
 
 export function deriveAgentState(signals) {
   const evidence = [];
   const missing = [];
 
-  if (signals.amAvailable && signals.amStatus === 'offline') {
-    evidence.push('am_heartbeat:offline');
+  if (!signals.amAvailable) {
+    missing.push('am_heartbeat');
+    if (signals.runningTool) {
+      evidence.push(`tool_running:${signals.runningTool.tool_name}:${Math.floor(signals.runningTool.age)}s`);
+    }
+    if (signals.openTurn) {
+      evidence.push(`open_turn:${Math.floor(signals.openTurn.age)}s`);
+    }
+    return {
+      state: 'UNKNOWN',
+      confidence: 'LOW',
+      evidence,
+      missing_evidence: missing,
+      reason: 'AM heartbeat unavailable — session liveness unconfirmed',
+      suggested_action: 'Check activity-monitor service'
+    };
+  }
+
+  evidence.push(`am:${signals.amState}:health=${signals.amHealth}`);
+
+  if (signals.amState === 'offline' || signals.amHealth !== 'ok') {
     return {
       state: 'OFFLINE',
       confidence: 'HIGH',
       evidence,
       missing_evidence: missing,
-      reason: 'Agent session is not responding',
+      reason: signals.amState === 'offline'
+        ? 'Agent session is not responding'
+        : `AM health degraded: ${signals.amHealth}`,
       suggested_action: 'Check if the agent session is running'
     };
   }
@@ -131,9 +153,6 @@ export function deriveAgentState(signals) {
     };
   }
 
-  if (!signals.amAvailable) {
-    missing.push('am_heartbeat');
-  }
   if (!signals.collectorLivenessAvailable) {
     missing.push('collector_liveness');
   }
@@ -142,36 +161,13 @@ export function deriveAgentState(signals) {
     evidence.push(`last_progress:${Math.floor(signals.lastProgressAge)}s_ago`);
   }
 
-  if (signals.lastProgressAge !== Infinity && signals.lastProgressAge < 300) {
-    return {
-      state: 'IDLE',
-      confidence: 'MEDIUM',
-      evidence,
-      missing_evidence: missing,
-      reason: 'No active task',
-      suggested_action: null
-    };
-  }
-
-  if (signals.amAvailable && signals.amStatus === 'online') {
-    evidence.push('am_heartbeat:online');
-    return {
-      state: 'IDLE',
-      confidence: 'MEDIUM',
-      evidence,
-      missing_evidence: missing,
-      reason: 'No active task',
-      suggested_action: null
-    };
-  }
-
   return {
-    state: 'UNKNOWN',
-    confidence: 'LOW',
+    state: 'IDLE',
+    confidence: 'MEDIUM',
     evidence,
     missing_evidence: missing,
-    reason: 'Insufficient data to determine state',
-    suggested_action: 'Wait for more telemetry data'
+    reason: 'No active task',
+    suggested_action: null
   };
 }
 
@@ -384,10 +380,8 @@ export class StateEngine {
 
     const signals = {
       amAvailable: this._state.amHeartbeat !== null,
-      amStatus: this._state.amHeartbeat?.status ?? null,
-      pm2Status: this._state.pm2?.runtimeProcess?.pm2_env?.status ?? null,
-      pm2SampleAge: this._state.pm2 ? (now() - this._state.pm2.collectedAt) / 1000 : Infinity,
-      pm2Cpu: this._state.pm2?.runtimeProcess?.monit?.cpu ?? null,
+      amState: this._state.amHeartbeat?.state ?? null,
+      amHealth: this._state.amHeartbeat?.health ?? null,
       runningTool: oldestTool ? {
         tool_name: oldestTool.tool_name,
         age: (now() - new Date(oldestTool.started_at).getTime()) / 1000
@@ -468,17 +462,30 @@ export class StateEngine {
     try {
       const amStatusPath = path.join(
         this._config.zylosDir,
-        'activity-monitor', 'data', 'agent-status.json'
+        'activity-monitor', 'agent-status.json'
       );
       const raw = fs.readFileSync(amStatusPath, 'utf8');
       const data = JSON.parse(raw);
+      const lastCheckMs = (data.last_check || 0) * 1000;
+      const stale = (this._now() - lastCheckMs) > AM_HEARTBEAT_STALE_MS;
+      if (stale) {
+        this._state.amHeartbeat = null;
+        this.store.upsertSourceHealth('am_heartbeat', 'collector_liveness', 'stale', {
+          last_check: data.last_check,
+          age_s: Math.floor((this._now() - lastCheckMs) / 1000)
+        });
+        return;
+      }
       this._state.amHeartbeat = {
-        status: data.status,
-        lastCheck: data.lastCheck || data.updated_at
+        state: data.state,
+        health: data.health,
+        lastCheck: data.last_check,
+        lastActivity: data.last_activity
       };
       this.store.upsertSourceHealth('am_heartbeat', 'collector_liveness', 'healthy', {
         last_success: new Date(this._now()).toISOString(),
-        agent_status: data.status
+        agent_state: data.state,
+        agent_health: data.health
       });
     } catch {
       this._state.amHeartbeat = null;
