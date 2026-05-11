@@ -272,8 +272,13 @@ export function createServer() {
       return;
     }
 
-    // OTLP HTTP/JSON receiver
+    // OTLP HTTP/JSON receiver (localhost only)
     if (pathname.startsWith('/v1/') && req.method === 'POST') {
+      const remote = req.socket.remoteAddress;
+      if (remote !== '127.0.0.1' && remote !== '::1' && remote !== '::ffff:127.0.0.1') {
+        sendJson(res, 403, { error: 'forbidden' });
+        return;
+      }
       await handleOtlpIngest(req, res, pathname);
       return;
     }

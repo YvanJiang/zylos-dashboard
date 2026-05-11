@@ -8,6 +8,9 @@ const METRIC_CHAINS = {
     { source: 'statusline', confidence: 'actual' },
     { source: 'rollout', confidence: 'actual' }
   ],
+  rate_limit_7d: [
+    { source: 'statusline', confidence: 'actual' }
+  ],
   effort_level: [
     { source: 'statusline', confidence: 'actual' }
   ],

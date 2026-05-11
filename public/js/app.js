@@ -4,7 +4,7 @@ const BASE_PATH = document.documentElement.dataset.basePath || '';
 const ASSET_ROOT = `${BASE_PATH}/_assets`;
 setAssetRoot(ASSET_ROOT);
 
-const METRICS = ['context_pct', 'rate_limit', 'session_cost', 'cache_hit_rate'];
+const METRICS = ['context_pct', 'rate_limit', 'rate_limit_7d', 'session_cost', 'cache_hit_rate'];
 const THEMES = ['light'];
 const THEME_KEY = 'zylos-dashboard-theme';
 
@@ -164,7 +164,8 @@ function renderMetrics() {
   const rv = metVal(rate);
   const ro = rv && typeof rv === 'object';
   const r5 = ro ? (rv['5h'] ?? rv.five_hour ?? rv.short ?? rv.value) : rv;
-  const r7 = ro ? (rv['7d'] ?? rv.seven_day ?? rv.long ?? rv.value) : null;
+  const rate7d = state.metrics.get('rate_limit_7d');
+  const r7 = metVal(rate7d) ?? (ro ? (rv['7d'] ?? rv.seven_day ?? rv.long) : null);
 
   $('#metric-context-value').textContent = pct(cv);
   $('#metric-context-bar').style.width = `${barPct(cv)}%`;

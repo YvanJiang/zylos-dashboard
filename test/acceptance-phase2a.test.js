@@ -5,6 +5,11 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 
+if (!process.env.ACCEPTANCE) {
+  console.log('# Skipping acceptance tests (set ACCEPTANCE=1 to run)');
+  process.exit(0);
+}
+
 const DATA_DIR = path.join(os.homedir(), 'zylos', 'components', 'dashboard');
 const DB_PATH = path.join(DATA_DIR, 'dashboard.db');
 const SPOOL_PATH = path.join(DATA_DIR, 'spool', 'hook-events.jsonl');
