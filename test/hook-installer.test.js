@@ -50,6 +50,15 @@ test('HookInstaller — Claude', async (t) => {
     assert.equal(settings.hooks.PermissionRequest[0].matcher, undefined);
   });
 
+  await t.test('hooks are registered as async with short timeout', () => {
+    const settings = JSON.parse(fs.readFileSync(installer._claudePath(), 'utf8'));
+    for (const event of ['PreToolUse', 'PostToolUse', 'UserPromptSubmit', 'Stop', 'PermissionRequest']) {
+      const hook = settings.hooks[event][0].hooks[0];
+      assert.equal(hook.async, true, `${event} hook should be async`);
+      assert.equal(hook.timeout, 5, `${event} hook timeout should be 5ms`);
+    }
+  });
+
   await t.test('preserves existing hooks', () => {
     const existingHook = {
       hooks: [{ type: 'command', command: 'node ~/zylos/.claude/skills/activity-monitor/scripts/hook-activity.js', timeout: 5 }],
@@ -64,6 +73,33 @@ test('HookInstaller — Claude', async (t) => {
     const after = JSON.parse(fs.readFileSync(installer._claudePath(), 'utf8'));
     assert.equal(after.hooks.PreToolUse.length, 2);
     assert.ok(after.hooks.PreToolUse[0].hooks[0].command.includes('activity-monitor'));
+  });
+
+  await t.test('upgrades existing sync hooks to async in-place', () => {
+    const settings = JSON.parse(fs.readFileSync(installer._claudePath(), 'utf8'));
+    for (const event of ['PreToolUse', 'PostToolUse', 'UserPromptSubmit', 'Stop', 'PermissionRequest']) {
+      if (!settings.hooks[event]) continue;
+      for (const group of settings.hooks[event]) {
+        for (const h of group.hooks || []) {
+          if (installer._isOwn(h.command)) {
+            h.timeout = 2000;
+            delete h.async;
+          }
+        }
+      }
+    }
+    fs.writeFileSync(installer._claudePath(), JSON.stringify(settings, null, 2) + '\n');
+
+    const result = installer.installClaudeHooks();
+    assert.ok(result.added > 0, 'should report updated hooks');
+
+    const after = JSON.parse(fs.readFileSync(installer._claudePath(), 'utf8'));
+    for (const event of ['PreToolUse', 'PostToolUse', 'UserPromptSubmit', 'Stop', 'PermissionRequest']) {
+      const hook = after.hooks[event].find(g => g.hooks?.some(h => installer._isOwn(h.command)));
+      const h = hook.hooks.find(h => installer._isOwn(h.command));
+      assert.equal(h.async, true, `${event} should be async after upgrade`);
+      assert.equal(h.timeout, 5, `${event} timeout should be 5 after upgrade`);
+    }
   });
 
   await t.test('uninstall removes only own hooks', () => {
@@ -90,14 +126,14 @@ test('HookInstaller — Codex', async (t) => {
   const projectRoot = makeTmpDir();
   const installer = makeInstaller(projectRoot, tmpHome);
 
-  await t.test('install creates entries for all 5 events', () => {
+  await t.test('install creates hook entries for all 5 events (nested format)', () => {
     const result = installer.installCodexHooks();
     assert.equal(result.added, 5);
 
-    const hooks = JSON.parse(fs.readFileSync(installer._codexPath(), 'utf8'));
-    assert.equal(hooks.length, 5);
+    const config = JSON.parse(fs.readFileSync(installer._codexPath(), 'utf8'));
     for (const event of ['PreToolUse', 'PostToolUse', 'UserPromptSubmit', 'Stop', 'PermissionRequest']) {
-      assert.ok(hooks.some(h => h.event === event), `missing event ${event}`);
+      assert.ok(config.hooks[event], `missing event ${event}`);
+      assert.ok(config.hooks[event].length > 0);
     }
   });
 
@@ -105,29 +141,152 @@ test('HookInstaller — Codex', async (t) => {
     const result = installer.installCodexHooks();
     assert.equal(result.added, 0);
 
-    const hooks = JSON.parse(fs.readFileSync(installer._codexPath(), 'utf8'));
-    assert.equal(hooks.length, 5);
+    const config = JSON.parse(fs.readFileSync(installer._codexPath(), 'utf8'));
+    for (const event of ['PreToolUse', 'PostToolUse', 'UserPromptSubmit', 'Stop', 'PermissionRequest']) {
+      assert.equal(config.hooks[event].length, 1);
+    }
   });
 
-  await t.test('preserves existing entries', () => {
-    const hooks = JSON.parse(fs.readFileSync(installer._codexPath(), 'utf8'));
-    hooks.unshift({ event: 'PreToolUse', command: 'node ~/other-script.js', timeout: 1000 });
-    fs.writeFileSync(installer._codexPath(), JSON.stringify(hooks, null, 2) + '\n');
+  await t.test('tool events have matcher, non-tool events do not', () => {
+    const config = JSON.parse(fs.readFileSync(installer._codexPath(), 'utf8'));
+    assert.equal(config.hooks.PreToolUse[0].matcher, '');
+    assert.equal(config.hooks.PostToolUse[0].matcher, '');
+    assert.equal(config.hooks.UserPromptSubmit[0].matcher, undefined);
+    assert.equal(config.hooks.Stop[0].matcher, undefined);
+    assert.equal(config.hooks.PermissionRequest[0].matcher, undefined);
+  });
+
+  await t.test('hooks are registered as async with type and short timeout', () => {
+    const config = JSON.parse(fs.readFileSync(installer._codexPath(), 'utf8'));
+    for (const event of ['PreToolUse', 'PostToolUse', 'UserPromptSubmit', 'Stop', 'PermissionRequest']) {
+      const hook = config.hooks[event][0].hooks[0];
+      assert.equal(hook.type, 'command', `${event} hook should have type=command`);
+      assert.equal(hook.async, true, `${event} hook should be async`);
+      assert.equal(hook.timeout, 5, `${event} hook timeout should be 5`);
+    }
+  });
+
+  await t.test('preserves existing hooks', () => {
+    const existingHook = {
+      hooks: [{ type: 'command', command: 'node ~/other-script.js', timeout: 1000 }],
+      matcher: ''
+    };
+    const config = JSON.parse(fs.readFileSync(installer._codexPath(), 'utf8'));
+    config.hooks.PreToolUse.unshift(existingHook);
+    fs.writeFileSync(installer._codexPath(), JSON.stringify(config, null, 2) + '\n');
 
     installer.installCodexHooks();
 
     const after = JSON.parse(fs.readFileSync(installer._codexPath(), 'utf8'));
-    assert.equal(after.length, 6);
-    assert.ok(after[0].command.includes('other-script'));
+    assert.equal(after.hooks.PreToolUse.length, 2);
+    assert.ok(after.hooks.PreToolUse[0].hooks[0].command.includes('other-script'));
   });
 
-  await t.test('uninstall removes only own entries', () => {
+  await t.test('upgrades existing sync hooks to async in-place', () => {
+    const config = JSON.parse(fs.readFileSync(installer._codexPath(), 'utf8'));
+    for (const event of ['PreToolUse', 'PostToolUse', 'UserPromptSubmit', 'Stop', 'PermissionRequest']) {
+      if (!config.hooks[event]) continue;
+      for (const group of config.hooks[event]) {
+        for (const h of group.hooks || []) {
+          if (installer._isOwn(h.command)) {
+            h.timeout = 2000;
+            delete h.async;
+          }
+        }
+      }
+    }
+    fs.writeFileSync(installer._codexPath(), JSON.stringify(config, null, 2) + '\n');
+
+    const result = installer.installCodexHooks();
+    assert.ok(result.added > 0, 'should report updated hooks');
+
+    const after = JSON.parse(fs.readFileSync(installer._codexPath(), 'utf8'));
+    for (const event of ['PreToolUse', 'PostToolUse', 'UserPromptSubmit', 'Stop', 'PermissionRequest']) {
+      const group = after.hooks[event].find(g => g.hooks?.some(h => installer._isOwn(h.command)));
+      const h = group.hooks.find(h => installer._isOwn(h.command));
+      assert.equal(h.async, true, `${event} should be async after upgrade`);
+      assert.equal(h.timeout, 5, `${event} timeout should be 5 after upgrade`);
+    }
+  });
+
+  await t.test('uninstall removes only own hooks', () => {
     const result = installer.uninstallCodexHooks();
     assert.equal(result.removed, 5);
 
-    const hooks = JSON.parse(fs.readFileSync(installer._codexPath(), 'utf8'));
-    assert.equal(hooks.length, 1);
-    assert.ok(hooks[0].command.includes('other-script'));
+    const config = JSON.parse(fs.readFileSync(installer._codexPath(), 'utf8'));
+    assert.equal(config.hooks.PreToolUse.length, 1);
+    assert.ok(config.hooks.PreToolUse[0].hooks[0].command.includes('other-script'));
+    assert.equal(config.hooks.PostToolUse, undefined);
+  });
+
+  await t.test('uninstall is idempotent', () => {
+    const result = installer.uninstallCodexHooks();
+    assert.equal(result.removed, 0);
+  });
+
+  fs.rmSync(tmpHome, { recursive: true, force: true });
+  fs.rmSync(projectRoot, { recursive: true, force: true });
+});
+
+test('HookInstaller — Codex flat-array migration', async (t) => {
+  const tmpHome = makeTmpDir();
+  const projectRoot = makeTmpDir();
+  const installer = makeInstaller(projectRoot, tmpHome);
+
+  await t.test('migrates old flat dashboard hooks to nested async/timeout=5', () => {
+    const oldFlat = [
+      { event: 'PreToolUse', command: `node ${installer.hookScript}`, timeout: 2000 },
+      { event: 'PostToolUse', command: `node ${installer.hookScript}`, timeout: 2000 },
+      { event: 'UserPromptSubmit', command: `node ${installer.hookScript}`, timeout: 2000 },
+      { event: 'Stop', command: `node ${installer.hookScript}`, timeout: 2000 },
+      { event: 'PermissionRequest', command: `node ${installer.hookScript}`, timeout: 2000 }
+    ];
+    const p = installer._codexPath();
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    fs.writeFileSync(p, JSON.stringify(oldFlat, null, 2) + '\n');
+
+    const result = installer.installCodexHooks();
+    assert.ok(result.added > 0, 'should upgrade migrated hooks');
+
+    const config = JSON.parse(fs.readFileSync(p, 'utf8'));
+    assert.ok(!Array.isArray(config), 'file should be an object, not array');
+    assert.ok(config.hooks, 'should have hooks key');
+
+    for (const event of ['PreToolUse', 'PostToolUse', 'UserPromptSubmit', 'Stop', 'PermissionRequest']) {
+      const group = config.hooks[event]?.find(g => g.hooks?.some(h => installer._isOwn(h.command)));
+      assert.ok(group, `${event} should have a dashboard hook group`);
+      const h = group.hooks.find(h => installer._isOwn(h.command));
+      assert.equal(h.type, 'command', `${event} should have type=command`);
+      assert.equal(h.async, true, `${event} should be async after migration`);
+      assert.equal(h.timeout, 5, `${event} timeout should be 5 after migration`);
+    }
+  });
+
+  await t.test('preserves non-dashboard hooks during flat migration', () => {
+    const oldFlat = [
+      { event: 'PreToolUse', command: 'node ~/other-script.js', timeout: 1000 },
+      { event: 'PreToolUse', command: `node ${installer.hookScript}`, timeout: 2000 },
+      { event: 'Stop', command: `node ${installer.hookScript}`, timeout: 2000 }
+    ];
+    const p = installer._codexPath();
+    fs.writeFileSync(p, JSON.stringify(oldFlat, null, 2) + '\n');
+
+    installer.installCodexHooks();
+
+    const config = JSON.parse(fs.readFileSync(p, 'utf8'));
+    assert.equal(config.hooks.PreToolUse.length, 2);
+    assert.ok(config.hooks.PreToolUse.some(g =>
+      g.hooks?.some(h => h.command.includes('other-script'))
+    ), 'non-dashboard hook should be preserved');
+  });
+
+  await t.test('uninstall works on migrated file', () => {
+    const result = installer.uninstallCodexHooks();
+    assert.equal(result.removed, 5);
+
+    const config = JSON.parse(fs.readFileSync(installer._codexPath(), 'utf8'));
+    assert.equal(config.hooks.PreToolUse.length, 1);
+    assert.ok(config.hooks.PreToolUse[0].hooks[0].command.includes('other-script'));
   });
 
   fs.rmSync(tmpHome, { recursive: true, force: true });

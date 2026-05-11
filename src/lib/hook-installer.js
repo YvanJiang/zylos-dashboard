@@ -65,13 +65,25 @@ export class HookInstaller {
         settings.hooks[event] = [];
       }
 
-      const exists = settings.hooks[event].some(g =>
+      const existingGroup = settings.hooks[event].find(g =>
         g.hooks?.some(h => this._isOwn(h.command))
       );
-      if (exists) continue;
+
+      if (existingGroup) {
+        for (const h of existingGroup.hooks) {
+          if (this._isOwn(h.command)) {
+            if (h.timeout !== 5 || h.async !== true) {
+              h.timeout = 5;
+              h.async = true;
+              added++;
+            }
+          }
+        }
+        continue;
+      }
 
       const entry = {
-        hooks: [{ type: 'command', command: cmd, timeout: 2000 }]
+        hooks: [{ type: 'command', command: cmd, timeout: 5, async: true }]
       };
       if (TOOL_EVENTS.has(event)) entry.matcher = '';
       settings.hooks[event].push(entry);
@@ -102,47 +114,99 @@ export class HookInstaller {
   }
 
   // --- Codex ---
+  // Codex hooks.json uses the same nested format as Claude settings.json hooks:
+  // { hooks: { EventName: [{ matcher, hooks: [{ type, command, timeout, async }] }] } }
 
   _codexPath() {
     return path.join(os.homedir(), '.codex', 'hooks.json');
   }
 
   _readCodex() {
+    let raw;
     try {
-      return JSON.parse(fs.readFileSync(this._codexPath(), 'utf8'));
+      raw = JSON.parse(fs.readFileSync(this._codexPath(), 'utf8'));
     } catch {
-      return [];
+      return {};
     }
+    if (!Array.isArray(raw)) return raw;
+    // Migrate old flat-array format [{ event, command, ... }] to nested
+    const config = { hooks: {} };
+    for (const entry of raw) {
+      if (!entry.event || !entry.command) continue;
+      const event = entry.event;
+      if (!config.hooks[event]) config.hooks[event] = [];
+      const group = { hooks: [{ type: 'command', command: entry.command }] };
+      if (entry.timeout != null) group.hooks[0].timeout = entry.timeout;
+      if (entry.async != null) group.hooks[0].async = entry.async;
+      if (TOOL_EVENTS.has(event)) group.matcher = '';
+      config.hooks[event].push(group);
+    }
+    return config;
   }
 
-  _writeCodex(hooks) {
+  _writeCodex(config) {
     const p = this._codexPath();
     fs.mkdirSync(path.dirname(p), { recursive: true });
-    fs.writeFileSync(p, JSON.stringify(hooks, null, 2) + '\n');
+    fs.writeFileSync(p, JSON.stringify(config, null, 2) + '\n');
   }
 
   installCodexHooks() {
-    const hooks = this._readCodex();
+    const config = this._readCodex();
+    if (!config.hooks) config.hooks = {};
+
     const cmd = this._command();
     let added = 0;
 
     for (const event of HOOK_EVENTS) {
-      const exists = hooks.some(h => h.event === event && this._isOwn(h.command));
-      if (exists) continue;
-      hooks.push({ event, command: cmd, timeout: 2000 });
+      if (!Array.isArray(config.hooks[event])) {
+        config.hooks[event] = [];
+      }
+
+      const existingGroup = config.hooks[event].find(g =>
+        g.hooks?.some(h => this._isOwn(h.command))
+      );
+
+      if (existingGroup) {
+        for (const h of existingGroup.hooks) {
+          if (this._isOwn(h.command)) {
+            if (h.timeout !== 5 || h.async !== true) {
+              h.timeout = 5;
+              h.async = true;
+              added++;
+            }
+          }
+        }
+        continue;
+      }
+
+      const entry = {
+        hooks: [{ type: 'command', command: cmd, timeout: 5, async: true }]
+      };
+      if (TOOL_EVENTS.has(event)) entry.matcher = '';
+      config.hooks[event].push(entry);
       added++;
     }
 
-    if (added > 0) this._writeCodex(hooks);
+    if (added > 0) this._writeCodex(config);
     return { runtime: 'codex', added, total: HOOK_EVENTS.length, path: this._codexPath() };
   }
 
   uninstallCodexHooks() {
-    const hooks = this._readCodex();
-    const before = hooks.length;
-    const filtered = hooks.filter(h => !this._isOwn(h.command));
-    const removed = before - filtered.length;
-    if (removed > 0) this._writeCodex(filtered);
+    const config = this._readCodex();
+    if (!config.hooks) return { runtime: 'codex', removed: 0 };
+
+    let removed = 0;
+    for (const event of Object.keys(config.hooks)) {
+      if (!Array.isArray(config.hooks[event])) continue;
+      const before = config.hooks[event].length;
+      config.hooks[event] = config.hooks[event].filter(g =>
+        !g.hooks?.some(h => this._isOwn(h.command))
+      );
+      removed += before - config.hooks[event].length;
+      if (config.hooks[event].length === 0) delete config.hooks[event];
+    }
+
+    if (removed > 0) this._writeCodex(config);
     return { runtime: 'codex', removed, path: this._codexPath() };
   }
 
