@@ -115,33 +115,6 @@ function stateTitle(p) {
   return t('state.unknown_simple');
 }
 
-function activityDesc(p) {
-  const s = normState(p?.state);
-  const tools = p?.running_tools || [];
-  const tool = latestTool(tools);
-
-  if (s === 'IDLE') return t('activity.idle');
-  if (s === 'OFFLINE') return t('activity.offline');
-  if (s === 'WAITING_HUMAN') return t('activity.waiting');
-
-  if (s === 'BUSY' && tool) {
-    const detail = tool.tool_detail || '';
-    const elapsed = tool.duration_s ?? ageSec(tool.started_at) ?? 0;
-    const timeStr = dur(elapsed);
-    if (detail) return `${tool.tool_name}: ${detail} (${timeStr})`;
-    return `${tool.tool_name} (${timeStr})`;
-  }
-
-  if ((s === 'POSSIBLY_STUCK' || s === 'STUCK') && tool) {
-    const detail = tool.tool_detail || '';
-    const elapsed = tool.duration_s ?? ageSec(tool.started_at) ?? 0;
-    const timeStr = dur(elapsed);
-    const prefix = detail ? `${tool.tool_name}: ${detail}` : tool.tool_name;
-    return `${prefix} — ${t('activity.no_progress')} (${timeStr})`;
-  }
-
-  return p?.reason || t('value.unavailable');
-}
 
 function confLabel(v) {
   if (!v) return '--';
@@ -165,26 +138,115 @@ function metVal(m) {
 }
 
 // ─── Render: State ───
+const FEED_MAX = 5;
+const prevToolIds = new Set();
+
 function renderState() {
   const p = state.dashboardState;
   $('#state-dot').className = `state-dot ${stateClass(p?.state)}`;
   $('#state-title').textContent = p ? stateTitle(p) : t('state.unknown_simple');
   $('#state-confidence').textContent = confLabel(p?.confidence);
-  $('#state-activity').textContent = p ? activityDesc(p) : t('value.unavailable');
-  $('#state-activity').title = p ? activityDesc(p) : '';
   $('#state-updated').textContent = fmtAge(p?.updated_at || state.sourceUpdatedAt);
 
   const tools = p?.running_tools || [];
-  $('#tool-count').textContent = String(tools.length);
-  $('#tool-details').open = tools.length > 1;
-  $('#tool-list').replaceChildren(...tools.map((tool) => {
-    const el = document.createElement('div');
-    el.className = 'tool-item';
-    const elapsed = tool.duration_s ?? ageSec(tool.started_at) ?? 0;
+  const badge = $('#tool-count');
+  badge.textContent = String(tools.length);
+  badge.hidden = tools.length === 0;
+
+  renderToolFeed(tools, p);
+}
+
+function renderToolFeed(tools, p) {
+  const feed = $('#tool-feed');
+  const currentIds = new Set(tools.map((t) => t.tool_use_id));
+  const s = normState(p?.state);
+
+  for (const id of prevToolIds) {
+    if (!currentIds.has(id)) {
+      const el = feed.querySelector(`[data-tool-id="${id}"]`);
+      if (el && !el.classList.contains('done')) {
+        const statusEl = el.querySelector('.tool-status');
+        if (statusEl) statusEl.textContent = '✓';
+        const age = Date.now() - (Number(el.dataset.addedAt) || 0);
+        const greyDelay = Math.max(0, 2000 - age);
+        setTimeout(() => {
+          el.classList.add('done');
+          setTimeout(() => {
+            if (el.parentNode) {
+              el.classList.add('removing');
+              el.addEventListener('animationend', () => el.remove(), { once: true });
+            }
+          }, 10000);
+        }, greyDelay);
+      }
+    }
+  }
+
+  for (const tool of tools) {
+    let el = feed.querySelector(`[data-tool-id="${tool.tool_use_id}"]`);
+    const elapsed = ageSec(tool.started_at) ?? tool.duration_s ?? 0;
     const detail = tool.tool_detail ? `: ${esc(tool.tool_detail)}` : '';
-    el.innerHTML = `<span class="mono">${esc(tool.tool_name || 'tool')}${detail}</span><strong>${dur(elapsed)}</strong>`;
-    return el;
-  }));
+    const label = `${esc(tool.tool_name || 'tool')}${detail}`;
+
+    if (!el) {
+      el = document.createElement('div');
+      el.className = 'tool-feed-item';
+      el.dataset.toolId = tool.tool_use_id;
+      el.dataset.addedAt = String(Date.now());
+      el.innerHTML = `<span class="mono tool-detail">${label}</span><span class="tool-status">${dur(elapsed)}</span>`;
+      feed.appendChild(el);
+    } else if (!el.classList.contains('done')) {
+      el.querySelector('.tool-status').textContent = dur(elapsed);
+    }
+  }
+
+  const thinkingId = '_thinking';
+  const existingThinking = feed.querySelector(`[data-tool-id="${thinkingId}"]`);
+  const shouldThink = s === 'BUSY' && tools.length === 0;
+  if (shouldThink) {
+    if (!existingThinking) {
+      const el = document.createElement('div');
+      el.className = 'tool-feed-item thinking';
+      el.dataset.toolId = thinkingId;
+      el.dataset.startedAt = new Date().toISOString();
+      el.innerHTML = `<span class="mono tool-detail">Thinking...</span><span class="tool-status">0s</span>`;
+      feed.appendChild(el);
+    } else {
+      const thinkAge = ageSec(existingThinking.dataset.startedAt) ?? 0;
+      existingThinking.querySelector('.tool-status').textContent = dur(thinkAge);
+    }
+  } else if (existingThinking) {
+    existingThinking.remove();
+  }
+
+  trimFeed(feed);
+
+  const fallback = $('#activity-fallback');
+  const hasItems = feed.querySelector('.tool-feed-item') !== null;
+  fallback.hidden = hasItems;
+  if (!hasItems) {
+    const s = normState(p?.state);
+    if (s === 'IDLE') fallback.textContent = t('activity.idle');
+    else if (s === 'OFFLINE') fallback.textContent = t('activity.offline');
+    else if (s === 'WAITING_HUMAN') fallback.textContent = t('activity.waiting');
+    else fallback.textContent = p?.reason || t('value.unavailable');
+  }
+
+  prevToolIds.clear();
+  for (const id of currentIds) prevToolIds.add(id);
+}
+
+function trimFeed(feed) {
+  const items = feed.querySelectorAll('.tool-feed-item');
+  if (items.length <= FEED_MAX) return;
+  const doneItems = [...items].filter((el) => el.classList.contains('done'));
+  let excess = items.length - FEED_MAX;
+  for (const el of doneItems) {
+    if (excess <= 0) break;
+    el.classList.add('removing');
+    el.addEventListener('animationend', () => el.remove(), { once: true });
+    excess--;
+  }
 }
 
 // ─── Render: Metrics ───
