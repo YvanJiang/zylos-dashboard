@@ -1,0 +1,183 @@
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import test from 'node:test';
+import { HookInstaller } from '../src/lib/hook-installer.js';
+
+function makeTmpDir() {
+  return fs.mkdtempSync(path.join(os.tmpdir(), 'hook-installer-test-'));
+}
+
+function makeInstaller(projectRoot, tmpHome) {
+  const installer = new HookInstaller(projectRoot, tmpHome);
+  installer._codexPath = () => path.join(tmpHome, '.codex', 'hooks.json');
+  return installer;
+}
+
+test('HookInstaller — Claude', async (t) => {
+  const tmpHome = makeTmpDir();
+  const projectRoot = makeTmpDir();
+  const installer = makeInstaller(projectRoot, tmpHome);
+
+  await t.test('install creates hook entries for all 5 events', () => {
+    const result = installer.installClaudeHooks();
+    assert.equal(result.added, 5);
+
+    const settings = JSON.parse(fs.readFileSync(installer._claudePath(), 'utf8'));
+    for (const event of ['PreToolUse', 'PostToolUse', 'UserPromptSubmit', 'Stop', 'PermissionRequest']) {
+      assert.ok(settings.hooks[event], `missing event ${event}`);
+      assert.ok(settings.hooks[event].length > 0);
+    }
+  });
+
+  await t.test('idempotent — second install adds nothing', () => {
+    const result = installer.installClaudeHooks();
+    assert.equal(result.added, 0);
+
+    const settings = JSON.parse(fs.readFileSync(installer._claudePath(), 'utf8'));
+    for (const event of ['PreToolUse', 'PostToolUse', 'UserPromptSubmit', 'Stop', 'PermissionRequest']) {
+      assert.equal(settings.hooks[event].length, 1);
+    }
+  });
+
+  await t.test('tool events have matcher, non-tool events do not', () => {
+    const settings = JSON.parse(fs.readFileSync(installer._claudePath(), 'utf8'));
+    assert.equal(settings.hooks.PreToolUse[0].matcher, '');
+    assert.equal(settings.hooks.PostToolUse[0].matcher, '');
+    assert.equal(settings.hooks.UserPromptSubmit[0].matcher, undefined);
+    assert.equal(settings.hooks.Stop[0].matcher, undefined);
+    assert.equal(settings.hooks.PermissionRequest[0].matcher, undefined);
+  });
+
+  await t.test('preserves existing hooks', () => {
+    const existingHook = {
+      hooks: [{ type: 'command', command: 'node ~/zylos/.claude/skills/activity-monitor/scripts/hook-activity.js', timeout: 5 }],
+      matcher: ''
+    };
+    const settings = JSON.parse(fs.readFileSync(installer._claudePath(), 'utf8'));
+    settings.hooks.PreToolUse.unshift(existingHook);
+    fs.writeFileSync(installer._claudePath(), JSON.stringify(settings, null, 2) + '\n');
+
+    installer.installClaudeHooks();
+
+    const after = JSON.parse(fs.readFileSync(installer._claudePath(), 'utf8'));
+    assert.equal(after.hooks.PreToolUse.length, 2);
+    assert.ok(after.hooks.PreToolUse[0].hooks[0].command.includes('activity-monitor'));
+  });
+
+  await t.test('uninstall removes only own hooks', () => {
+    const result = installer.uninstallClaudeHooks();
+    assert.equal(result.removed, 5);
+
+    const settings = JSON.parse(fs.readFileSync(installer._claudePath(), 'utf8'));
+    assert.equal(settings.hooks.PreToolUse.length, 1);
+    assert.ok(settings.hooks.PreToolUse[0].hooks[0].command.includes('activity-monitor'));
+    assert.equal(settings.hooks.PostToolUse, undefined);
+  });
+
+  await t.test('uninstall is idempotent', () => {
+    const result = installer.uninstallClaudeHooks();
+    assert.equal(result.removed, 0);
+  });
+
+  fs.rmSync(tmpHome, { recursive: true, force: true });
+  fs.rmSync(projectRoot, { recursive: true, force: true });
+});
+
+test('HookInstaller — Codex', async (t) => {
+  const tmpHome = makeTmpDir();
+  const projectRoot = makeTmpDir();
+  const installer = makeInstaller(projectRoot, tmpHome);
+
+  await t.test('install creates entries for all 5 events', () => {
+    const result = installer.installCodexHooks();
+    assert.equal(result.added, 5);
+
+    const hooks = JSON.parse(fs.readFileSync(installer._codexPath(), 'utf8'));
+    assert.equal(hooks.length, 5);
+    for (const event of ['PreToolUse', 'PostToolUse', 'UserPromptSubmit', 'Stop', 'PermissionRequest']) {
+      assert.ok(hooks.some(h => h.event === event), `missing event ${event}`);
+    }
+  });
+
+  await t.test('idempotent — second install adds nothing', () => {
+    const result = installer.installCodexHooks();
+    assert.equal(result.added, 0);
+
+    const hooks = JSON.parse(fs.readFileSync(installer._codexPath(), 'utf8'));
+    assert.equal(hooks.length, 5);
+  });
+
+  await t.test('preserves existing entries', () => {
+    const hooks = JSON.parse(fs.readFileSync(installer._codexPath(), 'utf8'));
+    hooks.unshift({ event: 'PreToolUse', command: 'node ~/other-script.js', timeout: 1000 });
+    fs.writeFileSync(installer._codexPath(), JSON.stringify(hooks, null, 2) + '\n');
+
+    installer.installCodexHooks();
+
+    const after = JSON.parse(fs.readFileSync(installer._codexPath(), 'utf8'));
+    assert.equal(after.length, 6);
+    assert.ok(after[0].command.includes('other-script'));
+  });
+
+  await t.test('uninstall removes only own entries', () => {
+    const result = installer.uninstallCodexHooks();
+    assert.equal(result.removed, 5);
+
+    const hooks = JSON.parse(fs.readFileSync(installer._codexPath(), 'utf8'));
+    assert.equal(hooks.length, 1);
+    assert.ok(hooks[0].command.includes('other-script'));
+  });
+
+  fs.rmSync(tmpHome, { recursive: true, force: true });
+  fs.rmSync(projectRoot, { recursive: true, force: true });
+});
+
+test('HookInstaller — detectRuntime', async (t) => {
+  const installer = new HookInstaller('/tmp/fake');
+
+  await t.test('defaults to claude when ZYLOS_RUNTIME unset', () => {
+    const prev = process.env.ZYLOS_RUNTIME;
+    delete process.env.ZYLOS_RUNTIME;
+    assert.equal(installer.detectRuntime(), 'claude');
+    if (prev !== undefined) process.env.ZYLOS_RUNTIME = prev;
+  });
+
+  await t.test('returns codex when set', () => {
+    const prev = process.env.ZYLOS_RUNTIME;
+    process.env.ZYLOS_RUNTIME = 'codex';
+    assert.equal(installer.detectRuntime(), 'codex');
+    if (prev !== undefined) process.env.ZYLOS_RUNTIME = prev;
+    else delete process.env.ZYLOS_RUNTIME;
+  });
+
+  await t.test('returns null for unknown runtime', () => {
+    const prev = process.env.ZYLOS_RUNTIME;
+    process.env.ZYLOS_RUNTIME = 'unknown';
+    assert.equal(installer.detectRuntime(), null);
+    if (prev !== undefined) process.env.ZYLOS_RUNTIME = prev;
+    else delete process.env.ZYLOS_RUNTIME;
+  });
+});
+
+test('HookInstaller — install() dispatches by runtime', async (t) => {
+  const tmpHome = makeTmpDir();
+  const projectRoot = makeTmpDir();
+
+  await t.test('installs claude hooks when runtime is claude', () => {
+    const prev = process.env.ZYLOS_RUNTIME;
+    process.env.ZYLOS_RUNTIME = 'claude';
+
+    const installer = makeInstaller(projectRoot, tmpHome);
+    const result = installer.install();
+    assert.equal(result.runtime, 'claude');
+    assert.equal(result.added, 5);
+
+    if (prev !== undefined) process.env.ZYLOS_RUNTIME = prev;
+    else delete process.env.ZYLOS_RUNTIME;
+  });
+
+  fs.rmSync(tmpHome, { recursive: true, force: true });
+  fs.rmSync(projectRoot, { recursive: true, force: true });
+});
