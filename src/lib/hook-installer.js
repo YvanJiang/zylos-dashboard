@@ -65,10 +65,22 @@ export class HookInstaller {
         settings.hooks[event] = [];
       }
 
-      const exists = settings.hooks[event].some(g =>
+      const existingGroup = settings.hooks[event].find(g =>
         g.hooks?.some(h => this._isOwn(h.command))
       );
-      if (exists) continue;
+
+      if (existingGroup) {
+        for (const h of existingGroup.hooks) {
+          if (this._isOwn(h.command)) {
+            if (h.timeout !== 5 || h.async !== true) {
+              h.timeout = 5;
+              h.async = true;
+              added++;
+            }
+          }
+        }
+        continue;
+      }
 
       const entry = {
         hooks: [{ type: 'command', command: cmd, timeout: 5, async: true }]

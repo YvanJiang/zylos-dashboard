@@ -75,6 +75,33 @@ test('HookInstaller — Claude', async (t) => {
     assert.ok(after.hooks.PreToolUse[0].hooks[0].command.includes('activity-monitor'));
   });
 
+  await t.test('upgrades existing sync hooks to async in-place', () => {
+    const settings = JSON.parse(fs.readFileSync(installer._claudePath(), 'utf8'));
+    for (const event of ['PreToolUse', 'PostToolUse', 'UserPromptSubmit', 'Stop', 'PermissionRequest']) {
+      if (!settings.hooks[event]) continue;
+      for (const group of settings.hooks[event]) {
+        for (const h of group.hooks || []) {
+          if (installer._isOwn(h.command)) {
+            h.timeout = 2000;
+            delete h.async;
+          }
+        }
+      }
+    }
+    fs.writeFileSync(installer._claudePath(), JSON.stringify(settings, null, 2) + '\n');
+
+    const result = installer.installClaudeHooks();
+    assert.ok(result.added > 0, 'should report updated hooks');
+
+    const after = JSON.parse(fs.readFileSync(installer._claudePath(), 'utf8'));
+    for (const event of ['PreToolUse', 'PostToolUse', 'UserPromptSubmit', 'Stop', 'PermissionRequest']) {
+      const hook = after.hooks[event].find(g => g.hooks?.some(h => installer._isOwn(h.command)));
+      const h = hook.hooks.find(h => installer._isOwn(h.command));
+      assert.equal(h.async, true, `${event} should be async after upgrade`);
+      assert.equal(h.timeout, 5, `${event} timeout should be 5 after upgrade`);
+    }
+  });
+
   await t.test('uninstall removes only own hooks', () => {
     const result = installer.uninstallClaudeHooks();
     assert.equal(result.removed, 5);

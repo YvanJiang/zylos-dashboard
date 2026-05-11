@@ -528,7 +528,6 @@ export class StateEngine {
   _periodicSnapshot() {
     try {
       this._readAMHeartbeat();
-      this._cleanupStaleTools();
       this._saveSnapshot();
       this._lastSnapshotTime = this._now();
     } catch (err) {
