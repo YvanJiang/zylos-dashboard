@@ -126,14 +126,14 @@ test('HookInstaller — Codex', async (t) => {
   const projectRoot = makeTmpDir();
   const installer = makeInstaller(projectRoot, tmpHome);
 
-  await t.test('install creates entries for all 5 events', () => {
+  await t.test('install creates hook entries for all 5 events (nested format)', () => {
     const result = installer.installCodexHooks();
     assert.equal(result.added, 5);
 
-    const hooks = JSON.parse(fs.readFileSync(installer._codexPath(), 'utf8'));
-    assert.equal(hooks.length, 5);
+    const config = JSON.parse(fs.readFileSync(installer._codexPath(), 'utf8'));
     for (const event of ['PreToolUse', 'PostToolUse', 'UserPromptSubmit', 'Stop', 'PermissionRequest']) {
-      assert.ok(hooks.some(h => h.event === event), `missing event ${event}`);
+      assert.ok(config.hooks[event], `missing event ${event}`);
+      assert.ok(config.hooks[event].length > 0);
     }
   });
 
@@ -141,51 +141,87 @@ test('HookInstaller — Codex', async (t) => {
     const result = installer.installCodexHooks();
     assert.equal(result.added, 0);
 
-    const hooks = JSON.parse(fs.readFileSync(installer._codexPath(), 'utf8'));
-    assert.equal(hooks.length, 5);
+    const config = JSON.parse(fs.readFileSync(installer._codexPath(), 'utf8'));
+    for (const event of ['PreToolUse', 'PostToolUse', 'UserPromptSubmit', 'Stop', 'PermissionRequest']) {
+      assert.equal(config.hooks[event].length, 1);
+    }
   });
 
-  await t.test('preserves existing entries', () => {
-    const hooks = JSON.parse(fs.readFileSync(installer._codexPath(), 'utf8'));
-    hooks.unshift({ event: 'PreToolUse', command: 'node ~/other-script.js', timeout: 1000 });
-    fs.writeFileSync(installer._codexPath(), JSON.stringify(hooks, null, 2) + '\n');
+  await t.test('tool events have matcher, non-tool events do not', () => {
+    const config = JSON.parse(fs.readFileSync(installer._codexPath(), 'utf8'));
+    assert.equal(config.hooks.PreToolUse[0].matcher, '');
+    assert.equal(config.hooks.PostToolUse[0].matcher, '');
+    assert.equal(config.hooks.UserPromptSubmit[0].matcher, undefined);
+    assert.equal(config.hooks.Stop[0].matcher, undefined);
+    assert.equal(config.hooks.PermissionRequest[0].matcher, undefined);
+  });
+
+  await t.test('hooks are registered as async with type and short timeout', () => {
+    const config = JSON.parse(fs.readFileSync(installer._codexPath(), 'utf8'));
+    for (const event of ['PreToolUse', 'PostToolUse', 'UserPromptSubmit', 'Stop', 'PermissionRequest']) {
+      const hook = config.hooks[event][0].hooks[0];
+      assert.equal(hook.type, 'command', `${event} hook should have type=command`);
+      assert.equal(hook.async, true, `${event} hook should be async`);
+      assert.equal(hook.timeout, 5, `${event} hook timeout should be 5`);
+    }
+  });
+
+  await t.test('preserves existing hooks', () => {
+    const existingHook = {
+      hooks: [{ type: 'command', command: 'node ~/other-script.js', timeout: 1000 }],
+      matcher: ''
+    };
+    const config = JSON.parse(fs.readFileSync(installer._codexPath(), 'utf8'));
+    config.hooks.PreToolUse.unshift(existingHook);
+    fs.writeFileSync(installer._codexPath(), JSON.stringify(config, null, 2) + '\n');
 
     installer.installCodexHooks();
 
     const after = JSON.parse(fs.readFileSync(installer._codexPath(), 'utf8'));
-    assert.equal(after.length, 6);
-    assert.ok(after[0].command.includes('other-script'));
+    assert.equal(after.hooks.PreToolUse.length, 2);
+    assert.ok(after.hooks.PreToolUse[0].hooks[0].command.includes('other-script'));
   });
 
   await t.test('upgrades existing sync hooks to async in-place', () => {
-    const hooks = JSON.parse(fs.readFileSync(installer._codexPath(), 'utf8'));
-    for (const h of hooks) {
-      if (installer._isOwn(h.command)) {
-        h.timeout = 2000;
-        delete h.async;
+    const config = JSON.parse(fs.readFileSync(installer._codexPath(), 'utf8'));
+    for (const event of ['PreToolUse', 'PostToolUse', 'UserPromptSubmit', 'Stop', 'PermissionRequest']) {
+      if (!config.hooks[event]) continue;
+      for (const group of config.hooks[event]) {
+        for (const h of group.hooks || []) {
+          if (installer._isOwn(h.command)) {
+            h.timeout = 2000;
+            delete h.async;
+          }
+        }
       }
     }
-    fs.writeFileSync(installer._codexPath(), JSON.stringify(hooks, null, 2) + '\n');
+    fs.writeFileSync(installer._codexPath(), JSON.stringify(config, null, 2) + '\n');
 
     const result = installer.installCodexHooks();
     assert.ok(result.added > 0, 'should report updated hooks');
 
     const after = JSON.parse(fs.readFileSync(installer._codexPath(), 'utf8'));
     for (const event of ['PreToolUse', 'PostToolUse', 'UserPromptSubmit', 'Stop', 'PermissionRequest']) {
-      const h = after.find(e => e.event === event && installer._isOwn(e.command));
-      assert.ok(h, `${event} own hook should still exist`);
+      const group = after.hooks[event].find(g => g.hooks?.some(h => installer._isOwn(h.command)));
+      const h = group.hooks.find(h => installer._isOwn(h.command));
       assert.equal(h.async, true, `${event} should be async after upgrade`);
       assert.equal(h.timeout, 5, `${event} timeout should be 5 after upgrade`);
     }
   });
 
-  await t.test('uninstall removes only own entries', () => {
+  await t.test('uninstall removes only own hooks', () => {
     const result = installer.uninstallCodexHooks();
     assert.equal(result.removed, 5);
 
-    const hooks = JSON.parse(fs.readFileSync(installer._codexPath(), 'utf8'));
-    assert.equal(hooks.length, 1);
-    assert.ok(hooks[0].command.includes('other-script'));
+    const config = JSON.parse(fs.readFileSync(installer._codexPath(), 'utf8'));
+    assert.equal(config.hooks.PreToolUse.length, 1);
+    assert.ok(config.hooks.PreToolUse[0].hooks[0].command.includes('other-script'));
+    assert.equal(config.hooks.PostToolUse, undefined);
+  });
+
+  await t.test('uninstall is idempotent', () => {
+    const result = installer.uninstallCodexHooks();
+    assert.equal(result.removed, 0);
   });
 
   fs.rmSync(tmpHome, { recursive: true, force: true });
