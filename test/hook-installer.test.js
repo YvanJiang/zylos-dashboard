@@ -157,6 +157,28 @@ test('HookInstaller — Codex', async (t) => {
     assert.ok(after[0].command.includes('other-script'));
   });
 
+  await t.test('upgrades existing sync hooks to async in-place', () => {
+    const hooks = JSON.parse(fs.readFileSync(installer._codexPath(), 'utf8'));
+    for (const h of hooks) {
+      if (installer._isOwn(h.command)) {
+        h.timeout = 2000;
+        delete h.async;
+      }
+    }
+    fs.writeFileSync(installer._codexPath(), JSON.stringify(hooks, null, 2) + '\n');
+
+    const result = installer.installCodexHooks();
+    assert.ok(result.added > 0, 'should report updated hooks');
+
+    const after = JSON.parse(fs.readFileSync(installer._codexPath(), 'utf8'));
+    for (const event of ['PreToolUse', 'PostToolUse', 'UserPromptSubmit', 'Stop', 'PermissionRequest']) {
+      const h = after.find(e => e.event === event && installer._isOwn(e.command));
+      assert.ok(h, `${event} own hook should still exist`);
+      assert.equal(h.async, true, `${event} should be async after upgrade`);
+      assert.equal(h.timeout, 5, `${event} timeout should be 5 after upgrade`);
+    }
+  });
+
   await t.test('uninstall removes only own entries', () => {
     const result = installer.uninstallCodexHooks();
     assert.equal(result.removed, 5);

@@ -139,8 +139,15 @@ export class HookInstaller {
     let added = 0;
 
     for (const event of HOOK_EVENTS) {
-      const exists = hooks.some(h => h.event === event && this._isOwn(h.command));
-      if (exists) continue;
+      const existing = hooks.find(h => h.event === event && this._isOwn(h.command));
+      if (existing) {
+        if (existing.timeout !== 5 || existing.async !== true) {
+          existing.timeout = 5;
+          existing.async = true;
+          added++;
+        }
+        continue;
+      }
       hooks.push({ event, command: cmd, timeout: 5, async: true });
       added++;
     }
