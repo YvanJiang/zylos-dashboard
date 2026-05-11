@@ -6,7 +6,7 @@ import { pathToFileURL } from 'node:url';
 import { AuthGate } from './lib/auth.js';
 import { browserBaseFromRequest } from './lib/browser-base.js';
 import { ensureDataDirs, loadConfig, publicDir } from './lib/config.js';
-import { sendHtml, sendJson, sendText, serveStatic } from './lib/http.js';
+import { readJsonBody, sendHtml, sendJson, sendText, serveStatic } from './lib/http.js';
 import { Store } from './lib/store.js';
 import { Sanitizer } from './lib/sanitizer.js';
 import { IngestHandler } from './lib/ingest-handler.js';
@@ -14,6 +14,7 @@ import { SpoolDrainer } from './lib/spool-drainer.js';
 import { PM2Collector } from './lib/collectors/pm2-collector.js';
 import { SystemCollector } from './lib/collectors/system-collector.js';
 import { OTelCollector } from './lib/collectors/otel-collector.js';
+import { StatuslineCollector } from './lib/collectors/statusline-collector.js';
 import { StateEngine } from './lib/state-engine.js';
 import { MetricResolver } from './lib/metric-resolver.js';
 import { SseHub } from './lib/sse.js';
@@ -42,8 +43,9 @@ if (spoolResult.processed > 0) {
 const pm2Collector = new PM2Collector(store, config);
 const systemCollector = new SystemCollector(store, config);
 const otelCollector = new OTelCollector(store, config);
+const statuslineCollector = new StatuslineCollector(store, config);
 
-const collectors = { pm2: pm2Collector, system: systemCollector, otel: otelCollector };
+const collectors = { pm2: pm2Collector, system: systemCollector, otel: otelCollector, statusline: statuslineCollector };
 
 // SSE hub
 const sse = new SseHub(15_000);
@@ -73,6 +75,9 @@ async function startupSequence() {
   }
   try { await otelCollector.collect(); } catch (err) {
     process.stderr.write(`[startup] OTel collector initial run failed: ${err.message}\n`);
+  }
+  try { await statuslineCollector.collect(); } catch (err) {
+    process.stderr.write(`[startup] StatusLine collector initial run failed: ${err.message}\n`);
   }
 
   // State engine initialize (snapshot restore + replay)
@@ -124,6 +129,26 @@ function handleApi(req, res, pathname, url) {
     return true;
   }
 
+  if (pathname.startsWith('/api/metrics/history/')) {
+    const metricName = pathname.slice('/api/metrics/history/'.length);
+    if (!metricName) {
+      sendJson(res, 400, { error: 'missing metric name' });
+      return true;
+    }
+    const since = url.searchParams.get('since') || new Date(Date.now() - 6 * 3600_000).toISOString();
+    const until = url.searchParams.get('until') || new Date().toISOString();
+    const rows = store.queryMetrics({ name: metricName, since, until });
+    const points = rows.map(r => ({
+      timestamp: r.timestamp,
+      value: r.metric_value,
+      source: r.source,
+      confidence: r.confidence,
+      dimensions: r.dimensions
+    }));
+    sendJson(res, 200, { metric: metricName, since, until, points, count: points.length });
+    return true;
+  }
+
   if (pathname.startsWith('/api/metrics/')) {
     const metricName = pathname.slice('/api/metrics/'.length);
     if (!metricName) {
@@ -141,6 +166,84 @@ function handleApi(req, res, pathname, url) {
   }
 
   return false;
+}
+
+async function handleOtlpIngest(req, res, pathname) {
+  let body;
+  try {
+    body = await readJsonBody(req, 512 * 1024);
+  } catch (err) {
+    sendJson(res, err.status || 400, { error: err.message });
+    return;
+  }
+
+  let processed = 0;
+  if (pathname.includes('/v1/traces')) {
+    processed = otelCollector.ingestTraces(body.resourceSpans);
+  } else if (pathname.includes('/v1/logs')) {
+    processed = otelCollector.ingestLogs(body.resourceLogs);
+  } else if (pathname.includes('/v1/metrics')) {
+    processed = otelCollector.ingestMetrics(body.resourceMetrics);
+  }
+
+  sendJson(res, 200, { partialSuccess: {} });
+}
+
+async function handleStatuslineIngest(req, res) {
+  const remote = req.socket.remoteAddress;
+  if (remote !== '127.0.0.1' && remote !== '::1' && remote !== '::ffff:127.0.0.1') {
+    sendJson(res, 403, { error: 'forbidden' });
+    return;
+  }
+
+  let body;
+  try {
+    body = await readJsonBody(req, 64 * 1024);
+  } catch (err) {
+    sendJson(res, err.status || 400, { error: err.message });
+    return;
+  }
+
+  const metrics = body.metrics || [];
+  let written = 0;
+  for (const m of metrics) {
+    if (!m.metric_name || m.metric_value == null) continue;
+    try {
+      store.insertMetric({
+        timestamp: m.timestamp || new Date().toISOString(),
+        runtime: m.runtime || process.env.ZYLOS_RUNTIME || 'claude',
+        session_id: m.session_id || null,
+        metric_name: m.metric_name,
+        metric_value: Number(m.metric_value),
+        dimensions: m.dimensions || null,
+        source: m.source || 'statusline',
+        confidence: m.confidence || 'actual'
+      });
+      written++;
+    } catch {
+      // skip invalid metric
+    }
+  }
+
+  if (written > 0) {
+    const now = new Date().toISOString();
+    store.upsertSourceHealth('statusline', 'collector_liveness', 'healthy', { last_success: now });
+    store.upsertSourceHealth('statusline', 'runtime_progress', 'healthy', { last_success: now, metrics_written: written });
+
+    for (const m of metrics) {
+      if (m.metric_name && m.metric_value != null) {
+        sse.broadcast('metric_update', {
+          metric_name: m.metric_name,
+          value: Number(m.metric_value),
+          source: m.source || 'statusline',
+          confidence: m.confidence || 'actual',
+          timestamp: m.timestamp || now
+        });
+      }
+    }
+  }
+
+  sendJson(res, 200, { ok: true, written });
 }
 
 export function createServer() {
@@ -161,6 +264,22 @@ export function createServer() {
     // /api/ingest must be checked before any base-path stripping or auth
     if (pathname === '/api/ingest' && req.method === 'POST') {
       await ingestHandler.handle(req, res);
+      return;
+    }
+
+    if (pathname === '/api/ingest/statusline' && req.method === 'POST') {
+      await handleStatuslineIngest(req, res);
+      return;
+    }
+
+    // OTLP HTTP/JSON receiver (localhost only)
+    if (pathname.startsWith('/v1/') && req.method === 'POST') {
+      const remote = req.socket.remoteAddress;
+      if (remote !== '127.0.0.1' && remote !== '::1' && remote !== '::ffff:127.0.0.1') {
+        sendJson(res, 403, { error: 'forbidden' });
+        return;
+      }
+      await handleOtlpIngest(req, res, pathname);
       return;
     }
 
@@ -232,6 +351,7 @@ if (isMain && process.argv.includes('--smoke')) {
   pm2Collector.start(15_000);
   systemCollector.start(30_000);
   otelCollector.start(10_000);
+  statuslineCollector.start(5_000);
 
   // Start snapshot timer
   stateEngine.startSnapshotTimer();
@@ -260,6 +380,7 @@ if (isMain && process.argv.includes('--smoke')) {
       pm2Collector.stop();
       systemCollector.stop();
       otelCollector.stop();
+      statuslineCollector.stop();
       stateEngine.stopSnapshotTimer();
       spoolDrainer.stopPeriodicDrain();
       sse.closeAll();

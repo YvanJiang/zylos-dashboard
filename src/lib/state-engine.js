@@ -571,7 +571,8 @@ export class StateEngine {
       return {
         runtime_progress: {
           hook_events: formatEntry('hook_events'),
-          otel_events: formatEntry('otel_events')
+          otel_events: formatEntry('otel_events'),
+          statusline: formatEntry('statusline')
         },
         collector_liveness: {
           pm2_reader: formatEntry('pm2_reader'),

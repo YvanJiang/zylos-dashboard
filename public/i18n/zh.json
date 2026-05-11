@@ -42,5 +42,13 @@
   "time.just_now": "刚刚",
   "time.seconds": "{count} 秒前",
   "lang.switch": "EN",
-  "trends.placeholder": "趋势图表将在下一阶段交付。"
+  "trends.context": "上下文使用率",
+  "trends.cost": "会话成本",
+  "trends.rate": "速率限制使用",
+  "trends.tools": "工具活动",
+  "trends.1h": "最近 1 小时",
+  "trends.6h": "最近 6 小时",
+  "trends.24h": "最近 24 小时",
+  "trends.7d": "最近 7 天",
+  "trends.no_data": "该时间范围内无数据"
 }

@@ -1,0 +1,116 @@
+import fs from 'node:fs';
+import path from 'node:path';
+
+export class StatuslineCollector {
+  constructor(store, config) {
+    this.store = store;
+    this.config = config;
+    this._timer = null;
+    this._lastHash = null;
+    this._statusFilePath = path.join(config.zylosDir, 'activity-monitor', 'statusline.json');
+  }
+
+  async collect() {
+    const now = new Date().toISOString();
+    let data;
+
+    try {
+      const raw = fs.readFileSync(this._statusFilePath, 'utf8');
+      data = JSON.parse(raw);
+    } catch {
+      this.store.upsertSourceHealth('statusline', 'collector_liveness', 'stale', {
+        reason: 'file_unreadable',
+        path: this._statusFilePath,
+        last_check: now
+      });
+      return;
+    }
+
+    const hash = simpleHash(JSON.stringify(data));
+    if (hash === this._lastHash) return;
+    this._lastHash = hash;
+
+    const sessionId = data.session_id || null;
+    let written = 0;
+
+    if (data.context_window?.used_percentage != null) {
+      this.store.insertMetric({
+        timestamp: now, runtime: 'claude', session_id: sessionId,
+        metric_name: 'context_pct', metric_value: data.context_window.used_percentage,
+        source: 'statusline', confidence: 'actual'
+      });
+      written++;
+    }
+
+    if (data.cost?.total_cost_usd != null) {
+      this.store.insertMetric({
+        timestamp: now, runtime: 'claude', session_id: sessionId,
+        metric_name: 'session_cost', metric_value: data.cost.total_cost_usd,
+        source: 'statusline', confidence: 'actual'
+      });
+      written++;
+    }
+
+    if (data.rate_limits?.five_hour?.used_percentage != null) {
+      this.store.insertMetric({
+        timestamp: now, runtime: 'claude', session_id: sessionId,
+        metric_name: 'rate_limit', metric_value: data.rate_limits.five_hour.used_percentage,
+        dimensions: JSON.stringify({ period: '5h', '5h': data.rate_limits.five_hour.used_percentage, '7d': data.rate_limits?.seven_day?.used_percentage }),
+        source: 'statusline', confidence: 'actual'
+      });
+      written++;
+    }
+
+    if (data.rate_limits?.seven_day?.used_percentage != null) {
+      this.store.insertMetric({
+        timestamp: now, runtime: 'claude', session_id: sessionId,
+        metric_name: 'rate_limit_7d', metric_value: data.rate_limits.seven_day.used_percentage,
+        dimensions: JSON.stringify({ period: '7d' }),
+        source: 'statusline', confidence: 'actual'
+      });
+      written++;
+    }
+
+    const cw = data.context_window?.current_usage;
+    if (cw && cw.cache_read_input_tokens != null) {
+      const totalIn = (cw.input_tokens || 0) + (cw.cache_creation_input_tokens || 0) + (cw.cache_read_input_tokens || 0);
+      if (totalIn > 0) {
+        this.store.insertMetric({
+          timestamp: now, runtime: 'claude', session_id: sessionId,
+          metric_name: 'cache_hit_rate', metric_value: cw.cache_read_input_tokens / totalIn,
+          source: 'statusline_current_usage', confidence: 'actual'
+        });
+        written++;
+      }
+    }
+
+    if (written > 0) {
+      this.store.upsertSourceHealth('statusline', 'collector_liveness', 'healthy', {
+        last_success: now, metrics_written: written
+      });
+      this.store.upsertSourceHealth('statusline', 'runtime_progress', 'healthy', {
+        last_success: now
+      });
+    }
+
+    return { written, data };
+  }
+
+  start(intervalMs = 5_000) {
+    this.stop();
+    this._timer = setInterval(() => this.collect(), intervalMs);
+    this._timer.unref();
+  }
+
+  stop() {
+    if (this._timer) { clearInterval(this._timer); this._timer = null; }
+  }
+}
+
+function simpleHash(str) {
+  let h = 0;
+  for (let i = 0; i < str.length; i++) {
+    h = ((h << 5) - h + str.charCodeAt(i)) | 0;
+  }
+  return h;
+}

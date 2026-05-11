@@ -7,23 +7,25 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="__ASSET_ROOT__/css/style.css?v=phase2a">
-<link rel="stylesheet" href="__ASSET_ROOT__/themes/light.css?v=phase2a">
-<script type="module" src="__ASSET_ROOT__/js/app.js?v=phase2a"></script>
+<link rel="stylesheet" href="__ASSET_ROOT__/css/style.css?v=2">
+<link rel="stylesheet" href="__ASSET_ROOT__/themes/light.css?v=2">
+<script src="__ASSET_ROOT__/vendor/chart.umd.js"></script>
+<script src="__ASSET_ROOT__/js/chartjs-adapter-date-fns.bundle.min.js"></script>
+<script type="module" src="__ASSET_ROOT__/js/app.js?v=3"></script>
 </head>
 <body>
 <header class="app-header">
-  <div>
+  <div class="header-left">
     <p class="eyebrow">Zylos</p>
     <h1 data-i18n="app.title">Zylos Dashboard</h1>
   </div>
   <div class="header-actions">
     <span class="connection-pill" id="connection-status" data-state="connecting" data-i18n="status.connecting">Connecting</span>
-    <button class="language-button" id="locale-toggle" type="button" data-i18n="lang.switch">中文</button>
+    <button class="lang-btn" id="locale-toggle" type="button" data-i18n="lang.switch">中文</button>
   </div>
 </header>
 
-<nav class="dashboard-tabs" aria-label="Dashboard sections">
+<nav class="tab-bar" aria-label="Dashboard sections">
   <button class="tab active" type="button" data-tab="overview" data-i18n="tab.overview">Overview</button>
   <button class="tab" type="button" data-tab="trends" data-i18n="tab.trends">Trends</button>
 </nav>
@@ -31,113 +33,142 @@
 <main>
   <section class="tab-panel active" id="tab-overview">
     <div class="overview-grid">
-      <section class="panel runtime-panel" aria-labelledby="runtime-title">
-        <div class="panel-heading">
+
+      <!-- ① Live Runtime State -->
+      <section class="card runtime-card" aria-labelledby="runtime-title">
+        <div class="card-head">
           <h2 id="runtime-title" data-i18n="block.runtime">Runtime State</h2>
-          <span class="freshness" id="state-updated">--</span>
+          <time class="freshness" id="state-updated">--</time>
         </div>
-        <div class="runtime-hero">
+        <div class="state-hero">
           <span class="state-dot state-unknown" id="state-dot" aria-hidden="true"></span>
-          <div>
-            <p class="state-title" id="state-title">--</p>
-            <p class="state-reason" id="state-reason">--</p>
+          <div class="state-info">
+            <p class="state-label" id="state-title">--</p>
+            <p class="state-detail" id="state-reason">--</p>
           </div>
         </div>
-        <div class="runtime-meta">
-          <div>
-            <span class="label" data-i18n="label.confidence">Confidence</span>
-            <strong id="state-confidence">--</strong>
+        <div class="kv-row">
+          <div class="kv">
+            <span class="kv-label" data-i18n="label.confidence">Confidence</span>
+            <span class="kv-value" id="state-confidence">--</span>
           </div>
-          <div>
-            <span class="label" data-i18n="label.action">Action</span>
-            <strong id="state-action">--</strong>
+          <div class="kv">
+            <span class="kv-label" data-i18n="label.action">Action</span>
+            <span class="kv-value" id="state-action">--</span>
           </div>
         </div>
-        <details class="tool-details" id="tool-details">
+        <details class="tool-drawer" id="tool-details">
           <summary>
             <span data-i18n="label.running_tools">Running tools</span>
-            <span class="badge" id="tool-count">0</span>
+            <span class="pill" id="tool-count">0</span>
           </summary>
           <div class="tool-list" id="tool-list"></div>
         </details>
       </section>
 
-      <section class="panel" aria-labelledby="capacity-title">
-        <div class="panel-heading">
+      <!-- ② Capacity & Cost -->
+      <section class="card" aria-labelledby="capacity-title">
+        <div class="card-head">
           <h2 id="capacity-title" data-i18n="block.capacity">Capacity & Cost</h2>
-          <span class="freshness" id="metrics-updated">--</span>
+          <time class="freshness" id="metrics-updated">--</time>
         </div>
         <div class="metric-stack">
-          <article class="metric-row">
-            <div class="metric-topline">
-              <span class="label" data-i18n="label.context">Context</span>
-              <strong id="metric-context-value">--</strong>
+          <article class="metric-bar-row">
+            <div class="metric-bar-head">
+              <span class="metric-label" data-i18n="label.context">Context</span>
+              <strong class="metric-value" id="metric-context-value">--</strong>
             </div>
-            <div class="bar"><span id="metric-context-bar"></span></div>
-            <small id="metric-context-source">--</small>
+            <div class="progress"><span class="progress-fill" id="metric-context-bar"></span></div>
+            <small class="metric-source" id="metric-context-source">--</small>
           </article>
-          <article class="metric-row">
-            <div class="metric-topline">
-              <span class="label" data-i18n="label.rate_limit_5h">5h Rate Limit</span>
-              <strong id="metric-rate-5h-value">--</strong>
+          <article class="metric-bar-row">
+            <div class="metric-bar-head">
+              <span class="metric-label" data-i18n="label.rate_limit_5h">5h Rate Limit</span>
+              <strong class="metric-value" id="metric-rate-5h-value">--</strong>
             </div>
-            <div class="bar"><span id="metric-rate-5h-bar"></span></div>
+            <div class="progress"><span class="progress-fill" id="metric-rate-5h-bar"></span></div>
           </article>
-          <article class="metric-row">
-            <div class="metric-topline">
-              <span class="label" data-i18n="label.rate_limit_7d">7d Rate Limit</span>
-              <strong id="metric-rate-7d-value">--</strong>
+          <article class="metric-bar-row">
+            <div class="metric-bar-head">
+              <span class="metric-label" data-i18n="label.rate_limit_7d">7d Rate Limit</span>
+              <strong class="metric-value" id="metric-rate-7d-value">--</strong>
             </div>
-            <div class="bar"><span id="metric-rate-7d-bar"></span></div>
+            <div class="progress"><span class="progress-fill" id="metric-rate-7d-bar"></span></div>
           </article>
           <div class="metric-pair">
-            <article>
-              <span class="label" data-i18n="label.cost">Cost</span>
-              <strong id="metric-cost-value">--</strong>
-              <small id="metric-cost-source">--</small>
+            <article class="metric-text">
+              <span class="metric-label" data-i18n="label.cost">Cost</span>
+              <strong class="metric-value" id="metric-cost-value">--</strong>
+              <small class="metric-source" id="metric-cost-source">--</small>
             </article>
-            <article>
-              <span class="label" data-i18n="label.cache_hit">Cache Hit Rate</span>
-              <strong id="metric-cache-value">--</strong>
-              <small id="metric-cache-source">--</small>
+            <article class="metric-text">
+              <span class="metric-label" data-i18n="label.cache_hit">Cache Hit Rate</span>
+              <strong class="metric-value" id="metric-cache-value">--</strong>
+              <small class="metric-source" id="metric-cache-source">--</small>
             </article>
           </div>
         </div>
       </section>
 
-      <section class="panel" aria-labelledby="health-title">
-        <div class="panel-heading">
+      <!-- ③ Health & System -->
+      <section class="card" aria-labelledby="health-title">
+        <div class="card-head">
           <h2 id="health-title" data-i18n="block.health">Health & System</h2>
-          <span class="freshness" id="health-updated">--</span>
+          <time class="freshness" id="health-updated">--</time>
         </div>
-        <div class="system-grid">
-          <article class="system-tile">
-            <span class="label" data-i18n="label.cpu">CPU</span>
-            <strong id="system-cpu">--</strong>
+        <div class="gauge-grid">
+          <article class="gauge">
+            <span class="metric-label" data-i18n="label.cpu">CPU</span>
+            <strong class="gauge-value" id="system-cpu">--</strong>
           </article>
-          <article class="system-tile">
-            <span class="label" data-i18n="label.memory">Memory</span>
-            <strong id="system-memory">--</strong>
+          <article class="gauge">
+            <span class="metric-label" data-i18n="label.memory">Memory</span>
+            <strong class="gauge-value" id="system-memory">--</strong>
           </article>
-          <article class="system-tile">
-            <span class="label" data-i18n="label.disk">Disk</span>
-            <strong id="system-disk">--</strong>
+          <article class="gauge">
+            <span class="metric-label" data-i18n="label.disk">Disk</span>
+            <strong class="gauge-value" id="system-disk">--</strong>
           </article>
-          <article class="system-tile">
-            <span class="label" data-i18n="label.pm2">PM2 Services</span>
-            <strong id="system-pm2">--</strong>
+          <article class="gauge">
+            <span class="metric-label" data-i18n="label.pm2">PM2 Services</span>
+            <strong class="gauge-value" id="system-pm2">--</strong>
           </article>
         </div>
         <div class="source-list" id="source-list"></div>
       </section>
+
     </div>
   </section>
 
   <section class="tab-panel" id="tab-trends" hidden>
-    <section class="panel empty-panel">
-      <h2 data-i18n="tab.trends">Trends</h2>
-      <p data-i18n="trends.placeholder">Trend charts are scheduled for the next phase.</p>
-    </section>
+    <div class="trends-layout">
+      <div class="trends-controls">
+        <select class="range-select" id="trend-range">
+          <option value="1h" data-i18n-value="trends.1h">Last 1 hour</option>
+          <option value="6h" data-i18n-value="trends.6h" selected>Last 6 hours</option>
+          <option value="24h" data-i18n-value="trends.24h">Last 24 hours</option>
+          <option value="7d" data-i18n-value="trends.7d">Last 7 days</option>
+        </select>
+      </div>
+      <div class="chart-grid">
+        <section class="card chart-card">
+          <h2 data-i18n="trends.context">Context Usage</h2>
+          <div class="chart-wrap"><canvas id="chart-context"></canvas></div>
+        </section>
+        <section class="card chart-card">
+          <h2 data-i18n="trends.cost">Session Cost</h2>
+          <div class="chart-wrap"><canvas id="chart-cost"></canvas></div>
+        </section>
+        <section class="card chart-card">
+          <h2 data-i18n="trends.rate">Rate Limit Usage</h2>
+          <div class="chart-wrap"><canvas id="chart-rate"></canvas></div>
+        </section>
+        <section class="card chart-card">
+          <h2 data-i18n="trends.tools">Tool Activity</h2>
+          <div class="chart-wrap"><canvas id="chart-tools"></canvas></div>
+        </section>
+      </div>
+    </div>
   </section>
 </main>
 </body>
