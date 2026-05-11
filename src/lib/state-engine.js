@@ -230,6 +230,15 @@ export class StateEngine {
         break;
 
       case 'stop':
+        if (event.session_id) {
+          for (const [id, tool] of this._state.runningTools) {
+            if (tool.session_id === event.session_id) {
+              this._state.runningTools.delete(id);
+            }
+          }
+        } else {
+          this._state.runningTools.clear();
+        }
         this._state.openTurn = null;
         this._state.lastProgressAt = now;
         this._clearPossiblyStuck();
@@ -519,10 +528,20 @@ export class StateEngine {
   _periodicSnapshot() {
     try {
       this._readAMHeartbeat();
+      this._cleanupStaleTools();
       this._saveSnapshot();
       this._lastSnapshotTime = this._now();
     } catch (err) {
       process.stderr.write(`[state-engine] Snapshot error: ${err.message}\n`);
+    }
+  }
+
+  _cleanupStaleTools() {
+    const now = this._now();
+    for (const [id, tool] of this._state.runningTools) {
+      if ((now - new Date(tool.started_at).getTime()) > STALE_TOOL_THRESHOLD_MS) {
+        this._state.runningTools.delete(id);
+      }
     }
   }
 
