@@ -200,21 +200,24 @@ function renderHealth() {
   const mem = sys.memory?.used_bytes ?? sys.mem_used_bytes ?? sys.memory?.used ?? sys.memory;
   const disk = sys.disk?.used_pct ?? sys.disk_used_pct ?? sys.disk_pct ?? sys.disk?.percent ?? sys.disk;
 
+  $('#system-pm2').textContent = total ? t('label.running', { count: running, total }) : '--';
   $('#system-cpu').textContent = pct(cpu);
   $('#system-memory').textContent = typeof mem === 'number' && mem > 100 ? bytes(mem) : pct(mem);
   $('#system-disk').textContent = pct(disk);
-  $('#system-pm2').textContent = total ? t('label.running', { count: running, total }) : '--';
   $('#health-updated').textContent = fmtAge(state.healthUpdatedAt);
 
   const sources = flatSources(state.dashboardState?.source || health.source || health.sources || {});
-  $('#source-list').replaceChildren(...sources.slice(0, 8).map((s) => {
-    const el = document.createElement('div');
-    el.className = 'source-item';
-    const status = s.status || (s.fresh ? 'healthy' : 'stale');
-    const age = Number.isFinite(Number(s.age_s)) ? `${Math.round(s.age_s)}s` : '--';
-    el.innerHTML = `<strong>${esc(s.name)}</strong><span>${esc(status)} · ${age}</span>`;
-    return el;
-  }));
+  const c4Src = sources.find((s) => s.name.includes('c4'));
+  const otelSrc = sources.find((s) => s.name.includes('otel') || s.name.includes('metric'));
+  $('#system-c4').textContent = fmtSourceStatus(c4Src);
+  $('#system-otel').textContent = fmtSourceStatus(otelSrc);
+}
+
+function fmtSourceStatus(src) {
+  if (!src) return t('source.unavailable');
+  const age = Number.isFinite(Number(src.age_s)) ? `${Math.round(src.age_s)}s` : null;
+  const status = src.fresh !== false ? t('source.active') : t('source.stale');
+  return age ? `${status} (${age})` : status;
 }
 
 function flatSources(tree) {
@@ -274,7 +277,8 @@ function renderSummary() {
   $('#summary-tool-calls').textContent = s ? String(s.tool_calls) : '--';
   $('#summary-active-time').textContent = s ? formatActiveTime(s.active_time_ms) : '--';
   $('#summary-messages').textContent = s ? String(s.messages_processed) : '--';
-  $('#summary-top-tool').textContent = s?.top_tool || '--';
+  $('#summary-top-project').textContent = s?.top_project || '--';
+  $('#summary-scheduler').textContent = s?.scheduler_tasks != null ? String(s.scheduler_tasks) : '--';
   $('#summary-updated').textContent = fmtAge(state.summaryUpdatedAt);
 }
 
@@ -311,14 +315,12 @@ function renderComm() {
   }));
 
   const pendingEl = $('#comm-pending');
-  if (c.pending_depth > 0) {
-    const warn = c.pending_oldest_age_s > 300 ? ' warn' : '';
-    pendingEl.innerHTML =
-      `<span class="${warn}">${t('comm.pending')}: ${c.pending_depth}</span>` +
-      (c.pending_oldest_age_s != null ? ` · ${t('comm.oldest')}: ${dur(c.pending_oldest_age_s)}` : '');
-  } else {
-    pendingEl.innerHTML = `${t('comm.pending')}: 0`;
-  }
+  const avgStr = c.avg_response_s != null ? `${t('comm.avg_response')}: ${dur(c.avg_response_s)}` : '';
+  const pendingStr = c.pending_depth > 0
+    ? `<span class="${c.pending_oldest_age_s > 300 ? 'warn' : ''}">${t('comm.pending')}: ${c.pending_depth}</span>` +
+      (c.pending_oldest_age_s != null ? ` · ${t('comm.oldest')}: ${dur(c.pending_oldest_age_s)}` : '')
+    : `${t('comm.pending')}: 0`;
+  pendingEl.innerHTML = [avgStr, pendingStr].filter(Boolean).join(' · ');
 
   $('#comm-updated').textContent = fmtAge(state.commUpdatedAt);
 }

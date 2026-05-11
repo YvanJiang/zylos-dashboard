@@ -115,6 +115,53 @@ test('C4Reader — getTodayStats counts by channel and direction', () => {
   }
 });
 
+test('C4Reader — getAvgResponseTime computes from in/out pairs', () => {
+  const f = makeFixture();
+  try {
+    const ins = f.db.prepare(`
+      INSERT INTO conversations (timestamp, direction, channel, content, status)
+      VALUES (?, ?, ?, 'msg', 'delivered')
+    `);
+    ins.run(new Date(Date.now() - 60000).toISOString().replace('T', ' ').slice(0, 19), 'in', 'telegram');
+    ins.run(new Date(Date.now() - 50000).toISOString().replace('T', ' ').slice(0, 19), 'out', 'telegram');
+    ins.run(new Date(Date.now() - 30000).toISOString().replace('T', ' ').slice(0, 19), 'in', 'telegram');
+    ins.run(new Date(Date.now() - 10000).toISOString().replace('T', ' ').slice(0, 19), 'out', 'telegram');
+
+    const result = f.reader.getAvgResponseTime();
+    assert.ok(result != null, 'expected a numeric result');
+    assert.ok(result >= 5 && result <= 25, `expected ~15s avg, got ${result}s`);
+  } finally {
+    cleanup(f);
+  }
+});
+
+test('C4Reader — getAvgResponseTime excludes scheduler/system channels', () => {
+  const f = makeFixture();
+  try {
+    const ins = f.db.prepare(`
+      INSERT INTO conversations (timestamp, direction, channel, content, status)
+      VALUES (?, ?, ?, 'msg', 'delivered')
+    `);
+    ins.run(new Date(Date.now() - 60000).toISOString().replace('T', ' ').slice(0, 19), 'in', 'scheduler');
+    ins.run(new Date(Date.now() - 50000).toISOString().replace('T', ' ').slice(0, 19), 'out', 'scheduler');
+
+    const result = f.reader.getAvgResponseTime();
+    assert.equal(result, null, 'scheduler-only traffic should return null');
+  } finally {
+    cleanup(f);
+  }
+});
+
+test('C4Reader — getAvgResponseTime returns null when no data', () => {
+  const f = makeFixture();
+  try {
+    const result = f.reader.getAvgResponseTime();
+    assert.equal(result, null);
+  } finally {
+    cleanup(f);
+  }
+});
+
 test('C4Reader — missing db returns safe defaults', () => {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'c4-reader-nodir-'));
   const reader = new C4Reader(tmpDir);
@@ -122,6 +169,7 @@ test('C4Reader — missing db returns safe defaults', () => {
     assert.equal(reader.getTodayStats(), null);
     assert.deepEqual(reader.getPendingQueue(), { depth: 0, oldest_age_s: null });
     assert.deepEqual(reader.getLastOutbound(), {});
+    assert.equal(reader.getAvgResponseTime(), null);
   } finally {
     reader.close();
     fs.rmSync(tmpDir, { recursive: true, force: true });
