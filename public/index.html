@@ -118,6 +118,10 @@
         </div>
         <div class="gauge-grid">
           <article class="gauge">
+            <span class="metric-label" data-i18n="label.pm2">PM2 Services</span>
+            <strong class="gauge-value" id="system-pm2">--</strong>
+          </article>
+          <article class="gauge">
             <span class="metric-label" data-i18n="label.cpu">CPU</span>
             <strong class="gauge-value" id="system-cpu">--</strong>
           </article>
@@ -130,17 +134,20 @@
             <strong class="gauge-value" id="system-disk">--</strong>
           </article>
           <article class="gauge">
-            <span class="metric-label" data-i18n="label.pm2">PM2 Services</span>
-            <strong class="gauge-value" id="system-pm2">--</strong>
+            <span class="metric-label" data-i18n="label.c4">C4 Bridge</span>
+            <strong class="gauge-value" id="system-c4">--</strong>
+          </article>
+          <article class="gauge">
+            <span class="metric-label" data-i18n="label.otel">OTel Pipeline</span>
+            <strong class="gauge-value" id="system-otel">--</strong>
           </article>
         </div>
-        <div class="source-list" id="source-list"></div>
       </section>
 
       <!-- ④ Current Work Timeline -->
       <section class="card timeline-card" aria-labelledby="timeline-title">
         <div class="card-head">
-          <h2 id="timeline-title" data-i18n="block.timeline">Current Work Timeline</h2>
+          <h2 id="timeline-title"><span data-i18n="block.timeline">Current Work Timeline</span> <span class="card-sub" data-i18n="block.timeline_sub">(last 30 min)</span></h2>
           <time class="freshness" id="timeline-updated">--</time>
         </div>
         <div class="timeline-list" id="timeline-list">
@@ -151,7 +158,7 @@
       <!-- ⑤ Work History -->
       <section class="card" aria-labelledby="summary-title">
         <div class="card-head">
-          <h2 id="summary-title" data-i18n="block.summary">Work History</h2>
+          <h2 id="summary-title"><span data-i18n="block.summary">Work History</span> <span class="card-sub" data-i18n="block.summary_sub">(today)</span></h2>
           <time class="freshness" id="summary-updated">--</time>
         </div>
         <div class="summary-grid" id="summary-stats">
@@ -168,8 +175,12 @@
             <span class="stat-label" data-i18n="summary.messages">Messages</span>
           </article>
           <article class="stat-item">
-            <strong class="stat-value" id="summary-top-tool">--</strong>
-            <span class="stat-label" data-i18n="summary.top_tool">Top Tool</span>
+            <strong class="stat-value" id="summary-top-project">--</strong>
+            <span class="stat-label" data-i18n="summary.top_project">Top Project</span>
+          </article>
+          <article class="stat-item">
+            <strong class="stat-value" id="summary-scheduler">--</strong>
+            <span class="stat-label" data-i18n="summary.scheduler">Scheduler Tasks</span>
           </article>
         </div>
       </section>

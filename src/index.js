@@ -19,6 +19,7 @@ import { StateEngine } from './lib/state-engine.js';
 import { MetricResolver } from './lib/metric-resolver.js';
 import { SseHub } from './lib/sse.js';
 import { C4Reader } from './lib/c4-reader.js';
+import Database from 'better-sqlite3';
 
 const startedAt = new Date();
 const config = loadConfig();
@@ -86,6 +87,34 @@ async function startupSequence() {
 
   // State engine initialize (snapshot restore + replay)
   await stateEngine.initialize();
+}
+
+function extractProject(filePath) {
+  if (!filePath) return null;
+  const parts = filePath.replace(/^\/+/, '').split('/');
+  const wsIdx = parts.indexOf('workspace');
+  if (wsIdx >= 0 && parts[wsIdx + 1]) return parts[wsIdx + 1];
+  const srcIdx = parts.indexOf('src');
+  if (srcIdx >= 2) return parts[srcIdx - 1];
+  const skillsIdx = parts.indexOf('skills');
+  if (skillsIdx >= 0 && parts[skillsIdx + 1]) return parts[skillsIdx + 1];
+  if (parts.length >= 2) return parts[parts.length - 2];
+  return null;
+}
+
+function readSchedulerTodayCount(zylosDir) {
+  const dbFile = path.join(zylosDir, 'scheduler', 'scheduler.db');
+  if (!fs.existsSync(dbFile)) return 0;
+  try {
+    const db = new Database(dbFile, { readonly: true });
+    db.pragma('busy_timeout = 3000');
+    const todayStart = Math.floor(new Date(new Date().toISOString().slice(0, 10) + 'T00:00:00Z').getTime() / 1000);
+    const row = db.prepare('SELECT COUNT(*) as count FROM task_history WHERE executed_at >= ?').get(todayStart);
+    db.close();
+    return row?.count || 0;
+  } catch {
+    return 0;
+  }
 }
 
 function handleApi(req, res, pathname, url) {
@@ -171,24 +200,27 @@ function handleApi(req, res, pathname, url) {
     const toolCalls = events.length;
     const activeTimeMs = events.reduce((sum, e) => sum + (e.duration_ms || 0), 0);
 
-    const toolBreakdown = {};
+    const projectBreakdown = {};
     for (const e of events) {
-      const name = e.metadata?.tool_name || 'Unknown';
-      toolBreakdown[name] = (toolBreakdown[name] || 0) + 1;
+      const fp = e.metadata?.file_path || '';
+      const project = extractProject(fp);
+      if (project) projectBreakdown[project] = (projectBreakdown[project] || 0) + 1;
     }
-    const topTool = Object.entries(toolBreakdown).sort((a, b) => b[1] - a[1])[0]?.[0] || null;
+    const topProject = Object.entries(projectBreakdown).sort((a, b) => b[1] - a[1])[0]?.[0] || null;
 
     const c4Stats = c4Reader.getTodayStats();
     const messagesProcessed = c4Stats ? c4Stats.total_in + c4Stats.total_out : 0;
+    const schedulerTasks = readSchedulerTodayCount(config.zylosDir);
 
     sendJson(res, 200, {
       date: today,
       tool_calls: toolCalls,
       active_time_ms: activeTimeMs,
       active_time_h: Math.round(activeTimeMs / 36000) / 100,
-      top_tool: topTool,
-      tool_breakdown: toolBreakdown,
-      messages_processed: messagesProcessed
+      top_project: topProject,
+      project_breakdown: projectBreakdown,
+      messages_processed: messagesProcessed,
+      scheduler_tasks: schedulerTasks
     });
     return true;
   }
@@ -197,6 +229,7 @@ function handleApi(req, res, pathname, url) {
     const stats = c4Reader.getTodayStats();
     const pending = c4Reader.getPendingQueue();
     const lastOutbound = c4Reader.getLastOutbound();
+    const avgResponse = c4Reader.getAvgResponseTime();
 
     sendJson(res, 200, {
       channels: stats?.channels || {},
@@ -204,7 +237,8 @@ function handleApi(req, res, pathname, url) {
       total_out: stats?.total_out || 0,
       pending_depth: pending.depth,
       pending_oldest_age_s: pending.oldest_age_s,
-      last_outbound: lastOutbound
+      last_outbound: lastOutbound,
+      avg_response_s: avgResponse
     });
     return true;
   }

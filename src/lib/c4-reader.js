@@ -91,6 +91,32 @@ export class C4Reader {
     }
   }
 
+  getAvgResponseTime() {
+    const db = this._open();
+    if (!db) return null;
+    const today = new Date().toISOString().slice(0, 10);
+    try {
+      const row = db.prepare(`
+        SELECT AVG(response_delay_s) as avg_s FROM (
+          SELECT i.id,
+            CAST((julianday(MIN(o.timestamp)) - julianday(i.timestamp)) * 86400 AS REAL) as response_delay_s
+          FROM conversations i
+          JOIN conversations o ON o.channel = i.channel
+            AND o.direction = 'out'
+            AND o.timestamp > i.timestamp
+            AND julianday(o.timestamp) - julianday(i.timestamp) < 0.0069444
+          WHERE i.direction = 'in'
+            AND i.timestamp >= ?
+            AND i.channel NOT IN ('scheduler', 'system', 'control')
+          GROUP BY i.id
+        ) WHERE response_delay_s > 0
+      `).get(today);
+      return row?.avg_s != null ? Math.round(row.avg_s) : null;
+    } catch {
+      return null;
+    }
+  }
+
   close() {
     this._db?.close();
     this._db = null;
