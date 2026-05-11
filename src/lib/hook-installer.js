@@ -71,7 +71,7 @@ export class HookInstaller {
       if (exists) continue;
 
       const entry = {
-        hooks: [{ type: 'command', command: cmd, timeout: 2000 }]
+        hooks: [{ type: 'command', command: cmd, timeout: 5, async: true }]
       };
       if (TOOL_EVENTS.has(event)) entry.matcher = '';
       settings.hooks[event].push(entry);
@@ -129,7 +129,7 @@ export class HookInstaller {
     for (const event of HOOK_EVENTS) {
       const exists = hooks.some(h => h.event === event && this._isOwn(h.command));
       if (exists) continue;
-      hooks.push({ event, command: cmd, timeout: 2000 });
+      hooks.push({ event, command: cmd, timeout: 5, async: true });
       added++;
     }
 

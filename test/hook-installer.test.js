@@ -50,6 +50,15 @@ test('HookInstaller — Claude', async (t) => {
     assert.equal(settings.hooks.PermissionRequest[0].matcher, undefined);
   });
 
+  await t.test('hooks are registered as async with short timeout', () => {
+    const settings = JSON.parse(fs.readFileSync(installer._claudePath(), 'utf8'));
+    for (const event of ['PreToolUse', 'PostToolUse', 'UserPromptSubmit', 'Stop', 'PermissionRequest']) {
+      const hook = settings.hooks[event][0].hooks[0];
+      assert.equal(hook.async, true, `${event} hook should be async`);
+      assert.equal(hook.timeout, 5, `${event} hook timeout should be 5ms`);
+    }
+  });
+
   await t.test('preserves existing hooks', () => {
     const existingHook = {
       hooks: [{ type: 'command', command: 'node ~/zylos/.claude/skills/activity-monitor/scripts/hook-activity.js', timeout: 5 }],
