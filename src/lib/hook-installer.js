@@ -122,11 +122,26 @@ export class HookInstaller {
   }
 
   _readCodex() {
+    let raw;
     try {
-      return JSON.parse(fs.readFileSync(this._codexPath(), 'utf8'));
+      raw = JSON.parse(fs.readFileSync(this._codexPath(), 'utf8'));
     } catch {
       return {};
     }
+    if (!Array.isArray(raw)) return raw;
+    // Migrate old flat-array format [{ event, command, ... }] to nested
+    const config = { hooks: {} };
+    for (const entry of raw) {
+      if (!entry.event || !entry.command) continue;
+      const event = entry.event;
+      if (!config.hooks[event]) config.hooks[event] = [];
+      const group = { hooks: [{ type: 'command', command: entry.command }] };
+      if (entry.timeout != null) group.hooks[0].timeout = entry.timeout;
+      if (entry.async != null) group.hooks[0].async = entry.async;
+      if (TOOL_EVENTS.has(event)) group.matcher = '';
+      config.hooks[event].push(group);
+    }
+    return config;
   }
 
   _writeCodex(config) {

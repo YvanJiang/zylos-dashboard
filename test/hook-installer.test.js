@@ -228,6 +228,71 @@ test('HookInstaller — Codex', async (t) => {
   fs.rmSync(projectRoot, { recursive: true, force: true });
 });
 
+test('HookInstaller — Codex flat-array migration', async (t) => {
+  const tmpHome = makeTmpDir();
+  const projectRoot = makeTmpDir();
+  const installer = makeInstaller(projectRoot, tmpHome);
+
+  await t.test('migrates old flat dashboard hooks to nested async/timeout=5', () => {
+    const oldFlat = [
+      { event: 'PreToolUse', command: `node ${installer.hookScript}`, timeout: 2000 },
+      { event: 'PostToolUse', command: `node ${installer.hookScript}`, timeout: 2000 },
+      { event: 'UserPromptSubmit', command: `node ${installer.hookScript}`, timeout: 2000 },
+      { event: 'Stop', command: `node ${installer.hookScript}`, timeout: 2000 },
+      { event: 'PermissionRequest', command: `node ${installer.hookScript}`, timeout: 2000 }
+    ];
+    const p = installer._codexPath();
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    fs.writeFileSync(p, JSON.stringify(oldFlat, null, 2) + '\n');
+
+    const result = installer.installCodexHooks();
+    assert.ok(result.added > 0, 'should upgrade migrated hooks');
+
+    const config = JSON.parse(fs.readFileSync(p, 'utf8'));
+    assert.ok(!Array.isArray(config), 'file should be an object, not array');
+    assert.ok(config.hooks, 'should have hooks key');
+
+    for (const event of ['PreToolUse', 'PostToolUse', 'UserPromptSubmit', 'Stop', 'PermissionRequest']) {
+      const group = config.hooks[event]?.find(g => g.hooks?.some(h => installer._isOwn(h.command)));
+      assert.ok(group, `${event} should have a dashboard hook group`);
+      const h = group.hooks.find(h => installer._isOwn(h.command));
+      assert.equal(h.type, 'command', `${event} should have type=command`);
+      assert.equal(h.async, true, `${event} should be async after migration`);
+      assert.equal(h.timeout, 5, `${event} timeout should be 5 after migration`);
+    }
+  });
+
+  await t.test('preserves non-dashboard hooks during flat migration', () => {
+    const oldFlat = [
+      { event: 'PreToolUse', command: 'node ~/other-script.js', timeout: 1000 },
+      { event: 'PreToolUse', command: `node ${installer.hookScript}`, timeout: 2000 },
+      { event: 'Stop', command: `node ${installer.hookScript}`, timeout: 2000 }
+    ];
+    const p = installer._codexPath();
+    fs.writeFileSync(p, JSON.stringify(oldFlat, null, 2) + '\n');
+
+    installer.installCodexHooks();
+
+    const config = JSON.parse(fs.readFileSync(p, 'utf8'));
+    assert.equal(config.hooks.PreToolUse.length, 2);
+    assert.ok(config.hooks.PreToolUse.some(g =>
+      g.hooks?.some(h => h.command.includes('other-script'))
+    ), 'non-dashboard hook should be preserved');
+  });
+
+  await t.test('uninstall works on migrated file', () => {
+    const result = installer.uninstallCodexHooks();
+    assert.equal(result.removed, 5);
+
+    const config = JSON.parse(fs.readFileSync(installer._codexPath(), 'utf8'));
+    assert.equal(config.hooks.PreToolUse.length, 1);
+    assert.ok(config.hooks.PreToolUse[0].hooks[0].command.includes('other-script'));
+  });
+
+  fs.rmSync(tmpHome, { recursive: true, force: true });
+  fs.rmSync(projectRoot, { recursive: true, force: true });
+});
+
 test('HookInstaller — detectRuntime', async (t) => {
   const installer = new HookInstaller('/tmp/fake');
 
