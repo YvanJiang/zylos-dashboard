@@ -7,11 +7,11 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="__ASSET_ROOT__/css/style.css?v=2">
+<link rel="stylesheet" href="__ASSET_ROOT__/css/style.css?v=3">
 <link rel="stylesheet" href="__ASSET_ROOT__/themes/light.css?v=2">
 <script src="__ASSET_ROOT__/vendor/chart.umd.js"></script>
 <script src="__ASSET_ROOT__/js/chartjs-adapter-date-fns.bundle.min.js"></script>
-<script type="module" src="__ASSET_ROOT__/js/app.js?v=3"></script>
+<script type="module" src="__ASSET_ROOT__/js/app.js?v=4"></script>
 </head>
 <body>
 <header class="app-header">
@@ -40,30 +40,35 @@
           <h2 id="runtime-title" data-i18n="block.runtime">Runtime State</h2>
           <time class="freshness" id="state-updated">--</time>
         </div>
-        <div class="state-hero">
-          <span class="state-dot state-unknown" id="state-dot" aria-hidden="true"></span>
-          <div class="state-info">
-            <p class="state-label" id="state-title">--</p>
-            <p class="state-detail" id="state-reason">--</p>
+        <div class="runtime-split">
+          <div class="runtime-left">
+            <div class="state-indicator">
+              <span class="state-dot state-unknown" id="state-dot" aria-hidden="true"></span>
+              <p class="state-label" id="state-title">--</p>
+            </div>
+            <div class="state-meta">
+              <span class="kv-label" data-i18n="label.confidence">Confidence</span>
+              <button class="tip-btn" id="confidence-tip" type="button" aria-label="Info">
+                <svg width="14" height="14" viewBox="0 0 16 16" fill="none"><circle cx="8" cy="8" r="7" stroke="currentColor" stroke-width="1.5"/><path d="M8 7v4M8 5.5v0" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+              </button>
+              <div class="tip-popover" id="confidence-popover" hidden>
+                <p data-i18n="tip.confidence"></p>
+              </div>
+              <span class="kv-value" id="state-confidence">--</span>
+            </div>
+          </div>
+          <div class="runtime-right">
+            <span class="kv-label" data-i18n="label.activity">Current Activity</span>
+            <p class="activity-desc" id="state-activity">--</p>
+            <details class="tool-drawer" id="tool-details">
+              <summary>
+                <span data-i18n="label.running_tools">Running tools</span>
+                <span class="pill" id="tool-count">0</span>
+              </summary>
+              <div class="tool-list" id="tool-list"></div>
+            </details>
           </div>
         </div>
-        <div class="kv-row">
-          <div class="kv">
-            <span class="kv-label" data-i18n="label.confidence">Confidence</span>
-            <span class="kv-value" id="state-confidence">--</span>
-          </div>
-          <div class="kv">
-            <span class="kv-label" data-i18n="label.action">Action</span>
-            <span class="kv-value" id="state-action">--</span>
-          </div>
-        </div>
-        <details class="tool-drawer" id="tool-details">
-          <summary>
-            <span data-i18n="label.running_tools">Running tools</span>
-            <span class="pill" id="tool-count">0</span>
-          </summary>
-          <div class="tool-list" id="tool-list"></div>
-        </details>
       </section>
 
       <!-- ② Capacity & Cost -->
