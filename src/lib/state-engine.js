@@ -203,6 +203,7 @@ export class StateEngine {
         if (event.metadata?.tool_use_id) {
           this._state.runningTools.set(event.metadata.tool_use_id, {
             tool_name: event.metadata.tool_name,
+            tool_detail: event.metadata.tool_detail || null,
             started_at: event.timestamp,
             session_id: event.session_id
           });
@@ -277,6 +278,7 @@ export class StateEngine {
       runningTools.push({
         tool_use_id: id,
         tool_name: tool.tool_name,
+        tool_detail: tool.tool_detail || null,
         started_at: tool.started_at,
         duration_s: durationS
       });
@@ -301,6 +303,7 @@ export class StateEngine {
       tools.push({
         tool_use_id: id,
         tool_name: tool.tool_name,
+        tool_detail: tool.tool_detail || null,
         started_at: tool.started_at,
         duration_s: Math.floor((this._now() - new Date(tool.started_at).getTime()) / 1000)
       });

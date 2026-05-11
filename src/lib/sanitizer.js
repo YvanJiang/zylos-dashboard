@@ -25,9 +25,12 @@ export class Sanitizer {
       const tool_name = rawPayload.tool_name || rawPayload.tool || null;
       const tool_use_id = rawPayload.tool_use_id || null;
 
+      const tool_detail = this._extractToolDetail(tool_name, rawPayload.tool_input);
+
       const metadata = {};
       if (tool_name) metadata.tool_name = tool_name;
       if (tool_use_id) metadata.tool_use_id = tool_use_id;
+      if (tool_detail) metadata.tool_detail = tool_detail;
 
       const safeFields = ['timestamp', 'hook_event_name', 'runtime'];
       for (const key of safeFields) {
@@ -40,7 +43,7 @@ export class Sanitizer {
         delete metadata[key];
       }
 
-      const summary = this.buildSummary(hookEventName, tool_name, duration_ms);
+      const summary = this.buildSummary(hookEventName, tool_name, duration_ms, tool_detail);
 
       return { session_id, duration_ms, summary, metadata };
     } catch {
@@ -69,21 +72,51 @@ export class Sanitizer {
     return result;
   }
 
-  buildSummary(hookEventName, toolName, durationMs) {
+  buildSummary(hookEventName, toolName, durationMs, toolDetail) {
+    const detail = toolDetail ? `: ${toolDetail}` : '';
     switch (hookEventName) {
       case 'PreToolUse':
-        return `${toolName || 'Unknown'} tool started`;
+        return `${toolName || 'Unknown'}${detail}`;
       case 'PostToolUse':
-        return `${toolName || 'Unknown'} tool completed${durationMs ? `, ${durationMs}ms` : ''}`;
+        return `${toolName || 'Unknown'}${detail}${durationMs ? ` (${durationMs}ms)` : ''}`;
       case 'UserPromptSubmit':
         return 'Turn started';
       case 'Stop':
         return 'Turn ended';
       case 'PermissionRequest':
-        return `Permission requested: ${toolName || 'Unknown'}`;
+        return `Permission requested: ${toolName || 'Unknown'}${detail}`;
       default:
         return hookEventName || 'unknown event';
     }
+  }
+
+  _extractToolDetail(toolName, toolInput) {
+    if (!toolInput || typeof toolInput !== 'object') return null;
+    try {
+      if (toolName === 'Read' || toolName === 'Edit' || toolName === 'Write') {
+        const fp = toolInput.file_path;
+        return fp ? this.sanitizePath(fp) : null;
+      }
+      if (toolName === 'Bash') {
+        const cmd = toolInput.command;
+        if (!cmd) return null;
+        const firstLine = cmd.split('\n')[0];
+        return firstLine.length > 80 ? firstLine.slice(0, 77) + '...' : firstLine;
+      }
+      if (toolName === 'Agent' || toolName === 'Task') {
+        return toolInput.description || null;
+      }
+      if (toolName === 'WebSearch') {
+        return toolInput.query ? `"${toolInput.query}"` : null;
+      }
+      if (toolName === 'WebFetch') {
+        try {
+          const u = new URL(toolInput.url || '');
+          return u.hostname + u.pathname;
+        } catch { return null; }
+      }
+    } catch { /* extraction failed — not critical */ }
+    return null;
   }
 
   _redactObject(obj) {

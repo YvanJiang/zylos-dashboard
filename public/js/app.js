@@ -105,15 +105,42 @@ function latestTool(tools = []) {
 
 function stateTitle(p) {
   const s = normState(p?.state);
-  const tool = latestTool(p?.running_tools);
   const reason = p?.reason || t('value.unknown');
-  if (s === 'BUSY') return t('state.busy', { tool: tool?.tool_name || 'tool' });
+  if (s === 'BUSY') return t('state.busy_simple');
   if (s === 'IDLE') return t('state.idle');
   if (s === 'OFFLINE') return t('state.offline');
   if (s === 'WAITING_HUMAN') return t('state.waiting');
-  if (s === 'POSSIBLY_STUCK') return t('state.possibly_stuck', { reason });
-  if (s === 'STUCK') return t('state.stuck', { reason });
-  return t('state.unknown', { reason });
+  if (s === 'POSSIBLY_STUCK') return t('state.possibly_stuck_simple');
+  if (s === 'STUCK') return t('state.stuck_simple');
+  return t('state.unknown_simple');
+}
+
+function activityDesc(p) {
+  const s = normState(p?.state);
+  const tools = p?.running_tools || [];
+  const tool = latestTool(tools);
+
+  if (s === 'IDLE') return t('activity.idle');
+  if (s === 'OFFLINE') return t('activity.offline');
+  if (s === 'WAITING_HUMAN') return t('activity.waiting');
+
+  if (s === 'BUSY' && tool) {
+    const detail = tool.tool_detail || '';
+    const elapsed = tool.duration_s ?? ageSec(tool.started_at) ?? 0;
+    const timeStr = dur(elapsed);
+    if (detail) return `${tool.tool_name}: ${detail} (${timeStr})`;
+    return `${tool.tool_name} (${timeStr})`;
+  }
+
+  if ((s === 'POSSIBLY_STUCK' || s === 'STUCK') && tool) {
+    const detail = tool.tool_detail || '';
+    const elapsed = tool.duration_s ?? ageSec(tool.started_at) ?? 0;
+    const timeStr = dur(elapsed);
+    const prefix = detail ? `${tool.tool_name}: ${detail}` : tool.tool_name;
+    return `${prefix} — ${t('activity.no_progress')} (${timeStr})`;
+  }
+
+  return p?.reason || t('value.unavailable');
 }
 
 function confLabel(v) {
@@ -141,10 +168,10 @@ function metVal(m) {
 function renderState() {
   const p = state.dashboardState;
   $('#state-dot').className = `state-dot ${stateClass(p?.state)}`;
-  $('#state-title').textContent = p ? stateTitle(p) : t('state.unknown', { reason: t('value.unavailable') });
-  $('#state-reason').textContent = p?.reason || p?.evidence?.join(', ') || t('value.unavailable');
+  $('#state-title').textContent = p ? stateTitle(p) : t('state.unknown_simple');
   $('#state-confidence').textContent = confLabel(p?.confidence);
-  $('#state-action').textContent = p?.suggested_action || t('value.none');
+  $('#state-activity').textContent = p ? activityDesc(p) : t('value.unavailable');
+  $('#state-activity').title = p ? activityDesc(p) : '';
   $('#state-updated').textContent = fmtAge(p?.updated_at || state.sourceUpdatedAt);
 
   const tools = p?.running_tools || [];
@@ -154,7 +181,8 @@ function renderState() {
     const el = document.createElement('div');
     el.className = 'tool-item';
     const elapsed = tool.duration_s ?? ageSec(tool.started_at) ?? 0;
-    el.innerHTML = `<span class="mono">${esc(tool.tool_name || 'tool')}</span><strong>${dur(elapsed)}</strong>`;
+    const detail = tool.tool_detail ? `: ${esc(tool.tool_detail)}` : '';
+    el.innerHTML = `<span class="mono">${esc(tool.tool_name || 'tool')}${detail}</span><strong>${dur(elapsed)}</strong>`;
     return el;
   }));
 }
@@ -456,6 +484,31 @@ function initLocaleToggle() {
   });
 }
 
+function initTips() {
+  const btn = $('#confidence-tip');
+  const srcPop = $('#confidence-popover');
+  if (!btn || !srcPop) return;
+
+  const pop = srcPop.cloneNode(true);
+  pop.removeAttribute('id');
+  pop.hidden = true;
+  document.body.appendChild(pop);
+  srcPop.remove();
+
+  btn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    if (pop.hidden) {
+      const rect = btn.getBoundingClientRect();
+      pop.style.top = `${rect.bottom + 6}px`;
+      pop.style.left = `${Math.max(8, rect.left - 120)}px`;
+      pop.hidden = false;
+    } else {
+      pop.hidden = true;
+    }
+  });
+  document.addEventListener('click', () => { pop.hidden = true; });
+}
+
 // ─── Charts ───
 const CHART_COLORS = {
   accent: '#0d9488',
@@ -597,6 +650,7 @@ initTheme();
 await initI18n();
 initTabs();
 initLocaleToggle();
+initTips();
 renderAll();
 initCharts();
 connectSse();
