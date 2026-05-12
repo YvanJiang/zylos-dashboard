@@ -678,6 +678,14 @@ test('c4-send.js produces friendly labels with target extraction', () => {
       'node c4-send.js "web-console" "session-handoff"',
       'Send to web-console (session-handoff)'
     ],
+    [
+      'cat <<\'EOF\' | node /Users/howard/zylos/.claude/skills/comm-bridge/scripts/c4-send.js "hxa-connect" "org:coco|zylos01"',
+      'Send to hxa-connect (zylos01)'
+    ],
+    [
+      'cat <<\'EOF\'| node c4-send.js "telegram" "8101553026|msg:123|req:8101553026:123"',
+      'Send to telegram (8101553026)'
+    ],
   ];
 
   for (const [input, expected] of cases) {

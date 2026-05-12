@@ -174,15 +174,15 @@ export class Sanitizer {
   }
 
   _friendlyC4Label(line) {
-    // Require `node` prefix + exact script filename (not a suffix like not-c4-send.js)
-    const sendMatch = line.match(/^node\s+(?:\S*\/)?c4-send\.js\s+"([^"]+)"(?:\s+"([^"]*)")?/);
+    // Match at line start or after a shell pipe (heredoc stdin form: cat <<'EOF' | node c4-send.js ...)
+    const sendMatch = line.match(/(?:^|\|\s*)node\s+(?:\S*\/)?c4-send\.js\s+"([^"]+)"(?:\s+"([^"]*)")?/);
     if (sendMatch) {
       const channel = sendMatch[1];
       const target = sendMatch[2] ? this._extractC4Target(sendMatch[2]) : null;
       return target ? `Send to ${channel} (${target})` : `Send to ${channel}`;
     }
 
-    const ctrlMatch = line.match(/^node\s+(?:\S*\/)?c4-control\.js\s+(\w+)/);
+    const ctrlMatch = line.match(/(?:^|\|\s*)node\s+(?:\S*\/)?c4-control\.js\s+(\w+)/);
     if (ctrlMatch) {
       const sub = ctrlMatch[1];
       const idMatch = line.match(/--id\s+"?(\d+)"?/);
