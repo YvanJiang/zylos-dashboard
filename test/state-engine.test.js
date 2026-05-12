@@ -739,6 +739,9 @@ test('c4 friendly labels reject false positives', () => {
     'grep c4-send.js README.md',
     'cat c4-control.js',
     'echo c4-control.js ack --id 5',
+    "echo 'foo| node c4-send.js \"telegram\" \"123\"'",
+    "grep 'foo| node c4-send.js \"telegram\" \"123\"' README.md",
+    "printf 'foo| node c4-control.js ack --id \"3100\"'",
   ];
 
   for (const input of cases) {

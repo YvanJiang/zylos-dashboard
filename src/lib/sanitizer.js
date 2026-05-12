@@ -174,23 +174,33 @@ export class Sanitizer {
   }
 
   _friendlyC4Label(line) {
-    // Match at line start or after a shell pipe (heredoc stdin form: cat <<'EOF' | node c4-send.js ...)
-    const sendMatch = line.match(/(?:^|\|\s*)node\s+(?:\S*\/)?c4-send\.js\s+"([^"]+)"(?:\s+"([^"]*)")?/);
+    // Try line start first, then after an unquoted pipe (heredoc stdin form)
+    const cmd = this._c4CommandSegment(line);
+    if (!cmd) return null;
+
+    const sendMatch = cmd.match(/^node\s+(?:\S*\/)?c4-send\.js\s+"([^"]+)"(?:\s+"([^"]*)")?/);
     if (sendMatch) {
       const channel = sendMatch[1];
       const target = sendMatch[2] ? this._extractC4Target(sendMatch[2]) : null;
       return target ? `Send to ${channel} (${target})` : `Send to ${channel}`;
     }
 
-    const ctrlMatch = line.match(/(?:^|\|\s*)node\s+(?:\S*\/)?c4-control\.js\s+(\w+)/);
+    const ctrlMatch = cmd.match(/^node\s+(?:\S*\/)?c4-control\.js\s+(\w+)/);
     if (ctrlMatch) {
       const sub = ctrlMatch[1];
-      const idMatch = line.match(/--id\s+"?(\d+)"?/);
+      const idMatch = cmd.match(/--id\s+"?(\d+)"?/);
       if (idMatch) return `Control: ${sub} #${idMatch[1]}`;
       return `Control: ${sub}`;
     }
 
     return null;
+  }
+
+  _c4CommandSegment(line) {
+    if (/^node\s+/.test(line)) return line;
+    const pipeIdx = this._findUnquotedPipe(line);
+    if (pipeIdx < 0) return null;
+    return line.slice(pipeIdx + 1).trimStart();
   }
 
   _extractC4Target(endpoint) {
