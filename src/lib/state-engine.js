@@ -259,6 +259,7 @@ export class StateEngine {
         break;
 
       case 'subagent_start':
+        if (event.session_id) this._state.mainSessionId = event.session_id;
         if (event.metadata?.agent_id) {
           this._state.activeSubagents.set(event.metadata.agent_id, {
             agent_type: event.metadata.agent_type || 'general-purpose',
