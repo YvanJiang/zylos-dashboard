@@ -45,6 +45,7 @@
   "status.live": "实时",
   "status.degraded": "降级",
   "status.polling": "轮询",
+  "status.reconnecting": "重连中",
   "value.none": "无",
   "value.unavailable": "不可用",
   "value.unknown": "未知",

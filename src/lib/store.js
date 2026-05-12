@@ -2,6 +2,14 @@ import Database from 'better-sqlite3';
 import path from 'node:path';
 import fs from 'node:fs';
 
+const SCHEMA_V2_SESSIONS = `
+CREATE TABLE IF NOT EXISTS auth_sessions (
+  token_hash TEXT PRIMARY KEY,
+  created_at INTEGER NOT NULL,
+  last_activity_at INTEGER NOT NULL
+);
+`;
+
 const SCHEMA_V1 = `
 CREATE TABLE IF NOT EXISTS schema_migrations (
   version INTEGER PRIMARY KEY,
@@ -92,16 +100,20 @@ export class Store {
       "SELECT 1 FROM sqlite_master WHERE type='table' AND name='schema_migrations'"
     ).get();
 
-    if (!hasTable) {
-      this.db.exec(SCHEMA_V1);
-      this.db.prepare('INSERT OR IGNORE INTO schema_migrations (version) VALUES (?)').run(1);
-      return;
+    let currentVersion = 0;
+
+    if (hasTable) {
+      const row = this.db.prepare('SELECT MAX(version) AS v FROM schema_migrations').get();
+      currentVersion = row?.v || 0;
     }
 
-    const current = this.db.prepare('SELECT MAX(version) AS v FROM schema_migrations').get();
-    if (!current || current.v < 1) {
+    if (currentVersion < 1) {
       this.db.exec(SCHEMA_V1);
       this.db.prepare('INSERT OR IGNORE INTO schema_migrations (version) VALUES (?)').run(1);
+    }
+    if (currentVersion < 2) {
+      this.db.exec(SCHEMA_V2_SESSIONS);
+      this.db.prepare('INSERT OR IGNORE INTO schema_migrations (version) VALUES (?)').run(2);
     }
   }
 
@@ -197,6 +209,22 @@ export class Store {
       WHERE runtime = @runtime AND (session_id = @session_id OR (@session_id IS NULL AND session_id IS NULL))
       ORDER BY snapshot_at DESC LIMIT 1
     `);
+
+    this._insertSession = this.db.prepare(
+      'INSERT OR REPLACE INTO auth_sessions (token_hash, created_at, last_activity_at) VALUES (?, ?, ?)'
+    );
+    this._getSession = this.db.prepare(
+      'SELECT * FROM auth_sessions WHERE token_hash = ?'
+    );
+    this._touchSession = this.db.prepare(
+      'UPDATE auth_sessions SET last_activity_at = ? WHERE token_hash = ?'
+    );
+    this._deleteSession = this.db.prepare(
+      'DELETE FROM auth_sessions WHERE token_hash = ?'
+    );
+    this._cleanupSessions = this.db.prepare(
+      'DELETE FROM auth_sessions WHERE created_at < ? OR last_activity_at < ?'
+    );
   }
 
   insertEvent(event) {
@@ -354,6 +382,26 @@ export class Store {
       open_turn: row.open_turn ? JSON.parse(row.open_turn) : null,
       pending_permission: row.pending_permission ? JSON.parse(row.pending_permission) : null
     };
+  }
+
+  insertSession(tokenHash, now) {
+    this._insertSession.run(tokenHash, now, now);
+  }
+
+  getSession(tokenHash) {
+    return this._getSession.get(tokenHash) || null;
+  }
+
+  touchSession(tokenHash, now) {
+    this._touchSession.run(now, tokenHash);
+  }
+
+  deleteSession(tokenHash) {
+    this._deleteSession.run(tokenHash);
+  }
+
+  cleanupSessions(absoluteCutoff, idleCutoff) {
+    return this._cleanupSessions.run(absoluteCutoff, idleCutoff);
   }
 
   close() {

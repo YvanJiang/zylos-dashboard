@@ -16,10 +16,7 @@ function writeConfig(zylosDir, password = 'secret') {
   }, null, 2)}\n`);
 }
 
-async function makeServer() {
-  const zylosDir = fs.mkdtempSync(path.join(os.tmpdir(), 'zylos-dashboard-test-'));
-  writeConfig(zylosDir);
-
+async function makeServerWithDir(zylosDir) {
   const previousZylosDir = process.env.ZYLOS_DIR;
   const previousPort = process.env.DASHBOARD_PORT;
   process.env.ZYLOS_DIR = zylosDir;
@@ -41,6 +38,12 @@ async function makeServer() {
     server,
     zylosDir
   };
+}
+
+async function makeServer() {
+  const zylosDir = fs.mkdtempSync(path.join(os.tmpdir(), 'zylos-dashboard-test-'));
+  writeConfig(zylosDir);
+  return makeServerWithDir(zylosDir);
 }
 
 async function closeServer(server) {
@@ -163,5 +166,40 @@ test('unsafe forwarded prefixes fall back to direct root paths', async () => {
     assert.doesNotMatch(body, /evil\.test/);
   } finally {
     await closeServer(server);
+  }
+});
+
+test('session cookie survives server restart (SQLite persistence)', async () => {
+  const zylosDir = fs.mkdtempSync(path.join(os.tmpdir(), 'zylos-dashboard-test-'));
+  writeConfig(zylosDir);
+
+  const { origin: origin1, server: server1 } = await makeServerWithDir(zylosDir);
+  let cookie;
+  try {
+    const login = await fetch(`${origin1}/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: form({ password: 'secret' }),
+      redirect: 'manual'
+    });
+    assert.equal(login.status, 302);
+    cookie = login.headers.get('set-cookie');
+    assert.ok(cookie);
+
+    const api1 = await fetch(`${origin1}/api/state`, { headers: { Cookie: cookie } });
+    assert.equal(api1.status, 200);
+  } finally {
+    await closeServer(server1);
+  }
+
+  const { origin: origin2, server: server2 } = await makeServerWithDir(zylosDir);
+  try {
+    const api2 = await fetch(`${origin2}/api/state`, { headers: { Cookie: cookie } });
+    assert.equal(api2.status, 200, 'session should survive restart');
+
+    const unauthed = await fetch(`${origin2}/api/state`);
+    assert.equal(unauthed.status, 401, 'request without cookie should be rejected');
+  } finally {
+    await closeServer(server2);
   }
 });

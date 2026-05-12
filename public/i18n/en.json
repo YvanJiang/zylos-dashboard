@@ -45,6 +45,7 @@
   "status.live": "Live",
   "status.degraded": "Degraded",
   "status.polling": "Polling",
+  "status.reconnecting": "Reconnecting",
   "value.none": "None",
   "value.unavailable": "Unavailable",
   "value.unknown": "Unknown",

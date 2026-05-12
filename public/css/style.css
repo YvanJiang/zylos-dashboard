@@ -108,6 +108,20 @@ h2 { margin-bottom: 0; font-size: 15px; font-weight: 600; }
 }
 .connection-pill[data-state="polling"]::before { background: var(--accent); }
 
+.connection-pill[data-state="reconnecting"] {
+  color: var(--state-possibly-stuck);
+  border-color: rgba(234, 88, 12, 0.2);
+  background: rgba(234, 88, 12, 0.08);
+}
+.connection-pill[data-state="reconnecting"]::before {
+  background: var(--state-possibly-stuck);
+  animation: pulse-dot 1.5s ease-in-out infinite;
+}
+@keyframes pulse-dot {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.3; }
+}
+
 .lang-btn {
   height: 28px;
   min-width: 36px;
@@ -277,6 +291,7 @@ main { padding: var(--space-md) var(--space-lg) var(--space-xl); }
   position: fixed;
   z-index: 100;
   width: 280px;
+  max-width: calc(100vw - 16px);
   padding: var(--space-sm) var(--space-md);
   background: var(--bg-card);
   border: 1px solid var(--border);
