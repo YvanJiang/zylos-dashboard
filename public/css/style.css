@@ -529,6 +529,7 @@ main { padding: var(--space-md) var(--space-lg) var(--space-xl); }
 
 .subagent-group .tool-feed {
   max-height: 100px;
+  overflow-y: auto;
 }
 
 .subagent-group .tool-feed-item {
