@@ -776,3 +776,40 @@ test('Read/Edit/Write tool_detail shortens paths to max 3 segments', () => {
     }
   }
 });
+
+test('UserPromptSubmit shows prompt source from reply via', () => {
+  const sanitizer = new Sanitizer('/home/howard/zylos');
+
+  const cases = [
+    [
+      '[TG DM] howardzhou said: hello ---- reply via: node /home/howard/zylos/.claude/skills/comm-bridge/scripts/c4-send.js "telegram" "8101553026|msg:123"',
+      'Prompt from telegram',
+      'telegram'
+    ],
+    [
+      '[HXA:default DM] Jinglever said: review done ---- reply via: node c4-send.js "hxa-connect" "org:default|Jinglever"',
+      'Prompt from hxa-connect',
+      'hxa-connect'
+    ],
+    [
+      'Heartbeat check ---- ack via: node c4-control.js ack --id 42',
+      'Prompt from control',
+      'control'
+    ],
+    [
+      'just a plain prompt from the terminal',
+      'Prompt received',
+      null
+    ],
+  ];
+
+  for (const [prompt, expectedSummary, expectedSource] of cases) {
+    const result = sanitizer.sanitizeHookPayload('UserPromptSubmit', {
+      session_id: 's', prompt
+    });
+    assert.strictEqual(result.summary, expectedSummary,
+      `prompt "${prompt.slice(0, 50)}..." → summary "${result.summary}"`);
+    assert.strictEqual(result.metadata.prompt_source || null, expectedSource,
+      `prompt "${prompt.slice(0, 50)}..." → source ${result.metadata.prompt_source}`);
+  }
+});

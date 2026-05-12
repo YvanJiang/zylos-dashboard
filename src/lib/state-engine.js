@@ -233,6 +233,11 @@ export class StateEngine {
         if (event.session_id) this._state.mainSessionId = event.session_id;
         this._state.lastProgressAt = now;
         this._state.lastAssistantMessage = null;
+        this._state.lastPrompt = {
+          source: event.metadata?.prompt_source || null,
+          summary: event.summary || 'Prompt received',
+          timestamp: event.timestamp
+        };
         this._clearPossiblyStuck();
         break;
 
@@ -359,7 +364,8 @@ export class StateEngine {
       running_tools: runningTools,
       active_subagents: activeSubagents,
       subagent_tools: subagentTools,
-      last_message: this._state.lastAssistantMessage
+      last_message: this._state.lastAssistantMessage,
+      last_prompt: this._state.lastPrompt || null
     };
   }
 

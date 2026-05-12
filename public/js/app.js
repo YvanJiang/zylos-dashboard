@@ -163,6 +163,37 @@ function renderToolFeed(tools, p) {
   const currentIds = new Set(tools.map((t) => t.tool_use_id));
   const s = normState(p?.state);
 
+  // Render prompt source as a transient feed item
+  const promptId = '_prompt';
+  const existingPrompt = feed.querySelector(`[data-tool-id="${promptId}"]`);
+  const lp = p?.last_prompt;
+  if (lp && lp.timestamp) {
+    const promptAge = ageSec(lp.timestamp) ?? 0;
+    if (promptAge < 30) {
+      if (!existingPrompt) {
+        const el = document.createElement('div');
+        el.className = 'tool-feed-item prompt-source';
+        el.dataset.toolId = promptId;
+        el.dataset.addedAt = String(Date.now());
+        el.innerHTML = `<span class="mono tool-detail">${esc(lp.summary)}</span><span class="tool-status">${dur(promptAge)}</span>`;
+        feed.prepend(el);
+      } else {
+        existingPrompt.querySelector('.tool-detail').textContent = lp.summary;
+        existingPrompt.querySelector('.tool-status').textContent = dur(promptAge);
+      }
+    } else if (existingPrompt && !existingPrompt.classList.contains('done')) {
+      existingPrompt.classList.add('done');
+      setTimeout(() => {
+        if (existingPrompt.parentNode) {
+          existingPrompt.classList.add('removing');
+          existingPrompt.addEventListener('animationend', () => existingPrompt.remove(), { once: true });
+        }
+      }, 5000);
+    }
+  } else if (existingPrompt) {
+    existingPrompt.remove();
+  }
+
   for (const id of prevToolIds) {
     if (!currentIds.has(id)) {
       const el = feed.querySelector(`[data-tool-id="${id}"]`);
