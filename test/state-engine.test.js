@@ -593,3 +593,43 @@ test('SubagentStop assistant_summary is redacted', () => {
   assert.ok(!result.metadata.assistant_summary.includes('user@example.com'), 'email should be redacted');
   assert.ok(result.metadata.assistant_summary.includes('[REDACTED]'), 'should contain redaction marker');
 });
+
+test('Bash tool_detail shortens paths and strips noise', () => {
+  const sanitizer = new Sanitizer('/home/howard/zylos');
+
+  const cases = [
+    [
+      'node /home/howard/zylos/.claude/skills/comm-bridge/scripts/c4-send.js "telegram" "123"',
+      /^node comm-bridge\/scripts\/c4-send\.js/
+    ],
+    [
+      'grep -n "foo" /home/howard/zylos/workspace/zylos-dashboard/public/js/app.js',
+      /^grep -n "foo" public\/js\/app\.js$/
+    ],
+    [
+      'cd /home/howard/zylos && npm test 2>&1 | tail -5',
+      /^npm test/
+    ],
+    [
+      'curl -s "https://example.com/api/data" 2>&1 | head -5',
+      /^curl -s "https:\/\/example\.com\/api\/data"/
+    ],
+    [
+      'npm test 2>&1',
+      /^npm test$/
+    ],
+    [
+      'echo hello',
+      /^echo hello$/
+    ],
+  ];
+
+  for (const [input, expected] of cases) {
+    const result = sanitizer.sanitizeHookPayload('PreToolUse', {
+      session_id: 's', tool_name: 'Bash', tool_use_id: 't',
+      tool_input: { command: input }
+    });
+    assert.match(result.metadata.tool_detail, expected,
+      `"${input.slice(0, 50)}" → "${result.metadata.tool_detail}"`);
+  }
+});
