@@ -51,7 +51,8 @@ export class Sanitizer {
         if (hookEventName === 'SubagentStop') {
           const msg = rawPayload.last_assistant_message;
           if (typeof msg === 'string' && msg.length > 0) {
-            metadata.assistant_summary = msg.length > 120 ? msg.slice(0, 117) + '...' : msg;
+            const redacted = this.redactCredentials(msg);
+            metadata.assistant_summary = redacted.length > 120 ? redacted.slice(0, 117) + '...' : redacted;
           }
         }
       }

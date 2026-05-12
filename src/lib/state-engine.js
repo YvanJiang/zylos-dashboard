@@ -365,7 +365,15 @@ export class StateEngine {
         if (snapshot.running_tool) {
           const parsed = typeof snapshot.running_tool === 'string'
             ? JSON.parse(snapshot.running_tool) : snapshot.running_tool;
-          this._state.runningTools = new Map(Object.entries(parsed));
+          if (parsed.tools) {
+            this._state.runningTools = new Map(Object.entries(parsed.tools));
+            this._state.mainSessionId = parsed.mainSessionId || null;
+            if (parsed.activeSubagents) {
+              this._state.activeSubagents = new Map(Object.entries(parsed.activeSubagents));
+            }
+          } else {
+            this._state.runningTools = new Map(Object.entries(parsed));
+          }
         }
         this._state.openTurn = snapshot.open_turn
           ? (typeof snapshot.open_turn === 'string' ? JSON.parse(snapshot.open_turn) : snapshot.open_turn)
@@ -593,7 +601,11 @@ export class StateEngine {
     this.store.saveSnapshot({
       runtime: this._config.runtime || 'claude',
       session_id: this._currentSessionId(),
-      running_tool: JSON.stringify(Object.fromEntries(this._state.runningTools)),
+      running_tool: JSON.stringify({
+        tools: Object.fromEntries(this._state.runningTools),
+        mainSessionId: this._state.mainSessionId,
+        activeSubagents: Object.fromEntries(this._state.activeSubagents)
+      }),
       open_turn: JSON.stringify(this._state.openTurn),
       pending_permission: JSON.stringify(this._state.pendingPermission),
       possibly_stuck_since: this._state.possiblyStuckSince?.toISOString() || null,

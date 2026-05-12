@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { deriveAgentState, StateEngine } from '../src/lib/state-engine.js';
+import { Sanitizer } from '../src/lib/sanitizer.js';
 
 function makeMockStore() {
   return {
@@ -235,4 +236,64 @@ test('subagent tools do not appear in main running_tools after stop', () => {
   assert.equal(state.running_tools.length, 0, 'subagent tool should not appear in main running_tools');
   assert.equal(state.subagent_tools.length, 1, 'subagent tool should appear in subagent_tools');
   assert.equal(state.state, 'IDLE', 'main session should be IDLE when only subagent is working');
+});
+
+test('snapshot restore preserves mainSessionId and activeSubagents', () => {
+  let snapshotData = null;
+  const store = {
+    ...makeMockStore(),
+    saveSnapshot(data) { snapshotData = data; },
+    latestSnapshot() { return snapshotData; }
+  };
+  const config = { zylosDir: '/tmp/zylos-test', runtime: 'claude' };
+  let clock = 1000000;
+  const engine1 = new StateEngine(store, {}, config, { now: () => clock });
+  engine1._state.amHeartbeat = { state: 'idle', health: 'ok', lastCheck: clock / 1000, lastActivity: clock / 1000 };
+
+  engine1.onEvent({
+    event_type: 'user_prompt_submit',
+    timestamp: new Date(1000000).toISOString(),
+    session_id: 'main-sess'
+  });
+  engine1.onEvent({
+    event_type: 'subagent_start',
+    timestamp: new Date(1000100).toISOString(),
+    session_id: 'main-sess',
+    metadata: { agent_id: 'agent-1', agent_type: 'general-purpose' }
+  });
+  engine1.onEvent({
+    event_type: 'pre_tool_use',
+    timestamp: new Date(1000200).toISOString(),
+    session_id: 'sub-sess',
+    metadata: { tool_use_id: 'tool-sub', tool_name: 'Read' }
+  });
+
+  engine1._saveSnapshot();
+  assert.ok(snapshotData, 'snapshot should be saved');
+
+  const engine2 = new StateEngine(store, {}, config, { now: () => clock });
+  engine2._state.amHeartbeat = { state: 'idle', health: 'ok', lastCheck: clock / 1000, lastActivity: clock / 1000 };
+  engine2.initialize();
+
+  const state = engine2.getState();
+  assert.equal(state.running_tools.length, 0, 'subagent tool should stay in subagent_tools after restore');
+  assert.equal(state.subagent_tools.length, 1);
+  assert.equal(state.active_subagents.length, 1);
+  assert.equal(state.active_subagents[0].agent_id, 'agent-1');
+});
+
+test('SubagentStop assistant_summary is redacted', () => {
+  const sanitizer = new Sanitizer('/tmp/zylos-test');
+  const result = sanitizer.sanitizeHookPayload('SubagentStop', {
+    session_id: 'sess-1',
+    agent_id: 'agent-1',
+    agent_type: 'general-purpose',
+    hook_event_name: 'SubagentStop',
+    last_assistant_message: 'Used key sk-1234567890abcdefghijklmnop and sent to user@example.com'
+  });
+
+  assert.ok(result.metadata.assistant_summary, 'should have assistant_summary');
+  assert.ok(!result.metadata.assistant_summary.includes('sk-1234567890'), 'API key should be redacted');
+  assert.ok(!result.metadata.assistant_summary.includes('user@example.com'), 'email should be redacted');
+  assert.ok(result.metadata.assistant_summary.includes('[REDACTED]'), 'should contain redaction marker');
 });
