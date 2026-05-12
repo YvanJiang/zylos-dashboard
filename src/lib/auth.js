@@ -14,19 +14,10 @@ const LOCKOUT_MS = 600_000;
 const GLOBAL_MAX_PER_MIN = 30;
 const MAX_LOGIN_BODY_BYTES = 4096;
 
-const sessions = new Map();
+let _store = null;
+
 const failedAttempts = new Map();
 let globalFailures = { count: 0, resetAt: Date.now() + 60_000 };
-
-setInterval(() => {
-  const now = Date.now();
-  for (const [hash, session] of sessions) {
-    if (now - session.createdAt > SESSION_ABSOLUTE_MS ||
-        now - session.lastActivityAt > SESSION_IDLE_MS) {
-      sessions.delete(hash);
-    }
-  }
-}, CLEANUP_INTERVAL_MS).unref?.();
 
 export function hashPassword(plaintext) {
   const salt = crypto.randomBytes(32);
@@ -76,27 +67,30 @@ function sha256(data) {
 function createSession() {
   const token = crypto.randomBytes(64).toString('hex');
   const now = Date.now();
-  sessions.set(sha256(token), { createdAt: now, lastActivityAt: now });
+  if (_store) {
+    _store.insertSession(sha256(token), now);
+  }
   return token;
 }
 
 function validateSession(token) {
   if (!token) return false;
+  if (!_store) return false;
   const hash = sha256(token);
-  const session = sessions.get(hash);
+  const session = _store.getSession(hash);
   if (!session) return false;
   const now = Date.now();
-  if (now - session.createdAt > SESSION_ABSOLUTE_MS ||
-      now - session.lastActivityAt > SESSION_IDLE_MS) {
-    sessions.delete(hash);
+  if (now - session.created_at > SESSION_ABSOLUTE_MS ||
+      now - session.last_activity_at > SESSION_IDLE_MS) {
+    _store.deleteSession(hash);
     return false;
   }
-  session.lastActivityAt = now;
+  _store.touchSession(hash, now);
   return true;
 }
 
 function destroySession(token) {
-  if (token) sessions.delete(sha256(token));
+  if (token && _store) _store.deleteSession(sha256(token));
 }
 
 function parseCookies(header) {
@@ -265,9 +259,17 @@ function nextTarget(req, base) {
 }
 
 export class AuthGate {
-  constructor(config) {
+  constructor(config, store) {
     this.config = config;
+    _store = store || null;
     migratePasswordIfNeeded(this.config);
+    if (_store) {
+      this._cleanupTimer = setInterval(() => {
+        const now = Date.now();
+        _store.cleanupSessions(now - SESSION_ABSOLUTE_MS, now - SESSION_IDLE_MS);
+      }, CLEANUP_INTERVAL_MS);
+      this._cleanupTimer.unref?.();
+    }
   }
 
   get enabled() {

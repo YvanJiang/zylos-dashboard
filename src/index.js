@@ -25,11 +25,11 @@ const startedAt = new Date();
 const config = loadConfig();
 ensureDataDirs(config);
 
-const auth = new AuthGate(config);
-
 // 1-2. Store
 const dbPath = path.join(config.dataDir, 'dashboard.db');
 const store = new Store(dbPath);
+
+const auth = new AuthGate(config, store);
 
 // 3. Sanitizer
 const sanitizer = new Sanitizer(config.zylosDir);

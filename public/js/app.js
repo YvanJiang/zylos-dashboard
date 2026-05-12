@@ -434,6 +434,10 @@ function renderAll() {
 // ─── Data fetching ───
 async function fetchJson(path) {
   const r = await fetch(api(path), { cache: 'no-store' });
+  if (r.status === 401) {
+    window.location.href = api('/login');
+    throw new Error('unauthorized');
+  }
   if (!r.ok) throw new Error(`${path} ${r.status}`);
   return r.json();
 }
@@ -513,15 +517,52 @@ function applySse(name, data) {
 
 function connectSse() {
   if (!window.EventSource) return;
+  if (state.eventSource) {
+    state.eventSource.close();
+    state.eventSource = null;
+  }
+  clearTimeout(state.sseReconnectTimer);
+
   state.eventSource = new EventSource(api('/api/stream'));
-  state.eventSource.onopen = () => renderConnection('live');
-  state.eventSource.onerror = () => renderConnection('degraded');
+
+  state.eventSource.onopen = () => {
+    state.sseRetries = 0;
+    renderConnection('live');
+  };
+
+  state.eventSource.onerror = () => {
+    state.eventSource.close();
+    state.eventSource = null;
+    renderConnection('reconnecting');
+    scheduleSseReconnect();
+  };
+
   for (const ev of ['state_change', 'metric_update', 'system_update', 'health_update']) {
     state.eventSource.addEventListener(ev, (e) => {
       try { applySse(ev, JSON.parse(e.data)); renderConnection('live'); }
       catch { renderConnection('degraded'); }
     });
   }
+}
+
+function scheduleSseReconnect() {
+  const delay = Math.min(1000 * Math.pow(2, state.sseRetries || 0), 30000);
+  state.sseRetries = (state.sseRetries || 0) + 1;
+  state.sseReconnectTimer = setTimeout(async () => {
+    try {
+      const r = await fetch(api('/api/state'), { cache: 'no-store' });
+      if (r.status === 401) {
+        window.location.href = api('/login');
+        return;
+      }
+      if (!r.ok) throw new Error(r.status);
+    } catch {
+      renderConnection('reconnecting');
+      scheduleSseReconnect();
+      return;
+    }
+    connectSse();
+  }, delay);
 }
 
 // ─── Tabs ───
@@ -562,7 +603,9 @@ function initTips() {
     if (pop.hidden) {
       const rect = btn.getBoundingClientRect();
       pop.style.top = `${rect.bottom + 6}px`;
-      pop.style.left = `${Math.max(8, rect.left - 120)}px`;
+      const left = Math.max(8, rect.left - 120);
+      const maxLeft = window.innerWidth - 280 - 8;
+      pop.style.left = `${Math.min(left, Math.max(8, maxLeft))}px`;
       pop.hidden = false;
     } else {
       pop.hidden = true;
@@ -704,6 +747,7 @@ function startTimers() {
 window.addEventListener('beforeunload', () => {
   clearInterval(state.timer);
   clearInterval(state.pollTimer);
+  clearTimeout(state.sseReconnectTimer);
   state.eventSource?.close();
 });
 
