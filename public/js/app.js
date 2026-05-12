@@ -225,11 +225,12 @@ function renderToolFeed(tools, p) {
 
   const fallback = $('#activity-fallback');
   const hasItems = feed.querySelector('.tool-feed-item') !== null;
-  fallback.hidden = hasItems;
-  if (!hasItems) {
-    const s = normState(p?.state);
-    if (s === 'IDLE') fallback.textContent = t('activity.idle');
-    else if (s === 'OFFLINE') fallback.textContent = t('activity.offline');
+  const s = normState(p?.state);
+  if (hasItems || s === 'IDLE') {
+    fallback.hidden = true;
+  } else {
+    fallback.hidden = false;
+    if (s === 'OFFLINE') fallback.textContent = t('activity.offline');
     else if (s === 'WAITING_HUMAN') fallback.textContent = t('activity.waiting');
     else fallback.textContent = p?.reason || t('value.unavailable');
   }
