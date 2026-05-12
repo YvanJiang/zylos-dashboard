@@ -4,7 +4,7 @@ const BASE_PATH = document.documentElement.dataset.basePath || '';
 const ASSET_ROOT = `${BASE_PATH}/_assets`;
 setAssetRoot(ASSET_ROOT);
 
-const METRICS = ['context_pct', 'rate_limit', 'rate_limit_7d', 'session_cost', 'cache_hit_rate'];
+const METRICS = ['context_pct', 'rate_limit', 'rate_limit_7d', 'session_cost'];
 const THEMES = ['light'];
 const THEME_KEY = 'zylos-dashboard-theme';
 
@@ -58,6 +58,22 @@ function barColor(pctValue) {
   if (p < 50) return '';
   if (p <= 75) return 'bar-warning';
   return 'bar-danger';
+}
+
+function pctDecimal(v) {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return '--';
+  const p = n <= 1 ? n * 100 : n;
+  return `${p.toFixed(1)}%`;
+}
+
+function tok(v) {
+  const n = Number(v);
+  if (!Number.isFinite(n) || n === 0) return '--';
+  if (n >= 1e9) return `${(n / 1e9).toFixed(1)}B`;
+  if (n >= 1e6) return `${(n / 1e6).toFixed(1)}M`;
+  if (n >= 1e3) return `${(n / 1e3).toFixed(1)}K`;
+  return String(Math.round(n));
 }
 
 function usd(v) {
@@ -431,7 +447,6 @@ function renderMetrics() {
   const ctx = state.metrics.get('context_pct');
   const rate = state.metrics.get('rate_limit');
   const cost = state.metrics.get('session_cost') || state.metrics.get('daily_cost');
-  const cache = state.metrics.get('cache_hit_rate');
 
   const cv = metVal(ctx);
   const rv = metVal(rate);
@@ -463,18 +478,21 @@ function renderMetrics() {
 
   const agg = state.aggregated || {};
   const hasCostSession = agg.cost_session != null;
-  const hasCacheSession = agg.cache_session != null;
   $('#metric-cost-session').textContent = hasCostSession ? usd(agg.cost_session) : usd(metVal(cost));
   $('#metric-cost-today').textContent = agg.cost_today != null ? usd(agg.cost_today) : '--';
   $('#metric-cost-7d').textContent = agg['cost_7d'] != null ? usd(agg['cost_7d']) : '--';
-  $('#metric-cache-session').textContent = hasCacheSession ? pct(agg.cache_session) : pct(metVal(cache));
-  $('#metric-cache-today').textContent = agg.cache_today != null ? pct(agg.cache_today) : '--';
-  $('#metric-cache-7d').textContent = agg['cache_7d'] != null ? pct(agg['cache_7d']) : '--';
 
   const costSessionLabel = $('#metric-cost-session').closest('.metric-row')?.querySelector('small');
-  const cacheSessionLabel = $('#metric-cache-session').closest('.metric-row')?.querySelector('small');
   if (costSessionLabel) costSessionLabel.textContent = hasCostSession ? 'session' : 'lifetime';
-  if (cacheSessionLabel) cacheSessionLabel.textContent = hasCacheSession ? 'session' : 'session';
+
+  const ts = agg.tokens_session;
+  const tt = agg.tokens_today;
+  const t7 = agg['tokens_7d'];
+  const tokLine = (t) => t ? `${tok(t.input)} in / ${tok(t.output)} out` : '--';
+  $('#metric-tokens-session').textContent = tokLine(ts);
+  $('#metric-tokens-cache').textContent = ts ? pctDecimal(ts.cache_rate) : '--';
+  $('#metric-tokens-today').textContent = tokLine(tt);
+  $('#metric-tokens-7d').textContent = tokLine(t7);
   $('#metrics-updated').textContent = fmtAge(state.metricsUpdatedAt);
 }
 
@@ -658,9 +676,8 @@ async function refreshMetrics() {
   }
   try {
     const aggKeys = [
-      ['cost', 'session'], ['cache', 'session'],
-      ['cost', 'today'], ['cache', 'today'],
-      ['cost', '7d'], ['cache', '7d']
+      ['cost', 'session'], ['cost', 'today'], ['cost', '7d'],
+      ['tokens', 'session'], ['tokens', 'today'], ['tokens', '7d']
     ];
     const aggResults = await Promise.allSettled(aggKeys.map(([m, p]) => fetchJson(`/api/metrics/aggregate?metric=${m}&period=${p}`)));
     state.aggregated = {};
