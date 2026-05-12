@@ -160,8 +160,8 @@ export class Sanitizer {
     // Strip redirections at the end
     let clean = pipeCmd.replace(/\s+\d*>[>&]?\s*\S+\s*$/g, '').trim();
 
-    // Shorten filesystem paths (must start with common Unix roots)
-    clean = clean.replace(/(?:\/(?:home|tmp|var|usr|opt|etc|root)(?:\/[\w.@+-]+){3,}|~(?:\/[\w.@+-]+){3,})/g, (p) => this._shortenPath(p));
+    // Shorten filesystem paths (preceded by whitespace/quote/start, not inside URLs)
+    clean = clean.replace(/(?<=^|[\s"'=])(?:\/(?:home|Users|tmp|var|usr|opt|etc|root)(?:\/[\w.@+-]+){3,}|~(?:\/[\w.@+-]+){3,})/g, (p) => this._shortenPath(p));
 
     // Truncate
     if (pipeIdx > 0 && clean.length < 70) clean += ' | ...';

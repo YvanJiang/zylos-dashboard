@@ -622,6 +622,14 @@ test('Bash tool_detail shortens paths and strips noise', () => {
       'echo hello',
       /^echo hello$/
     ],
+    [
+      'node /Users/howard/zylos/.claude/skills/comm-bridge/scripts/c4-send.js "telegram"',
+      /^node comm-bridge\/scripts\/c4-send\.js/
+    ],
+    [
+      'curl https://example.com/home/a/b/c/d',
+      /^curl https:\/\/example\.com\/home\/a\/b\/c\/d$/
+    ],
   ];
 
   for (const [input, expected] of cases) {
