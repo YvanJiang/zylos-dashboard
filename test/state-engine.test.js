@@ -600,7 +600,7 @@ test('Bash tool_detail shortens paths and strips noise', () => {
   const cases = [
     [
       'node /home/howard/zylos/.claude/skills/comm-bridge/scripts/c4-send.js "telegram" "123"',
-      /^node comm-bridge\/scripts\/c4-send\.js/
+      /^Send to telegram \(123\)$/
     ],
     [
       'grep -n "foo" /home/howard/zylos/workspace/zylos-dashboard/public/js/app.js',
@@ -624,7 +624,7 @@ test('Bash tool_detail shortens paths and strips noise', () => {
     ],
     [
       'node /Users/howard/zylos/.claude/skills/comm-bridge/scripts/c4-send.js "telegram"',
-      /^node comm-bridge\/scripts\/c4-send\.js/
+      /^Send to telegram$/
     ],
     [
       'curl https://example.com/home/a/b/c/d',
@@ -651,5 +651,69 @@ test('Bash tool_detail shortens paths and strips noise', () => {
     });
     assert.match(result.metadata.tool_detail, expected,
       `"${input.slice(0, 50)}" → "${result.metadata.tool_detail}"`);
+  }
+});
+
+test('c4-send.js produces friendly labels with target extraction', () => {
+  const sanitizer = new Sanitizer('/home/howard/zylos');
+
+  const cases = [
+    [
+      'node /home/howard/zylos/.claude/skills/comm-bridge/scripts/c4-send.js "telegram" "8101553026|msg:17996|req:8101553026:17996"',
+      'Send to telegram (8101553026)'
+    ],
+    [
+      'node c4-send.js "hxa-connect" "org:default|Jinglever"',
+      'Send to hxa-connect (Jinglever)'
+    ],
+    [
+      'node /Users/howard/zylos/.claude/skills/comm-bridge/scripts/c4-send.js "lark" "group:-1001234|msg:5"',
+      'Send to lark (group:-1001234)'
+    ],
+    [
+      'node c4-send.js "telegram" "8101553026"',
+      'Send to telegram (8101553026)'
+    ],
+    [
+      'node c4-send.js "web-console" "session-handoff"',
+      'Send to web-console (session-handoff)'
+    ],
+  ];
+
+  for (const [input, expected] of cases) {
+    const result = sanitizer.sanitizeHookPayload('PreToolUse', {
+      session_id: 's', tool_name: 'Bash', tool_use_id: 't',
+      tool_input: { command: input }
+    });
+    assert.strictEqual(result.metadata.tool_detail, expected,
+      `"${input.slice(0, 60)}..." → "${result.metadata.tool_detail}"`);
+  }
+});
+
+test('c4-control.js produces friendly labels', () => {
+  const sanitizer = new Sanitizer('/home/howard/zylos');
+
+  const cases = [
+    [
+      'node /home/howard/zylos/.claude/skills/comm-bridge/scripts/c4-control.js ack --id 42',
+      'Control: ack #42'
+    ],
+    [
+      'node c4-control.js enqueue --content "Heartbeat check" --priority 1',
+      'Control: enqueue'
+    ],
+    [
+      'node c4-control.js get --id 99',
+      'Control: get #99'
+    ],
+  ];
+
+  for (const [input, expected] of cases) {
+    const result = sanitizer.sanitizeHookPayload('PreToolUse', {
+      session_id: 's', tool_name: 'Bash', tool_use_id: 't',
+      tool_input: { command: input }
+    });
+    assert.strictEqual(result.metadata.tool_detail, expected,
+      `"${input.slice(0, 60)}..." → "${result.metadata.tool_detail}"`);
   }
 });

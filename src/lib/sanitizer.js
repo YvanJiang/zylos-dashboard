@@ -136,6 +136,9 @@ export class Sanitizer {
   _summarizeBashCommand(cmd) {
     if (!cmd || typeof cmd !== 'string') return null;
 
+    const friendly = this._friendlyC4Label(cmd);
+    if (friendly) return friendly;
+
     let line = cmd.split('\n')[0].trim();
 
     // Strip leading comment-only lines
@@ -166,6 +169,38 @@ export class Sanitizer {
     // Truncate
     if (pipeIdx > 0 && clean.length < 70) clean += ' | ...';
     return clean.length > 80 ? clean.slice(0, 77) + '...' : clean;
+  }
+
+  _friendlyC4Label(cmd) {
+    const line = cmd.split('\n')[0].trim();
+
+    // c4-send.js "<channel>" "<target>" (message via stdin or 3rd arg)
+    const sendMatch = line.match(/c4-send\.js\s+"([^"]+)"(?:\s+"([^"]*)")?/);
+    if (sendMatch) {
+      const channel = sendMatch[1];
+      const target = sendMatch[2] ? this._extractC4Target(sendMatch[2]) : null;
+      return target ? `Send to ${channel} (${target})` : `Send to ${channel}`;
+    }
+
+    // c4-control.js <subcommand> [--id <n>]
+    const ctrlMatch = line.match(/c4-control\.js\s+(\w+)/);
+    if (ctrlMatch) {
+      const sub = ctrlMatch[1];
+      const idMatch = line.match(/--id\s+(\d+)/);
+      if (idMatch) return `Control: ${sub} #${idMatch[1]}`;
+      return `Control: ${sub}`;
+    }
+
+    return null;
+  }
+
+  _extractC4Target(endpoint) {
+    const parts = endpoint.split('|');
+    for (const p of parts) {
+      if (/^(msg|req|org):/.test(p)) continue;
+      return p;
+    }
+    return parts[0];
   }
 
   _findUnquotedPipe(str) {
