@@ -434,7 +434,7 @@ if (isMain && process.argv.includes('--smoke')) {
   pm2Collector.start(15_000);
   systemCollector.start(30_000);
   otelCollector.start(10_000);
-  statuslineCollector.start(5_000);
+  statuslineCollector.start();
 
   // Start snapshot timer
   stateEngine.startSnapshotTimer();
