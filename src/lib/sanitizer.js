@@ -43,6 +43,19 @@ export class Sanitizer {
         delete metadata[key];
       }
 
+      if (hookEventName === 'SubagentStart' || hookEventName === 'SubagentStop') {
+        const agentId = rawPayload.agent_id || null;
+        const agentType = rawPayload.agent_type || null;
+        if (agentId) metadata.agent_id = agentId;
+        if (agentType) metadata.agent_type = agentType;
+        if (hookEventName === 'SubagentStop') {
+          const msg = rawPayload.last_assistant_message;
+          if (typeof msg === 'string' && msg.length > 0) {
+            metadata.assistant_summary = msg.length > 120 ? msg.slice(0, 117) + '...' : msg;
+          }
+        }
+      }
+
       const summary = this.buildSummary(hookEventName, tool_name, duration_ms, tool_detail);
 
       return { session_id, duration_ms, summary, metadata };
@@ -85,6 +98,10 @@ export class Sanitizer {
         return 'Turn ended';
       case 'PermissionRequest':
         return `Permission requested: ${toolName || 'Unknown'}${detail}`;
+      case 'SubagentStart':
+        return 'Subagent started';
+      case 'SubagentStop':
+        return 'Subagent completed';
       default:
         return hookEventName || 'unknown event';
     }

@@ -34,6 +34,7 @@
   "label.activity": "当前活动描述",
   "label.action": "建议动作",
   "label.running_tools": "运行中的工具",
+  "label.subagents": "子 Agent",
   "confidence.high": "高",
   "confidence.medium": "中",
   "confidence.low": "低",

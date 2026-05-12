@@ -154,6 +154,7 @@ function renderState() {
   badge.hidden = tools.length === 0;
 
   renderToolFeed(tools, p);
+  renderSubagents(p);
 }
 
 function renderToolFeed(tools, p) {
@@ -247,6 +248,105 @@ function trimFeed(feed) {
     el.addEventListener('animationend', () => el.remove(), { once: true });
     excess--;
   }
+}
+
+// ─── Render: Subagents ───
+const prevSubagentIds = new Set();
+const prevSubagentToolIds = new Set();
+
+function renderSubagents(p) {
+  const agents = p?.active_subagents || [];
+  const subTools = p?.subagent_tools || [];
+  const section = $('#subagent-section');
+  const list = $('#subagent-list');
+  const feed = $('#subagent-feed');
+  const badge = $('#subagent-count');
+
+  const hasContent = agents.length > 0 || subTools.length > 0 ||
+    list.querySelector('.subagent-item') !== null ||
+    feed.querySelector('.tool-feed-item') !== null;
+  section.hidden = !hasContent;
+
+  badge.textContent = String(agents.length);
+  badge.hidden = agents.length === 0;
+
+  const currentAgentIds = new Set(agents.map((a) => a.agent_id));
+  for (const id of prevSubagentIds) {
+    if (!currentAgentIds.has(id)) {
+      const el = list.querySelector(`[data-agent-id="${id}"]`);
+      if (el && !el.classList.contains('done')) {
+        const timeEl = el.querySelector('.subagent-time');
+        if (timeEl) timeEl.textContent = '✓';
+        el.classList.add('done');
+        setTimeout(() => {
+          if (el.parentNode) {
+            el.classList.add('removing');
+            el.addEventListener('animationend', () => el.remove(), { once: true });
+          }
+        }, 10000);
+      }
+    }
+  }
+
+  for (const agent of agents) {
+    let el = list.querySelector(`[data-agent-id="${agent.agent_id}"]`);
+    const label = agent.agent_type || 'subagent';
+    if (!el) {
+      el = document.createElement('div');
+      el.className = 'subagent-item';
+      el.dataset.agentId = agent.agent_id;
+      el.innerHTML = `<span class="subagent-label">${esc(label)}</span><span class="subagent-time">${dur(agent.duration_s || 0)}</span>`;
+      list.appendChild(el);
+    } else if (!el.classList.contains('done')) {
+      el.querySelector('.subagent-time').textContent = dur(agent.duration_s || 0);
+    }
+  }
+  prevSubagentIds.clear();
+  currentAgentIds.forEach((id) => prevSubagentIds.add(id));
+
+  const currentToolIds = new Set(subTools.map((t) => t.tool_use_id));
+  for (const id of prevSubagentToolIds) {
+    if (!currentToolIds.has(id)) {
+      const el = feed.querySelector(`[data-tool-id="${id}"]`);
+      if (el && !el.classList.contains('done')) {
+        const statusEl = el.querySelector('.tool-status');
+        if (statusEl) statusEl.textContent = '✓';
+        const age = Date.now() - (Number(el.dataset.addedAt) || 0);
+        const greyDelay = Math.max(0, 2000 - age);
+        setTimeout(() => {
+          el.classList.add('done');
+          setTimeout(() => {
+            if (el.parentNode) {
+              el.classList.add('removing');
+              el.addEventListener('animationend', () => el.remove(), { once: true });
+            }
+          }, 10000);
+        }, greyDelay);
+      }
+    }
+  }
+
+  for (const tool of subTools) {
+    let el = feed.querySelector(`[data-tool-id="${tool.tool_use_id}"]`);
+    const elapsed = ageSec(tool.started_at) ?? tool.duration_s ?? 0;
+    const detail = tool.tool_detail ? `: ${esc(tool.tool_detail)}` : '';
+    const label = `${esc(tool.tool_name || 'tool')}${detail}`;
+
+    if (!el) {
+      el = document.createElement('div');
+      el.className = 'tool-feed-item';
+      el.dataset.toolId = tool.tool_use_id;
+      el.dataset.addedAt = String(Date.now());
+      el.innerHTML = `<span class="mono tool-detail">${label}</span><span class="tool-status">${dur(elapsed)}</span>`;
+      feed.appendChild(el);
+    } else if (!el.classList.contains('done')) {
+      el.querySelector('.tool-status').textContent = dur(elapsed);
+    }
+  }
+  prevSubagentToolIds.clear();
+  currentToolIds.forEach((id) => prevSubagentToolIds.add(id));
+
+  trimFeed(feed);
 }
 
 // ─── Render: Metrics ───

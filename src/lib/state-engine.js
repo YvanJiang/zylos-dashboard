@@ -191,7 +191,9 @@ export class StateEngine {
       lastProgressAt: null,
       pm2: null,
       amHeartbeat: null,
-      lastSnapshotCursor: 0
+      lastSnapshotCursor: 0,
+      mainSessionId: null,
+      activeSubagents: new Map()
     };
   }
 
@@ -226,6 +228,7 @@ export class StateEngine {
 
       case 'user_prompt_submit':
         this._state.openTurn = { started_at: event.timestamp, session_id: event.session_id };
+        if (event.session_id) this._state.mainSessionId = event.session_id;
         this._state.lastProgressAt = now;
         this._clearPossiblyStuck();
         break;
@@ -254,6 +257,24 @@ export class StateEngine {
         };
         this._state.lastProgressAt = now;
         break;
+
+      case 'subagent_start':
+        if (event.metadata?.agent_id) {
+          this._state.activeSubagents.set(event.metadata.agent_id, {
+            agent_type: event.metadata.agent_type || 'general-purpose',
+            started_at: event.timestamp,
+            session_id: event.session_id
+          });
+        }
+        this._state.lastProgressAt = now;
+        break;
+
+      case 'subagent_stop':
+        if (event.metadata?.agent_id) {
+          this._state.activeSubagents.delete(event.metadata.agent_id);
+        }
+        this._state.lastProgressAt = now;
+        break;
     }
 
     this._broadcastStateChange();
@@ -272,15 +293,32 @@ export class StateEngine {
     const derived = this._deriveState();
     const now = new Date(this._now()).toISOString();
 
+    const mainSid = this._state.mainSessionId;
     const runningTools = [];
+    const subagentTools = [];
     for (const [id, tool] of this._state.runningTools) {
       const durationS = Math.floor((this._now() - new Date(tool.started_at).getTime()) / 1000);
-      runningTools.push({
+      const entry = {
         tool_use_id: id,
         tool_name: tool.tool_name,
         tool_detail: tool.tool_detail || null,
         started_at: tool.started_at,
         duration_s: durationS
+      };
+      if (!mainSid || tool.session_id === mainSid) {
+        runningTools.push(entry);
+      } else {
+        subagentTools.push(entry);
+      }
+    }
+
+    const activeSubagents = [];
+    for (const [id, agent] of this._state.activeSubagents) {
+      activeSubagents.push({
+        agent_id: id,
+        agent_type: agent.agent_type,
+        started_at: agent.started_at,
+        duration_s: Math.floor((this._now() - new Date(agent.started_at).getTime()) / 1000)
       });
     }
 
@@ -293,7 +331,9 @@ export class StateEngine {
       suggested_action: derived.suggested_action,
       updated_at: now,
       source: this._buildSourceHealth(),
-      running_tools: runningTools
+      running_tools: runningTools,
+      active_subagents: activeSubagents,
+      subagent_tools: subagentTools
     };
   }
 
@@ -429,7 +469,9 @@ export class StateEngine {
 
   _oldestRunningTool() {
     let oldest = null;
+    const mainSid = this._state.mainSessionId;
     for (const [, tool] of this._state.runningTools) {
+      if (mainSid && tool.session_id !== mainSid) continue;
       if (!oldest || new Date(tool.started_at) < new Date(oldest.started_at)) {
         oldest = tool;
       }

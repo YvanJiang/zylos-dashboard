@@ -34,6 +34,7 @@
   "label.activity": "Current Activity",
   "label.action": "Action",
   "label.running_tools": "Running tools",
+  "label.subagents": "Subagents",
   "confidence.high": "high",
   "confidence.medium": "medium",
   "confidence.low": "low",

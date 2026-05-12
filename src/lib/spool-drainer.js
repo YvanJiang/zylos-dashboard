@@ -3,7 +3,8 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 
 const ALLOWED_EVENTS = new Set([
-  'PreToolUse', 'PostToolUse', 'UserPromptSubmit', 'Stop', 'PermissionRequest'
+  'PreToolUse', 'PostToolUse', 'UserPromptSubmit', 'Stop', 'PermissionRequest',
+  'SubagentStart', 'SubagentStop'
 ]);
 
 const EVENT_TYPE_MAP = {
@@ -11,7 +12,9 @@ const EVENT_TYPE_MAP = {
   PostToolUse: { event_type: 'post_tool_use', category: 'tool' },
   UserPromptSubmit: { event_type: 'user_prompt_submit', category: 'turn' },
   Stop: { event_type: 'stop', category: 'turn' },
-  PermissionRequest: { event_type: 'permission_request', category: 'permission' }
+  PermissionRequest: { event_type: 'permission_request', category: 'permission' },
+  SubagentStart: { event_type: 'subagent_start', category: 'subagent' },
+  SubagentStop: { event_type: 'subagent_stop', category: 'subagent' }
 };
 
 export class SpoolDrainer {

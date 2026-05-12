@@ -142,3 +142,97 @@ test('periodic stale tool cleanup keeps fresh tools', () => {
 
   assert.equal(engine.getRunningTools().length, 1, 'fresh tool should not be cleaned up');
 });
+
+test('subagent tools are separated from main session tools', () => {
+  const { engine } = makeEngine();
+
+  engine.onEvent({
+    event_type: 'user_prompt_submit',
+    timestamp: new Date(1000000).toISOString(),
+    session_id: 'main-sess'
+  });
+
+  engine.onEvent({
+    event_type: 'pre_tool_use',
+    timestamp: new Date(1000100).toISOString(),
+    session_id: 'main-sess',
+    metadata: { tool_use_id: 'tool-main', tool_name: 'Read' }
+  });
+
+  engine.onEvent({
+    event_type: 'pre_tool_use',
+    timestamp: new Date(1000200).toISOString(),
+    session_id: 'sub-sess',
+    metadata: { tool_use_id: 'tool-sub', tool_name: 'Bash' }
+  });
+
+  const state = engine.getState();
+  assert.equal(state.running_tools.length, 1, 'main feed should only have main session tools');
+  assert.equal(state.running_tools[0].tool_name, 'Read');
+  assert.equal(state.subagent_tools.length, 1, 'subagent feed should have subagent tools');
+  assert.equal(state.subagent_tools[0].tool_name, 'Bash');
+});
+
+test('subagent lifecycle tracked via SubagentStart/Stop', () => {
+  const { engine } = makeEngine();
+
+  engine.onEvent({
+    event_type: 'subagent_start',
+    timestamp: new Date(1000000).toISOString(),
+    session_id: 'main-sess',
+    metadata: { agent_id: 'agent-1', agent_type: 'general-purpose' }
+  });
+
+  let state = engine.getState();
+  assert.equal(state.active_subagents.length, 1);
+  assert.equal(state.active_subagents[0].agent_id, 'agent-1');
+
+  engine.onEvent({
+    event_type: 'subagent_start',
+    timestamp: new Date(1000100).toISOString(),
+    session_id: 'main-sess',
+    metadata: { agent_id: 'agent-2', agent_type: 'general-purpose' }
+  });
+
+  state = engine.getState();
+  assert.equal(state.active_subagents.length, 2);
+
+  engine.onEvent({
+    event_type: 'subagent_stop',
+    timestamp: new Date(1002000).toISOString(),
+    session_id: 'main-sess',
+    metadata: { agent_id: 'agent-1' }
+  });
+
+  state = engine.getState();
+  assert.equal(state.active_subagents.length, 1);
+  assert.equal(state.active_subagents[0].agent_id, 'agent-2');
+});
+
+test('subagent tools do not appear in main running_tools after stop', () => {
+  const { engine } = makeEngine();
+
+  engine.onEvent({
+    event_type: 'user_prompt_submit',
+    timestamp: new Date(1000000).toISOString(),
+    session_id: 'main-sess'
+  });
+
+  engine.onEvent({
+    event_type: 'stop',
+    timestamp: new Date(1000050).toISOString(),
+    session_id: 'main-sess'
+  });
+
+  engine.onEvent({
+    event_type: 'pre_tool_use',
+    timestamp: new Date(1000100).toISOString(),
+    session_id: 'sub-sess',
+    metadata: { tool_use_id: 'tool-sub', tool_name: 'Bash' }
+  });
+
+  const state = engine.getState();
+  assert.equal(state.running_tools.length, 0, 'subagent tool should not appear in main running_tools');
+  assert.equal(state.subagent_tools.length, 1, 'subagent tool should appear in subagent_tools');
+  assert.equal(state.state, 'IDLE', 'main session should be IDLE when only subagent is working');
+});

@@ -452,6 +452,50 @@ main { padding: var(--space-md) var(--space-lg) var(--space-xl); }
   to { opacity: 0; max-height: 0; padding: 0; border-top-width: 0; overflow: hidden; }
 }
 
+.subagent-section {
+  margin-top: var(--space-sm);
+  border-top: 1px dashed var(--border);
+  padding-top: var(--space-sm);
+}
+.subagent-head { margin-bottom: var(--space-xs); }
+
+.subagent-list { display: flex; flex-direction: column; gap: 4px; }
+
+.subagent-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 4px 8px;
+  background: rgba(99, 102, 241, 0.06);
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+  animation: tool-enter 200ms ease;
+}
+.subagent-item .subagent-label {
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  color: var(--text-body);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 70%;
+}
+.subagent-item .subagent-time {
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+.subagent-item.done {
+  opacity: 0.5;
+  background: transparent;
+}
+.subagent-item.done .subagent-time { color: var(--green); }
+
+.subagent-feed .tool-feed-item {
+  padding-left: 12px;
+  font-size: 11px;
+  opacity: 0.75;
+}
+
 .mono {
   font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 12px;
