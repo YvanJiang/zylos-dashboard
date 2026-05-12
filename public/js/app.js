@@ -700,7 +700,7 @@ function initLocaleToggle() {
 function initLogout() {
   $('#logout-btn').addEventListener('click', async () => {
     try {
-      await fetch(api('/api/logout'), { method: 'POST' });
+      await fetch(api('/logout'), { method: 'POST' });
     } catch { /* ignore */ }
     window.location.href = api('/login');
   });
