@@ -488,61 +488,155 @@ function renderMetrics() {
   $('#metric-cost-today').textContent = agg.cost_today != null ? usd(agg.cost_today) : '--';
   $('#metric-cost-7d').textContent = agg['cost_7d'] != null ? usd(agg['cost_7d']) : '--';
 
-  const costSessionLabel = $('#metric-cost-session').closest('.metric-row')?.querySelector('small');
+  const costSessionLabel = $('#metric-cost-session-label');
   if (costSessionLabel) costSessionLabel.textContent = hasCostSession ? 'session' : 'lifetime';
 
+  // Tokens — stacked bar + cache ring
   const ts = agg.tokens_session;
   const tt = agg.tokens_today;
   const t7 = agg['tokens_7d'];
-  const tokLine = (t) => t ? `↓${tok(t.input)} ↑${tok(t.output)}` : '--';
-  $('#metric-tokens-session').textContent = tokLine(ts);
+
+  // Session input/output stacked bar
+  $('#metric-tokens-input').textContent = ts ? tok(ts.input) : '--';
+  $('#metric-tokens-output').textContent = ts ? tok(ts.output) : '--';
+  setTokenBar('tokens-bar', ts);
+
+  // Cache hit ring
+  const CACHE_RING_C = 2 * Math.PI * 22;
+  const cacheEl = $('#cache-ring');
+  if (cacheEl) {
+    const cr = ts?.cache_rate;
+    const cv = cr != null ? (cr <= 1 ? cr * 100 : cr) : 0;
+    cacheEl.style.strokeDasharray = CACHE_RING_C;
+    cacheEl.style.strokeDashoffset = CACHE_RING_C * (1 - Math.min(100, cv) / 100);
+  }
   $('#metric-tokens-cache').textContent = ts ? pctDecimal(ts.cache_rate) : '--';
+
+  // Today / 7d rows
+  const tokLine = (t) => t ? `↑${tok(t.input)} ↓${tok(t.output)}` : '--';
   $('#metric-tokens-today').textContent = tokLine(tt);
   $('#metric-tokens-7d').textContent = tokLine(t7);
+  setTokenBar('tokens-bar-today', tt);
+  setTokenBar('tokens-bar-7d', t7);
+
   $('#metrics-updated').textContent = fmtAge(state.metricsUpdatedAt);
 }
 
+function setTokenBar(id, tokData) {
+  const el = $(`#${id}`);
+  if (!el || !tokData) return;
+  const inp = Number(tokData.input) || 0;
+  const out = Number(tokData.output) || 0;
+  const total = inp + out;
+  if (total === 0) return;
+  const inputEl = el.querySelector('.tokens-bar-input');
+  const outputEl = el.querySelector('.tokens-bar-output');
+  if (inputEl) inputEl.style.width = `${(inp / total) * 100}%`;
+  if (outputEl) outputEl.style.width = `${(out / total) * 100}%`;
+}
+
 // ─── Render: Health ───
+const RING_CIRCUMFERENCE = 2 * Math.PI * 34; // r=34 → ~213.63
+
+function ringLevel(pctVal) {
+  if (pctVal >= 90) return 'level-danger';
+  if (pctVal >= 70) return 'level-warn';
+  return 'level-ok';
+}
+
+function ringLevelInverse(pctVal) {
+  if (pctVal <= 50) return 'level-danger';
+  if (pctVal <= 80) return 'level-warn';
+  return 'level-ok';
+}
+
+function setRing(id, pctVal, levelFn) {
+  const el = $(`#${id}`);
+  if (!el) return;
+  const v = Math.max(0, Math.min(100, pctVal));
+  const offset = RING_CIRCUMFERENCE * (1 - v / 100);
+  el.style.strokeDashoffset = offset;
+  el.className.baseVal = `ring-fill ${(levelFn || ringLevel)(v)}`;
+}
+
 function renderHealth() {
   const sysResp = state.system || {};
   const sys = sysResp.system || sysResp;
-  const health = state.health || {};
   const pm2 = sysResp.pm2 || sys.pm2 || sys.pm2_services || sys.services || [];
   const svcs = Array.isArray(pm2) ? pm2 : (pm2.services || []);
-  const running = svcs.filter((s) => ['online', 'running', 'ok'].includes(String(s.status || s.pm2_env?.status).toLowerCase())).length;
+  const svcStatus = (s) => String(s.status || s.pm2_env?.status || '').toLowerCase();
+  const running = svcs.filter((s) => ['online', 'running', 'ok'].includes(svcStatus(s))).length;
   const total = svcs.length || Number(pm2.total) || 0;
-  const cpu = sys.cpu?.percent ?? sys.cpu_pct ?? sys.cpu;
-  const mem = sys.memory?.used_bytes ?? sys.mem_used_bytes ?? sys.memory?.used ?? sys.memory;
-  const disk = sys.disk?.used_pct ?? sys.disk_used_pct ?? sys.disk_pct ?? sys.disk?.percent ?? sys.disk;
+  const downSvcs = svcs.filter((s) => !['online', 'running', 'ok'].includes(svcStatus(s)));
 
-  $('#system-pm2').textContent = total ? t('label.running', { count: running, total }) : '--';
-  $('#system-cpu').textContent = pct(cpu);
-  $('#system-memory').textContent = typeof mem === 'number' && mem > 100 ? bytes(mem) : pct(mem);
-  $('#system-disk').textContent = pct(disk);
-  $('#health-updated').textContent = fmtAge(state.healthUpdatedAt);
+  const cpuVal = sys.cpu?.percent ?? sys.cpu_pct ?? sys.cpu;
+  const memUsed = sys.memory?.used_bytes ?? sys.mem_used_bytes ?? sys.memory?.used ?? sys.memory;
+  const memTotal = sys.memory?.total_bytes ?? sys.mem_total_bytes ?? sys.memory?.total;
+  const diskVal = sys.disk?.used_pct ?? sys.disk_used_pct ?? sys.disk_pct ?? sys.disk?.percent ?? sys.disk;
 
-  const sources = flatSources(state.dashboardState?.source || health.source || health.sources || {});
-  const c4Src = sources.find((s) => s.name.includes('c4'));
-  const otelSrc = sources.find((s) => s.name.includes('otel') || s.name.includes('metric'));
-  $('#system-c4').textContent = fmtSourceStatus(c4Src);
-  $('#system-otel').textContent = fmtSourceStatus(otelSrc);
-}
-
-function fmtSourceStatus(src) {
-  if (!src) return t('source.unavailable');
-  const age = Number.isFinite(Number(src.age_s)) ? `${Math.round(src.age_s)}s` : null;
-  const status = src.fresh !== false ? t('source.active') : t('source.stale');
-  return age ? `${status} (${age})` : status;
-}
-
-function flatSources(tree) {
-  const out = [];
-  for (const [domain, sources] of Object.entries(tree || {})) {
-    for (const [name, val] of Object.entries(sources || {})) {
-      out.push({ name: `${domain}.${name}`, ...(val || {}) });
+  // PM2 — ring shows fraction (inverse color: green=high, red=low)
+  const pm2Pct = total ? (running / total) * 100 : 0;
+  $('#system-pm2').textContent = total ? `${running}/${total}` : '--';
+  setRing('pm2-ring', pm2Pct, ringLevelInverse);
+  const downList = $('#pm2-down-list');
+  if (downList) {
+    if (downSvcs.length > 0) {
+      downList.textContent = '↓ ' + downSvcs.map((s) => s.name).join(', ');
+      downList.className = 'gauge-detail alert';
+    } else {
+      downList.textContent = '';
+      downList.className = 'gauge-detail';
     }
   }
-  return out;
+
+  // CPU
+  const cpuPct = Number(cpuVal);
+  $('#system-cpu').textContent = pct(cpuVal);
+  if (Number.isFinite(cpuPct)) setRing('cpu-ring', cpuPct < 1 ? cpuPct * 100 : cpuPct);
+
+  // Memory — ring shows %, detail shows used/total
+  const memDetail = $('#mem-detail');
+  if (typeof memUsed === 'number' && memUsed > 100 && typeof memTotal === 'number' && memTotal > 0) {
+    const memPctVal = (memUsed / memTotal) * 100;
+    $('#system-memory').textContent = `${Math.round(memPctVal)}%`;
+    setRing('mem-ring', memPctVal);
+    if (memDetail) memDetail.textContent = `${bytes(memUsed)} / ${bytes(memTotal)}`;
+  } else {
+    $('#system-memory').textContent = typeof memUsed === 'number' && memUsed > 100 ? bytes(memUsed) : pct(memUsed);
+    setRing('mem-ring', 0);
+    if (memDetail) memDetail.textContent = '';
+  }
+
+  // Disk
+  const diskPct = Number(diskVal);
+  $('#system-disk').textContent = pct(diskVal);
+  if (Number.isFinite(diskPct)) setRing('disk-ring', diskPct < 1 ? diskPct * 100 : diskPct);
+
+  // Scheduler — timeline of upcoming tasks
+  const sched = sysResp.scheduler;
+  const schedCount = $('#scheduler-count');
+  const schedTimeline = $('#scheduler-timeline');
+  if (schedCount) {
+    schedCount.textContent = sched?.pending ? `${sched.pending} pending` : '';
+  }
+  if (schedTimeline) {
+    const tasks = sched?.upcoming || [];
+    if (tasks.length === 0) {
+      schedTimeline.innerHTML = '<span class="gauge-detail">No pending tasks</span>';
+    } else {
+      const now = Date.now();
+      schedTimeline.innerHTML = tasks.map((task, i) => {
+        const runAt = new Date(task.run_at);
+        const isOverdue = runAt.getTime() < now;
+        const time = runAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+        const cls = isOverdue ? ' overdue' : '';
+        const line = i < tasks.length - 1 ? '<div class="sched-line"></div>' : '';
+        return `<div class="sched-item${cls}"><div class="sched-dot"></div><div class="sched-info"><div class="sched-time">${esc(time)}</div><div class="sched-name">${esc(task.name)}</div></div></div>${line}`;
+      }).join('');
+    }
+  }
+
+  $('#health-updated').textContent = fmtAge(state.healthUpdatedAt);
 }
 
 // ─── Render: Timeline ───
