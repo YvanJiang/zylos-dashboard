@@ -191,7 +191,9 @@ export class StateEngine {
       lastProgressAt: null,
       pm2: null,
       amHeartbeat: null,
-      lastSnapshotCursor: 0
+      lastSnapshotCursor: 0,
+      mainSessionId: null,
+      activeSubagents: new Map()
     };
   }
 
@@ -205,7 +207,8 @@ export class StateEngine {
             tool_name: event.metadata.tool_name,
             tool_detail: event.metadata.tool_detail || null,
             started_at: event.timestamp,
-            session_id: event.session_id
+            session_id: event.session_id,
+            agent_id: event.metadata.agent_id || null
           });
         }
         this._state.lastProgressAt = now;
@@ -226,6 +229,7 @@ export class StateEngine {
 
       case 'user_prompt_submit':
         this._state.openTurn = { started_at: event.timestamp, session_id: event.session_id };
+        if (event.session_id) this._state.mainSessionId = event.session_id;
         this._state.lastProgressAt = now;
         this._clearPossiblyStuck();
         break;
@@ -233,12 +237,14 @@ export class StateEngine {
       case 'stop':
         if (event.session_id) {
           for (const [id, tool] of this._state.runningTools) {
-            if (tool.session_id === event.session_id) {
+            if (tool.session_id === event.session_id && !tool.agent_id) {
               this._state.runningTools.delete(id);
             }
           }
         } else {
-          this._state.runningTools.clear();
+          for (const [id, tool] of this._state.runningTools) {
+            if (!tool.agent_id) this._state.runningTools.delete(id);
+          }
         }
         this._state.openTurn = null;
         this._state.lastProgressAt = now;
@@ -252,6 +258,30 @@ export class StateEngine {
           requested_at: event.timestamp,
           session_id: event.session_id
         };
+        this._state.lastProgressAt = now;
+        break;
+
+      case 'subagent_start':
+        if (event.session_id) this._state.mainSessionId = event.session_id;
+        if (event.metadata?.agent_id) {
+          this._state.activeSubagents.set(event.metadata.agent_id, {
+            agent_type: event.metadata.agent_type || 'general-purpose',
+            started_at: event.timestamp,
+            session_id: event.session_id
+          });
+        }
+        this._state.lastProgressAt = now;
+        break;
+
+      case 'subagent_stop':
+        if (event.metadata?.agent_id) {
+          this._state.activeSubagents.delete(event.metadata.agent_id);
+          for (const [id, tool] of this._state.runningTools) {
+            if (tool.agent_id === event.metadata.agent_id) {
+              this._state.runningTools.delete(id);
+            }
+          }
+        }
         this._state.lastProgressAt = now;
         break;
     }
@@ -273,15 +303,40 @@ export class StateEngine {
     const now = new Date(this._now()).toISOString();
 
     const runningTools = [];
+    const subagentToolsMap = new Map();
     for (const [id, tool] of this._state.runningTools) {
       const durationS = Math.floor((this._now() - new Date(tool.started_at).getTime()) / 1000);
-      runningTools.push({
+      const entry = {
         tool_use_id: id,
         tool_name: tool.tool_name,
         tool_detail: tool.tool_detail || null,
         started_at: tool.started_at,
         duration_s: durationS
+      };
+      if (tool.agent_id) {
+        if (!subagentToolsMap.has(tool.agent_id)) {
+          subagentToolsMap.set(tool.agent_id, []);
+        }
+        subagentToolsMap.get(tool.agent_id).push(entry);
+      } else {
+        runningTools.push(entry);
+      }
+    }
+
+    const activeSubagents = [];
+    for (const [id, agent] of this._state.activeSubagents) {
+      activeSubagents.push({
+        agent_id: id,
+        agent_type: agent.agent_type,
+        started_at: agent.started_at,
+        duration_s: Math.floor((this._now() - new Date(agent.started_at).getTime()) / 1000),
+        running_tools: subagentToolsMap.get(id) || []
       });
+    }
+
+    const subagentTools = [];
+    for (const [, tools] of subagentToolsMap) {
+      subagentTools.push(...tools);
     }
 
     return {
@@ -293,7 +348,9 @@ export class StateEngine {
       suggested_action: derived.suggested_action,
       updated_at: now,
       source: this._buildSourceHealth(),
-      running_tools: runningTools
+      running_tools: runningTools,
+      active_subagents: activeSubagents,
+      subagent_tools: subagentTools
     };
   }
 
@@ -325,7 +382,15 @@ export class StateEngine {
         if (snapshot.running_tool) {
           const parsed = typeof snapshot.running_tool === 'string'
             ? JSON.parse(snapshot.running_tool) : snapshot.running_tool;
-          this._state.runningTools = new Map(Object.entries(parsed));
+          if (parsed.tools) {
+            this._state.runningTools = new Map(Object.entries(parsed.tools));
+            this._state.mainSessionId = parsed.mainSessionId || null;
+            if (parsed.activeSubagents) {
+              this._state.activeSubagents = new Map(Object.entries(parsed.activeSubagents));
+            }
+          } else {
+            this._state.runningTools = new Map(Object.entries(parsed));
+          }
         }
         this._state.openTurn = snapshot.open_turn
           ? (typeof snapshot.open_turn === 'string' ? JSON.parse(snapshot.open_turn) : snapshot.open_turn)
@@ -430,6 +495,7 @@ export class StateEngine {
   _oldestRunningTool() {
     let oldest = null;
     for (const [, tool] of this._state.runningTools) {
+      if (tool.agent_id) continue;
       if (!oldest || new Date(tool.started_at) < new Date(oldest.started_at)) {
         oldest = tool;
       }
@@ -551,7 +617,11 @@ export class StateEngine {
     this.store.saveSnapshot({
       runtime: this._config.runtime || 'claude',
       session_id: this._currentSessionId(),
-      running_tool: JSON.stringify(Object.fromEntries(this._state.runningTools)),
+      running_tool: JSON.stringify({
+        tools: Object.fromEntries(this._state.runningTools),
+        mainSessionId: this._state.mainSessionId,
+        activeSubagents: Object.fromEntries(this._state.activeSubagents)
+      }),
       open_turn: JSON.stringify(this._state.openTurn),
       pending_permission: JSON.stringify(this._state.pendingPermission),
       possibly_stuck_since: this._state.possiblyStuckSince?.toISOString() || null,
