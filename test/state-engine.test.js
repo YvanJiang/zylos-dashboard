@@ -564,6 +564,40 @@ test('snapshot restore preserves mainSessionId and activeSubagents', () => {
   assert.equal(state.active_subagents[0].running_tools.length, 1, 'subagent running_tools preserved after restore');
 });
 
+test('snapshot restore preserves last_prompt', () => {
+  let snapshotData = null;
+  const store = {
+    ...makeMockStore(),
+    saveSnapshot(data) { snapshotData = data; },
+    latestSnapshot() { return snapshotData; }
+  };
+  const config = { zylosDir: '/tmp/zylos-test', runtime: 'claude' };
+  let clock = 1000000;
+  const engine1 = new StateEngine(store, {}, config, { now: () => clock });
+  engine1._state.amHeartbeat = { state: 'idle', health: 'ok', lastCheck: clock / 1000, lastActivity: clock / 1000 };
+
+  engine1.onEvent({
+    event_type: 'user_prompt_submit',
+    timestamp: new Date(1000000).toISOString(),
+    session_id: 'main-sess',
+    summary: 'Prompt from telegram',
+    metadata: { prompt_source: 'telegram' }
+  });
+
+  assert.ok(engine1.getState().last_prompt, 'last_prompt set after user_prompt_submit');
+  engine1._saveSnapshot();
+  assert.ok(snapshotData.last_prompt, 'last_prompt included in snapshot');
+
+  const engine2 = new StateEngine(store, {}, config, { now: () => clock });
+  engine2._state.amHeartbeat = { state: 'idle', health: 'ok', lastCheck: clock / 1000, lastActivity: clock / 1000 };
+  engine2.initialize();
+
+  const state = engine2.getState();
+  assert.ok(state.last_prompt, 'last_prompt restored from snapshot');
+  assert.equal(state.last_prompt.source, 'telegram');
+  assert.equal(state.last_prompt.summary, 'Prompt from telegram');
+});
+
 test('Stop assistant_summary is redacted and truncated', () => {
   const sanitizer = new Sanitizer('/tmp/zylos-test');
   const longMsg = 'Fixed the config. Key was sk-abcdefghijklmnopqrstuvwx. ' + 'x'.repeat(300);
@@ -774,5 +808,42 @@ test('Read/Edit/Write tool_detail shortens paths to max 3 segments', () => {
       assert.strictEqual(result.metadata.tool_detail, expected,
         `${tool} "${input}" → "${result.metadata.tool_detail}"`);
     }
+  }
+});
+
+test('UserPromptSubmit shows prompt source from reply via', () => {
+  const sanitizer = new Sanitizer('/home/howard/zylos');
+
+  const cases = [
+    [
+      '[TG DM] howardzhou said: hello ---- reply via: node /home/howard/zylos/.claude/skills/comm-bridge/scripts/c4-send.js "telegram" "8101553026|msg:123"',
+      'Prompt from telegram',
+      'telegram'
+    ],
+    [
+      '[HXA:default DM] Jinglever said: review done ---- reply via: node c4-send.js "hxa-connect" "org:default|Jinglever"',
+      'Prompt from hxa-connect',
+      'hxa-connect'
+    ],
+    [
+      'Heartbeat check ---- ack via: node c4-control.js ack --id 42',
+      'Prompt from control',
+      'control'
+    ],
+    [
+      'just a plain prompt from the terminal',
+      'Prompt received',
+      null
+    ],
+  ];
+
+  for (const [prompt, expectedSummary, expectedSource] of cases) {
+    const result = sanitizer.sanitizeHookPayload('UserPromptSubmit', {
+      session_id: 's', prompt
+    });
+    assert.strictEqual(result.summary, expectedSummary,
+      `prompt "${prompt.slice(0, 50)}..." → summary "${result.summary}"`);
+    assert.strictEqual(result.metadata.prompt_source || null, expectedSource,
+      `prompt "${prompt.slice(0, 50)}..." → source ${result.metadata.prompt_source}`);
   }
 });

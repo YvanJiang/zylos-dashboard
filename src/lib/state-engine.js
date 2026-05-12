@@ -233,6 +233,11 @@ export class StateEngine {
         if (event.session_id) this._state.mainSessionId = event.session_id;
         this._state.lastProgressAt = now;
         this._state.lastAssistantMessage = null;
+        this._state.lastPrompt = {
+          source: event.metadata?.prompt_source || null,
+          summary: event.summary || 'Prompt received',
+          timestamp: event.timestamp
+        };
         this._clearPossiblyStuck();
         break;
 
@@ -359,7 +364,8 @@ export class StateEngine {
       running_tools: runningTools,
       active_subagents: activeSubagents,
       subagent_tools: subagentTools,
-      last_message: this._state.lastAssistantMessage
+      last_message: this._state.lastAssistantMessage,
+      last_prompt: this._state.lastPrompt || null
     };
   }
 
@@ -414,6 +420,10 @@ export class StateEngine {
         if (snapshot.last_message) {
           this._state.lastAssistantMessage = typeof snapshot.last_message === 'string'
             ? JSON.parse(snapshot.last_message) : snapshot.last_message;
+        }
+        if (snapshot.last_prompt) {
+          this._state.lastPrompt = typeof snapshot.last_prompt === 'string'
+            ? JSON.parse(snapshot.last_prompt) : snapshot.last_prompt;
         }
       }
     } catch (err) {
@@ -639,7 +649,8 @@ export class StateEngine {
       pending_permission: JSON.stringify(this._state.pendingPermission),
       possibly_stuck_since: this._state.possiblyStuckSince?.toISOString() || null,
       last_progress_cursor: this._getMaxEventSeq(),
-      last_message: JSON.stringify(this._state.lastAssistantMessage)
+      last_message: JSON.stringify(this._state.lastAssistantMessage),
+      last_prompt: JSON.stringify(this._state.lastPrompt || null)
     });
   }
 

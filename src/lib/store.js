@@ -123,6 +123,13 @@ export class Store {
       }
       this.db.prepare('INSERT OR IGNORE INTO schema_migrations (version) VALUES (?)').run(3);
     }
+    if (currentVersion < 4) {
+      const cols = this.db.pragma('table_info(state_snapshots)').map(c => c.name);
+      if (!cols.includes('last_prompt')) {
+        this.db.exec('ALTER TABLE state_snapshots ADD COLUMN last_prompt TEXT');
+      }
+      this.db.prepare('INSERT OR IGNORE INTO schema_migrations (version) VALUES (?)').run(4);
+    }
   }
 
   _prepareStatements() {
@@ -207,9 +214,9 @@ export class Store {
 
     this._saveSnapshot = this.db.prepare(`
       INSERT INTO state_snapshots
-        (runtime, session_id, running_tool, open_turn, pending_permission, possibly_stuck_since, last_progress_cursor, last_message)
+        (runtime, session_id, running_tool, open_turn, pending_permission, possibly_stuck_since, last_progress_cursor, last_message, last_prompt)
       VALUES
-        (@runtime, @session_id, @running_tool, @open_turn, @pending_permission, @possibly_stuck_since, @last_progress_cursor, @last_message)
+        (@runtime, @session_id, @running_tool, @open_turn, @pending_permission, @possibly_stuck_since, @last_progress_cursor, @last_message, @last_prompt)
     `);
 
     this._latestSnapshot = this.db.prepare(`
@@ -378,7 +385,8 @@ export class Store {
       pending_permission: snapshot.pending_permission ? JSON.stringify(snapshot.pending_permission) : null,
       possibly_stuck_since: snapshot.possibly_stuck_since || null,
       last_progress_cursor: snapshot.last_progress_cursor,
-      last_message: snapshot.last_message || null
+      last_message: snapshot.last_message || null,
+      last_prompt: snapshot.last_prompt || null
     });
   }
 

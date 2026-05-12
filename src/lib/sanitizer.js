@@ -27,10 +27,16 @@ export class Sanitizer {
 
       const tool_detail = this._extractToolDetail(tool_name, rawPayload.tool_input);
 
+      let prompt_source = null;
+      if (hookEventName === 'UserPromptSubmit' && typeof rawPayload.prompt === 'string') {
+        prompt_source = this._extractPromptSource(rawPayload.prompt);
+      }
+
       const metadata = {};
       if (tool_name) metadata.tool_name = tool_name;
       if (tool_use_id) metadata.tool_use_id = tool_use_id;
       if (tool_detail) metadata.tool_detail = tool_detail;
+      if (prompt_source) metadata.prompt_source = prompt_source;
 
       const safeFields = ['timestamp', 'hook_event_name', 'runtime'];
       for (const key of safeFields) {
@@ -56,7 +62,7 @@ export class Sanitizer {
         }
       }
 
-      const summary = this.buildSummary(hookEventName, tool_name, duration_ms, tool_detail);
+      const summary = this.buildSummary(hookEventName, tool_name, duration_ms, tool_detail, prompt_source);
 
       return { session_id, duration_ms, summary, metadata };
     } catch {
@@ -87,7 +93,7 @@ export class Sanitizer {
     return result;
   }
 
-  buildSummary(hookEventName, toolName, durationMs, toolDetail) {
+  buildSummary(hookEventName, toolName, durationMs, toolDetail, promptSource) {
     const detail = toolDetail ? `: ${toolDetail}` : '';
     switch (hookEventName) {
       case 'PreToolUse':
@@ -95,7 +101,7 @@ export class Sanitizer {
       case 'PostToolUse':
         return `${toolName || 'Unknown'}${detail}${durationMs ? ` (${durationMs}ms)` : ''}`;
       case 'UserPromptSubmit':
-        return 'Turn started';
+        return promptSource ? `Prompt from ${promptSource}` : 'Prompt received';
       case 'Stop':
         return 'Turn ended';
       case 'PermissionRequest':
@@ -192,6 +198,20 @@ export class Sanitizer {
       if (idMatch) return `Control: ${sub} #${idMatch[1]}`;
       return `Control: ${sub}`;
     }
+
+    return null;
+  }
+
+  _extractPromptSource(prompt) {
+    // "reply via: node .../c4-send.js "channel" "endpoint""
+    const replyVia = prompt.match(/reply via:\s*node\s+\S*c4-send\.js\s+"([^"]+)"/);
+    if (replyVia) return replyVia[1];
+
+    // "ack via: node .../c4-control.js ack --id ..."
+    if (/ack via:/.test(prompt)) return 'control';
+
+    // Scheduler task delivery
+    if (/\[Scheduled Task\]|\[scheduler\]/i.test(prompt)) return 'scheduler';
 
     return null;
   }

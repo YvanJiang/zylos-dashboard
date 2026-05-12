@@ -433,6 +433,11 @@ main { padding: var(--space-md) var(--space-lg) var(--space-xl); }
   font-size: 11px;
 }
 
+.tool-feed-item.prompt-source {
+  color: var(--text-muted);
+  font-style: italic;
+}
+
 .tool-feed-item.thinking {
   color: var(--accent);
 }
