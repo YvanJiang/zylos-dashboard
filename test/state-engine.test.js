@@ -593,3 +593,63 @@ test('SubagentStop assistant_summary is redacted', () => {
   assert.ok(!result.metadata.assistant_summary.includes('user@example.com'), 'email should be redacted');
   assert.ok(result.metadata.assistant_summary.includes('[REDACTED]'), 'should contain redaction marker');
 });
+
+test('Bash tool_detail shortens paths and strips noise', () => {
+  const sanitizer = new Sanitizer('/home/howard/zylos');
+
+  const cases = [
+    [
+      'node /home/howard/zylos/.claude/skills/comm-bridge/scripts/c4-send.js "telegram" "123"',
+      /^node comm-bridge\/scripts\/c4-send\.js/
+    ],
+    [
+      'grep -n "foo" /home/howard/zylos/workspace/zylos-dashboard/public/js/app.js',
+      /^grep -n "foo" public\/js\/app\.js$/
+    ],
+    [
+      'cd /home/howard/zylos && npm test 2>&1 | tail -5',
+      /^npm test/
+    ],
+    [
+      'curl -s "https://example.com/api/data" 2>&1 | head -5',
+      /^curl -s "https:\/\/example\.com\/api\/data"/
+    ],
+    [
+      'npm test 2>&1',
+      /^npm test$/
+    ],
+    [
+      'echo hello',
+      /^echo hello$/
+    ],
+    [
+      'node /Users/howard/zylos/.claude/skills/comm-bridge/scripts/c4-send.js "telegram"',
+      /^node comm-bridge\/scripts\/c4-send\.js/
+    ],
+    [
+      'curl https://example.com/home/a/b/c/d',
+      /^curl https:\/\/example\.com\/home\/a\/b\/c\/d$/
+    ],
+    [
+      'printf foo|tail -1',
+      /^printf foo \| \.\.\.$/
+    ],
+    [
+      'grep -E "foo|bar" file.txt | head',
+      /^grep -E "foo\|bar" file\.txt \| \.\.\.$/
+    ],
+    [
+      'curl "https://example.com/a|b"',
+      /^curl "https:\/\/example\.com\/a\|b"$/
+    ],
+  ];
+
+  for (const [input, expected] of cases) {
+    const result = sanitizer.sanitizeHookPayload('PreToolUse', {
+      session_id: 's', tool_name: 'Bash', tool_use_id: 't',
+      tool_input: { command: input }
+    });
+    assert.match(result.metadata.tool_detail, expected,
+      `"${input.slice(0, 50)}" → "${result.metadata.tool_detail}"`);
+  }
+});

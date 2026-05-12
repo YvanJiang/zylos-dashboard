@@ -115,10 +115,7 @@ export class Sanitizer {
         return fp ? this.sanitizePath(fp) : null;
       }
       if (toolName === 'Bash') {
-        const cmd = toolInput.command;
-        if (!cmd) return null;
-        const firstLine = cmd.split('\n')[0];
-        return firstLine.length > 80 ? firstLine.slice(0, 77) + '...' : firstLine;
+        return this._summarizeBashCommand(toolInput.command);
       }
       if (toolName === 'Agent' || toolName === 'Task') {
         return toolInput.description || null;
@@ -134,6 +131,63 @@ export class Sanitizer {
       }
     } catch { /* extraction failed — not critical */ }
     return null;
+  }
+
+  _summarizeBashCommand(cmd) {
+    if (!cmd || typeof cmd !== 'string') return null;
+
+    let line = cmd.split('\n')[0].trim();
+
+    // Strip leading comment-only lines
+    if (/^#\s/.test(line)) {
+      const lines = cmd.split('\n');
+      for (const l of lines) {
+        const t = l.trim();
+        if (t && !/^#\s/.test(t)) { line = t; break; }
+      }
+      if (/^#\s/.test(line)) return line.slice(0, 60);
+    }
+
+    // Strip shell chains: cd xxx && actual_command → actual_command
+    line = line.replace(/^cd\s+\S+\s*&&\s*/i, '');
+    // Strip leading env exports: export $(grep...) && cmd → cmd
+    line = line.replace(/^export\s+\$\([^)]*\)\s*&&\s*/i, '');
+
+    // Take first command in a pipe chain (quote-aware)
+    const pipeIdx = this._findUnquotedPipe(line);
+    const pipeCmd = pipeIdx > 0 ? line.slice(0, pipeIdx).trimEnd() : line;
+
+    // Strip redirections at the end
+    let clean = pipeCmd.replace(/\s+\d*>[>&]?\s*\S+\s*$/g, '').trim();
+
+    // Shorten filesystem paths (preceded by whitespace/quote/start, not inside URLs)
+    clean = clean.replace(/(?<=^|[\s"'=])(?:\/(?:home|Users|tmp|var|usr|opt|etc|root)(?:\/[\w.@+-]+){3,}|~(?:\/[\w.@+-]+){3,})/g, (p) => this._shortenPath(p));
+
+    // Truncate
+    if (pipeIdx > 0 && clean.length < 70) clean += ' | ...';
+    return clean.length > 80 ? clean.slice(0, 77) + '...' : clean;
+  }
+
+  _findUnquotedPipe(str) {
+    let inSingle = false;
+    let inDouble = false;
+    for (let i = 0; i < str.length; i++) {
+      const ch = str[i];
+      if (ch === '\\' && !inSingle) { i++; continue; }
+      if (ch === "'" && !inDouble) { inSingle = !inSingle; continue; }
+      if (ch === '"' && !inSingle) { inDouble = !inDouble; continue; }
+      if (ch === '|' && !inSingle && !inDouble) {
+        if (str[i + 1] === '|') { i++; continue; }
+        return i;
+      }
+    }
+    return -1;
+  }
+
+  _shortenPath(fullPath) {
+    const parts = fullPath.split('/').filter(Boolean);
+    if (parts.length <= 3) return fullPath;
+    return parts.slice(-3).join('/');
   }
 
   _redactObject(obj) {
