@@ -479,6 +479,39 @@ test('Stop without assistant_summary does not set last_message', () => {
   assert.equal(engine.getState().last_message, null);
 });
 
+test('snapshot restore preserves last_message', () => {
+  let snapshotData = null;
+  const store = {
+    ...makeMockStore(),
+    saveSnapshot(data) { snapshotData = data; },
+    latestSnapshot() { return snapshotData; }
+  };
+  const config = { zylosDir: '/tmp/zylos-test', runtime: 'claude' };
+  let clock = 1000000;
+  const engine1 = new StateEngine(store, {}, config, { now: () => clock });
+  engine1._state.amHeartbeat = { state: 'idle', health: 'ok', lastCheck: clock / 1000, lastActivity: clock / 1000 };
+
+  engine1.onEvent({
+    event_type: 'stop',
+    timestamp: new Date(1000000).toISOString(),
+    session_id: 'main-sess',
+    metadata: { assistant_summary: 'Completed the task successfully' }
+  });
+
+  assert.ok(engine1.getState().last_message, 'message set after stop');
+  engine1._saveSnapshot();
+  assert.ok(snapshotData, 'snapshot saved');
+  assert.ok(snapshotData.last_message, 'last_message included in snapshot');
+
+  const engine2 = new StateEngine(store, {}, config, { now: () => clock });
+  engine2._state.amHeartbeat = { state: 'idle', health: 'ok', lastCheck: clock / 1000, lastActivity: clock / 1000 };
+  engine2.initialize();
+
+  const state = engine2.getState();
+  assert.ok(state.last_message, 'last_message restored from snapshot');
+  assert.equal(state.last_message.text, 'Completed the task successfully');
+});
+
 test('snapshot restore preserves mainSessionId and activeSubagents', () => {
   let snapshotData = null;
   const store = {

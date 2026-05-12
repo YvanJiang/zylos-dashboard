@@ -411,6 +411,10 @@ export class StateEngine {
           ? new Date(snapshot.possibly_stuck_since)
           : null;
         this._state.lastSnapshotCursor = snapshot.last_progress_cursor || 0;
+        if (snapshot.last_message) {
+          this._state.lastAssistantMessage = typeof snapshot.last_message === 'string'
+            ? JSON.parse(snapshot.last_message) : snapshot.last_message;
+        }
       }
     } catch (err) {
       process.stderr.write(`[state-engine] Snapshot restore error: ${err.message}\n`);
@@ -634,7 +638,8 @@ export class StateEngine {
       open_turn: JSON.stringify(this._state.openTurn),
       pending_permission: JSON.stringify(this._state.pendingPermission),
       possibly_stuck_since: this._state.possiblyStuckSince?.toISOString() || null,
-      last_progress_cursor: this._getMaxEventSeq()
+      last_progress_cursor: this._getMaxEventSeq(),
+      last_message: JSON.stringify(this._state.lastAssistantMessage)
     });
   }
 
