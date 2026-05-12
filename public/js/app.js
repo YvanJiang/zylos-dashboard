@@ -461,10 +461,20 @@ function renderMetrics() {
   $('#metric-rate-5h-reset').textContent = r5Reset ? `resets ${fmtResetTime(r5Reset)}` : '';
   $('#metric-rate-7d-reset').textContent = r7Reset ? `resets ${fmtResetTime(r7Reset)}` : '';
 
-  $('#metric-cost-value').textContent = usd(metVal(cost));
-  $('#metric-cost-source').textContent = srcLabel(cost);
-  $('#metric-cache-value').textContent = pct(metVal(cache));
-  $('#metric-cache-source').textContent = srcLabel(cache);
+  const agg = state.aggregated || {};
+  const hasCostSession = agg.cost_session != null;
+  const hasCacheSession = agg.cache_session != null;
+  $('#metric-cost-session').textContent = hasCostSession ? usd(agg.cost_session) : usd(metVal(cost));
+  $('#metric-cost-today').textContent = agg.cost_today != null ? usd(agg.cost_today) : '--';
+  $('#metric-cost-7d').textContent = agg['cost_7d'] != null ? usd(agg['cost_7d']) : '--';
+  $('#metric-cache-session').textContent = hasCacheSession ? pct(agg.cache_session) : pct(metVal(cache));
+  $('#metric-cache-today').textContent = agg.cache_today != null ? pct(agg.cache_today) : '--';
+  $('#metric-cache-7d').textContent = agg['cache_7d'] != null ? pct(agg['cache_7d']) : '--';
+
+  const costSessionLabel = $('#metric-cost-session').closest('.metric-row')?.querySelector('small');
+  const cacheSessionLabel = $('#metric-cache-session').closest('.metric-row')?.querySelector('small');
+  if (costSessionLabel) costSessionLabel.textContent = hasCostSession ? 'session' : 'lifetime';
+  if (cacheSessionLabel) cacheSessionLabel.textContent = hasCacheSession ? 'session' : 'session';
   $('#metrics-updated').textContent = fmtAge(state.metricsUpdatedAt);
 }
 
@@ -646,6 +656,20 @@ async function refreshMetrics() {
   for (const r of results) {
     if (r.status === 'fulfilled') { state.metrics.set(r.value[0], r.value[1]); changed = true; }
   }
+  try {
+    const aggKeys = [
+      ['cost', 'session'], ['cache', 'session'],
+      ['cost', 'today'], ['cache', 'today'],
+      ['cost', '7d'], ['cache', '7d']
+    ];
+    const aggResults = await Promise.allSettled(aggKeys.map(([m, p]) => fetchJson(`/api/metrics/aggregate?metric=${m}&period=${p}`)));
+    state.aggregated = {};
+    aggKeys.forEach(([m, p], i) => {
+      const r = aggResults[i];
+      state.aggregated[`${m}_${p}`] = r.status === 'fulfilled' ? (r.value?.value ?? null) : null;
+    });
+    changed = true;
+  } catch { /* aggregation endpoints not available yet */ }
   if (changed) {
     state.metricsUpdatedAt = new Date().toISOString();
     renderMetrics();
