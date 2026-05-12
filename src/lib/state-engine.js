@@ -193,7 +193,8 @@ export class StateEngine {
       amHeartbeat: null,
       lastSnapshotCursor: 0,
       mainSessionId: null,
-      activeSubagents: new Map()
+      activeSubagents: new Map(),
+      lastAssistantMessage: null
     };
   }
 
@@ -231,6 +232,7 @@ export class StateEngine {
         this._state.openTurn = { started_at: event.timestamp, session_id: event.session_id };
         if (event.session_id) this._state.mainSessionId = event.session_id;
         this._state.lastProgressAt = now;
+        this._state.lastAssistantMessage = null;
         this._clearPossiblyStuck();
         break;
 
@@ -250,6 +252,12 @@ export class StateEngine {
         this._state.lastProgressAt = now;
         this._clearPossiblyStuck();
         this._state.pendingPermission = null;
+        if (event.metadata?.assistant_summary) {
+          this._state.lastAssistantMessage = {
+            text: event.metadata.assistant_summary,
+            timestamp: event.timestamp
+          };
+        }
         break;
 
       case 'permission_request':
@@ -350,7 +358,8 @@ export class StateEngine {
       source: this._buildSourceHealth(),
       running_tools: runningTools,
       active_subagents: activeSubagents,
-      subagent_tools: subagentTools
+      subagent_tools: subagentTools,
+      last_message: this._state.lastAssistantMessage
     };
   }
 

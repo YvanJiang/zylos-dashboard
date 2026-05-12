@@ -423,6 +423,62 @@ test('Stop without session_id preserves subagent tools', () => {
   assert.equal(state.subagent_tools.length, 1, 'subagent tool survives null-session Stop');
 });
 
+test('Stop event captures assistant_summary as last_message', () => {
+  const { engine } = makeEngine();
+
+  engine.onEvent({
+    event_type: 'user_prompt_submit',
+    timestamp: new Date(1000000).toISOString(),
+    session_id: 'main-sess'
+  });
+
+  engine.onEvent({
+    event_type: 'stop',
+    timestamp: new Date(1001000).toISOString(),
+    session_id: 'main-sess',
+    metadata: { assistant_summary: 'Fixed the bug in config.json' }
+  });
+
+  const state = engine.getState();
+  assert.ok(state.last_message, 'last_message should be set');
+  assert.equal(state.last_message.text, 'Fixed the bug in config.json');
+  assert.ok(state.last_message.timestamp);
+});
+
+test('UserPromptSubmit clears last_message', () => {
+  const { engine } = makeEngine();
+
+  engine.onEvent({
+    event_type: 'stop',
+    timestamp: new Date(1000000).toISOString(),
+    session_id: 'main-sess',
+    metadata: { assistant_summary: 'Some message' }
+  });
+
+  assert.ok(engine.getState().last_message, 'message set after stop');
+
+  engine.onEvent({
+    event_type: 'user_prompt_submit',
+    timestamp: new Date(1001000).toISOString(),
+    session_id: 'main-sess'
+  });
+
+  assert.equal(engine.getState().last_message, null, 'message cleared on new turn');
+});
+
+test('Stop without assistant_summary does not set last_message', () => {
+  const { engine } = makeEngine();
+
+  engine.onEvent({
+    event_type: 'stop',
+    timestamp: new Date(1000000).toISOString(),
+    session_id: 'main-sess',
+    metadata: {}
+  });
+
+  assert.equal(engine.getState().last_message, null);
+});
+
 test('snapshot restore preserves mainSessionId and activeSubagents', () => {
   let snapshotData = null;
   const store = {
@@ -473,6 +529,20 @@ test('snapshot restore preserves mainSessionId and activeSubagents', () => {
   assert.equal(state.active_subagents.length, 1);
   assert.equal(state.active_subagents[0].agent_id, 'agent-1');
   assert.equal(state.active_subagents[0].running_tools.length, 1, 'subagent running_tools preserved after restore');
+});
+
+test('Stop assistant_summary is redacted and truncated', () => {
+  const sanitizer = new Sanitizer('/tmp/zylos-test');
+  const longMsg = 'Fixed the config. Key was sk-abcdefghijklmnopqrstuvwx. ' + 'x'.repeat(300);
+  const result = sanitizer.sanitizeHookPayload('Stop', {
+    session_id: 'sess-1',
+    hook_event_name: 'Stop',
+    last_assistant_message: longMsg
+  });
+
+  assert.ok(result.metadata.assistant_summary, 'should have assistant_summary');
+  assert.ok(result.metadata.assistant_summary.length <= 200, 'should be truncated to 200 chars');
+  assert.ok(!result.metadata.assistant_summary.includes('sk-abcdefgh'), 'API key should be redacted');
 });
 
 test('SubagentStop assistant_summary is redacted', () => {

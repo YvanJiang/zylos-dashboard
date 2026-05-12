@@ -155,6 +155,7 @@ function renderState() {
 
   renderToolFeed(tools, p);
   renderSubagents(p);
+  renderAssistantMessage(p);
 }
 
 function renderToolFeed(tools, p) {
@@ -247,6 +248,18 @@ function trimFeed(feed) {
     el.classList.add('removing');
     el.addEventListener('animationend', () => el.remove(), { once: true });
     excess--;
+  }
+}
+
+// ─── Render: Assistant Message ───
+function renderAssistantMessage(p) {
+  const el = $('#assistant-message');
+  const msg = p?.last_message;
+  if (msg?.text) {
+    el.textContent = msg.text;
+    el.hidden = false;
+  } else {
+    el.hidden = true;
   }
 }
 
