@@ -697,6 +697,15 @@ function initLocaleToggle() {
   });
 }
 
+function initLogout() {
+  $('#logout-btn').addEventListener('click', async () => {
+    try {
+      await fetch(api('/api/logout'), { method: 'POST' });
+    } catch { /* ignore */ }
+    window.location.href = api('/login');
+  });
+}
+
 function initTips() {
   const btn = $('#confidence-tip');
   const srcPop = $('#confidence-popover');
@@ -866,6 +875,7 @@ initTheme();
 await initI18n();
 initTabs();
 initLocaleToggle();
+initLogout();
 initTips();
 renderAll();
 initCharts();

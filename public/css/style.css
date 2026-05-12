@@ -137,6 +137,8 @@ h2 { margin-bottom: 0; font-size: 15px; font-weight: 600; }
 }
 .lang-btn:hover { background: var(--bg-elevated); border-color: var(--border-focus); }
 .lang-btn:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 2px; }
+.logout-btn { opacity: 0.6; }
+.logout-btn:hover { opacity: 1; }
 
 /* ─── Tab Bar ─── */
 .tab-bar {

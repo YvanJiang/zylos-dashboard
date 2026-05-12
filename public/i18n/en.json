@@ -85,5 +85,6 @@
   "source.active": "active",
   "source.stale": "stale",
   "source.unavailable": "unavailable",
-  "tip.confidence": "How certain is this state? High = multiple data sources agree; Medium = derived from partial signals; Low = inferred from stale or indirect data."
+  "tip.confidence": "How certain is this state? High = multiple data sources agree; Medium = derived from partial signals; Low = inferred from stale or indirect data.",
+  "action.logout": "Logout"
 }

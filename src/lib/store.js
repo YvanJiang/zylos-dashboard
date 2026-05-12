@@ -116,6 +116,13 @@ export class Store {
       this.db.exec(SCHEMA_V2_SESSIONS);
       this.db.prepare('INSERT OR IGNORE INTO schema_migrations (version) VALUES (?)').run(2);
     }
+    if (currentVersion < 3) {
+      const cols = this.db.pragma('table_info(state_snapshots)').map(c => c.name);
+      if (!cols.includes('last_message')) {
+        this.db.exec('ALTER TABLE state_snapshots ADD COLUMN last_message TEXT');
+      }
+      this.db.prepare('INSERT OR IGNORE INTO schema_migrations (version) VALUES (?)').run(3);
+    }
   }
 
   _prepareStatements() {
