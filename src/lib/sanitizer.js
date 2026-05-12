@@ -136,9 +136,6 @@ export class Sanitizer {
   _summarizeBashCommand(cmd) {
     if (!cmd || typeof cmd !== 'string') return null;
 
-    const friendly = this._friendlyC4Label(cmd);
-    if (friendly) return friendly;
-
     let line = cmd.split('\n')[0].trim();
 
     // Strip leading comment-only lines
@@ -156,6 +153,9 @@ export class Sanitizer {
     // Strip leading env exports: export $(grep...) && cmd → cmd
     line = line.replace(/^export\s+\$\([^)]*\)\s*&&\s*/i, '');
 
+    const friendly = this._friendlyC4Label(line);
+    if (friendly) return friendly;
+
     // Take first command in a pipe chain (quote-aware)
     const pipeIdx = this._findUnquotedPipe(line);
     const pipeCmd = pipeIdx > 0 ? line.slice(0, pipeIdx).trimEnd() : line;
@@ -171,22 +171,19 @@ export class Sanitizer {
     return clean.length > 80 ? clean.slice(0, 77) + '...' : clean;
   }
 
-  _friendlyC4Label(cmd) {
-    const line = cmd.split('\n')[0].trim();
-
-    // c4-send.js "<channel>" "<target>" (message via stdin or 3rd arg)
-    const sendMatch = line.match(/c4-send\.js\s+"([^"]+)"(?:\s+"([^"]*)")?/);
+  _friendlyC4Label(line) {
+    // Require `node` prefix + exact script filename (not a suffix like not-c4-send.js)
+    const sendMatch = line.match(/^node\s+(?:\S*\/)?c4-send\.js\s+"([^"]+)"(?:\s+"([^"]*)")?/);
     if (sendMatch) {
       const channel = sendMatch[1];
       const target = sendMatch[2] ? this._extractC4Target(sendMatch[2]) : null;
       return target ? `Send to ${channel} (${target})` : `Send to ${channel}`;
     }
 
-    // c4-control.js <subcommand> [--id <n>]
-    const ctrlMatch = line.match(/c4-control\.js\s+(\w+)/);
+    const ctrlMatch = line.match(/^node\s+(?:\S*\/)?c4-control\.js\s+(\w+)/);
     if (ctrlMatch) {
       const sub = ctrlMatch[1];
-      const idMatch = line.match(/--id\s+(\d+)/);
+      const idMatch = line.match(/--id\s+"?(\d+)"?/);
       if (idMatch) return `Control: ${sub} #${idMatch[1]}`;
       return `Control: ${sub}`;
     }

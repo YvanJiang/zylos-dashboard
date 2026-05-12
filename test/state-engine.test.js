@@ -706,6 +706,10 @@ test('c4-control.js produces friendly labels', () => {
       'node c4-control.js get --id 99',
       'Control: get #99'
     ],
+    [
+      'node c4-control.js ack --id "3100"',
+      'Control: ack #3100'
+    ],
   ];
 
   for (const [input, expected] of cases) {
@@ -715,5 +719,27 @@ test('c4-control.js produces friendly labels', () => {
     });
     assert.strictEqual(result.metadata.tool_detail, expected,
       `"${input.slice(0, 60)}..." → "${result.metadata.tool_detail}"`);
+  }
+});
+
+test('c4 friendly labels reject false positives', () => {
+  const sanitizer = new Sanitizer('/home/howard/zylos');
+
+  const cases = [
+    'echo c4-send.js "telegram" "123"',
+    'node /path/to/not-c4-send.js "telegram" "123"',
+    'grep c4-send.js README.md',
+    'cat c4-control.js',
+    'echo c4-control.js ack --id 5',
+  ];
+
+  for (const input of cases) {
+    const result = sanitizer.sanitizeHookPayload('PreToolUse', {
+      session_id: 's', tool_name: 'Bash', tool_use_id: 't',
+      tool_input: { command: input }
+    });
+    const detail = result.metadata.tool_detail;
+    assert.ok(!detail.startsWith('Send to') && !detail.startsWith('Control:'),
+      `"${input}" should NOT produce friendly label, got: "${detail}"`);
   }
 });
