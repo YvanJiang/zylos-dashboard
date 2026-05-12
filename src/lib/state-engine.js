@@ -277,8 +277,18 @@ export class StateEngine {
       case 'subagent_start':
         if (event.session_id) this._state.mainSessionId = event.session_id;
         if (event.metadata?.agent_id) {
+          let description = null;
+          for (const [, tool] of this._state.runningTools) {
+            if ((tool.tool_name === 'Agent' || tool.tool_name === 'Task')
+                && !tool.agent_id && tool.tool_detail && !tool._descriptionConsumed) {
+              description = tool.tool_detail;
+              tool._descriptionConsumed = true;
+              break;
+            }
+          }
           this._state.activeSubagents.set(event.metadata.agent_id, {
             agent_type: event.metadata.agent_type || 'general-purpose',
+            description,
             started_at: event.timestamp,
             session_id: event.session_id
           });
@@ -341,6 +351,7 @@ export class StateEngine {
       activeSubagents.push({
         agent_id: id,
         agent_type: agent.agent_type,
+        description: agent.description || null,
         started_at: agent.started_at,
         duration_s: Math.floor((this._now() - new Date(agent.started_at).getTime()) / 1000),
         running_tools: subagentToolsMap.get(id) || []

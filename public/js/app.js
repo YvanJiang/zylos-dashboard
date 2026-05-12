@@ -335,16 +335,18 @@ function renderSubagents(p) {
 
   for (const agent of agents) {
     let grp = list.querySelector(`[data-agent-id="${agent.agent_id}"]`);
-    const label = agent.agent_type || 'subagent';
+    const label = agent.description || agent.agent_type || 'subagent';
     const shortId = agent.agent_id.slice(0, 7);
+    const subtitle = agent.description ? agent.agent_type : null;
 
     if (!grp) {
       grp = document.createElement('div');
       grp.className = 'subagent-group';
       grp.dataset.agentId = agent.agent_id;
+      const subtitleHtml = subtitle ? ` <span style="opacity:0.5">${esc(subtitle)}</span>` : ` <span style="opacity:0.5">${esc(shortId)}</span>`;
       grp.innerHTML =
         `<div class="subagent-group-head">` +
-          `<span class="subagent-group-label">${esc(label)} <span style="opacity:0.5">${esc(shortId)}</span></span>` +
+          `<span class="subagent-group-label">${esc(label)}${subtitleHtml}</span>` +
           `<span class="subagent-group-time">${dur(agent.duration_s || 0)}</span>` +
         `</div>` +
         `<div class="tool-feed"></div>`;
