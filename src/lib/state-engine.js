@@ -212,6 +212,10 @@ export class StateEngine {
             agent_id: event.metadata.agent_id || null
           });
         }
+        if ((event.metadata?.tool_name === 'Agent' || event.metadata?.tool_name === 'Task')
+            && event.metadata?.tool_detail && !event.metadata?.agent_id) {
+          this._state._pendingAgentDescription = event.metadata.tool_detail;
+        }
         this._state.lastProgressAt = now;
         this._clearPossiblyStuck();
         break;
@@ -277,8 +281,11 @@ export class StateEngine {
       case 'subagent_start':
         if (event.session_id) this._state.mainSessionId = event.session_id;
         if (event.metadata?.agent_id) {
+          const description = this._state._pendingAgentDescription || null;
+          this._state._pendingAgentDescription = null;
           this._state.activeSubagents.set(event.metadata.agent_id, {
             agent_type: event.metadata.agent_type || 'general-purpose',
+            description,
             started_at: event.timestamp,
             session_id: event.session_id
           });
@@ -341,6 +348,7 @@ export class StateEngine {
       activeSubagents.push({
         agent_id: id,
         agent_type: agent.agent_type,
+        description: agent.description || null,
         started_at: agent.started_at,
         duration_s: Math.floor((this._now() - new Date(agent.started_at).getTime()) / 1000),
         running_tools: subagentToolsMap.get(id) || []

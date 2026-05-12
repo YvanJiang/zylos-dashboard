@@ -258,6 +258,43 @@ test('subagent lifecycle tracked via SubagentStart/Stop', () => {
   assert.equal(state.active_subagents[0].agent_id, 'agent-2');
 });
 
+test('subagent gets description from preceding Agent PreToolUse', () => {
+  const { engine } = makeEngine();
+
+  engine.onEvent({
+    event_type: 'pre_tool_use',
+    timestamp: new Date(1000000).toISOString(),
+    session_id: 'main-sess',
+    metadata: { tool_use_id: 'tool-agent', tool_name: 'Agent', tool_detail: 'Lark evening group digest' }
+  });
+
+  engine.onEvent({
+    event_type: 'subagent_start',
+    timestamp: new Date(1000010).toISOString(),
+    session_id: 'main-sess',
+    metadata: { agent_id: 'agent-1', agent_type: 'general-purpose' }
+  });
+
+  const state = engine.getState();
+  assert.equal(state.active_subagents[0].description, 'Lark evening group digest');
+  assert.equal(state.active_subagents[0].agent_type, 'general-purpose');
+});
+
+test('subagent description fallback when no preceding Agent tool', () => {
+  const { engine } = makeEngine();
+
+  engine.onEvent({
+    event_type: 'subagent_start',
+    timestamp: new Date(1000000).toISOString(),
+    session_id: 'main-sess',
+    metadata: { agent_id: 'agent-1', agent_type: 'claude-code-guide' }
+  });
+
+  const state = engine.getState();
+  assert.equal(state.active_subagents[0].description, null);
+  assert.equal(state.active_subagents[0].agent_type, 'claude-code-guide');
+});
+
 test('subagent tools do not appear in main running_tools after stop', () => {
   const { engine } = makeEngine();
 
@@ -580,8 +617,8 @@ test('snapshot restore preserves last_prompt', () => {
     event_type: 'user_prompt_submit',
     timestamp: new Date(1000000).toISOString(),
     session_id: 'main-sess',
-    summary: 'Prompt from telegram',
-    metadata: { prompt_source: 'telegram' }
+    summary: 'Prompt from telegram (8101553026)',
+    metadata: { prompt_source: 'telegram (8101553026)' }
   });
 
   assert.ok(engine1.getState().last_prompt, 'last_prompt set after user_prompt_submit');
@@ -594,8 +631,8 @@ test('snapshot restore preserves last_prompt', () => {
 
   const state = engine2.getState();
   assert.ok(state.last_prompt, 'last_prompt restored from snapshot');
-  assert.equal(state.last_prompt.source, 'telegram');
-  assert.equal(state.last_prompt.summary, 'Prompt from telegram');
+  assert.equal(state.last_prompt.source, 'telegram (8101553026)');
+  assert.equal(state.last_prompt.summary, 'Prompt from telegram (8101553026)');
 });
 
 test('Stop assistant_summary is redacted and truncated', () => {
@@ -817,13 +854,13 @@ test('UserPromptSubmit shows prompt source from reply via', () => {
   const cases = [
     [
       '[TG DM] howardzhou said: hello ---- reply via: node /home/howard/zylos/.claude/skills/comm-bridge/scripts/c4-send.js "telegram" "8101553026|msg:123"',
-      'Prompt from telegram',
-      'telegram'
+      'Prompt from telegram (8101553026)',
+      'telegram (8101553026)'
     ],
     [
       '[HXA:default DM] Jinglever said: review done ---- reply via: node c4-send.js "hxa-connect" "org:default|Jinglever"',
-      'Prompt from hxa-connect',
-      'hxa-connect'
+      'Prompt from hxa-connect (Jinglever)',
+      'hxa-connect (Jinglever)'
     ],
     [
       'Heartbeat check ---- ack via: node c4-control.js ack --id 42',

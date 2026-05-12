@@ -204,8 +204,12 @@ export class Sanitizer {
 
   _extractPromptSource(prompt) {
     // "reply via: node .../c4-send.js "channel" "endpoint""
-    const replyVia = prompt.match(/reply via:\s*node\s+\S*c4-send\.js\s+"([^"]+)"/);
-    if (replyVia) return replyVia[1];
+    const replyVia = prompt.match(/reply via:\s*node\s+\S*c4-send\.js\s+"([^"]+)"(?:\s+"([^"]*)")?/);
+    if (replyVia) {
+      const channel = replyVia[1];
+      const target = replyVia[2] ? this._extractC4Target(replyVia[2]) : null;
+      return target ? `${channel} (${target})` : channel;
+    }
 
     // "ack via: node .../c4-control.js ack --id ..."
     if (/ack via:/.test(prompt)) return 'control';
