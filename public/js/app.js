@@ -225,7 +225,6 @@ function renderToolFeed(tools, p) {
 
   const fallback = $('#activity-fallback');
   const hasItems = feed.querySelector('.tool-feed-item') !== null;
-  const s = normState(p?.state);
   if (hasItems || s === 'IDLE') {
     fallback.hidden = true;
   } else {
