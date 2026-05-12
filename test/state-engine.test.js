@@ -315,6 +315,114 @@ test('subagent tools do not appear in main running_tools after stop', () => {
   assert.equal(state.active_subagents.length, 0, 'no active subagents after stop');
 });
 
+test('parent Stop preserves background subagent running tools', () => {
+  const { engine } = makeEngine();
+
+  engine.onEvent({
+    event_type: 'user_prompt_submit',
+    timestamp: new Date(1000000).toISOString(),
+    session_id: 'main-sess'
+  });
+
+  engine.onEvent({
+    event_type: 'subagent_start',
+    timestamp: new Date(1000100).toISOString(),
+    session_id: 'main-sess',
+    metadata: { agent_id: 'agent-bg', agent_type: 'general-purpose' }
+  });
+
+  engine.onEvent({
+    event_type: 'pre_tool_use',
+    timestamp: new Date(1000200).toISOString(),
+    session_id: 'main-sess',
+    metadata: { tool_use_id: 'tool-main', tool_name: 'Bash' }
+  });
+
+  engine.onEvent({
+    event_type: 'pre_tool_use',
+    timestamp: new Date(1000250).toISOString(),
+    session_id: 'main-sess',
+    metadata: { tool_use_id: 'tool-bg', tool_name: 'Read', agent_id: 'agent-bg' }
+  });
+
+  engine.onEvent({
+    event_type: 'stop',
+    timestamp: new Date(1000500).toISOString(),
+    session_id: 'main-sess'
+  });
+
+  const state = engine.getState();
+  assert.equal(state.running_tools.length, 0, 'main tool cleared by Stop');
+  assert.equal(state.subagent_tools.length, 1, 'subagent tool survives parent Stop');
+  assert.equal(state.subagent_tools[0].tool_name, 'Read');
+  assert.equal(state.active_subagents.length, 1, 'subagent still active');
+});
+
+test('SubagentStop cleans up orphan running tools for that agent_id', () => {
+  const { engine } = makeEngine();
+
+  engine.onEvent({
+    event_type: 'subagent_start',
+    timestamp: new Date(1000000).toISOString(),
+    session_id: 'main-sess',
+    metadata: { agent_id: 'agent-1', agent_type: 'general-purpose' }
+  });
+
+  engine.onEvent({
+    event_type: 'pre_tool_use',
+    timestamp: new Date(1000100).toISOString(),
+    session_id: 'main-sess',
+    metadata: { tool_use_id: 'tool-orphan', tool_name: 'Bash', agent_id: 'agent-1' }
+  });
+
+  engine.onEvent({
+    event_type: 'subagent_stop',
+    timestamp: new Date(1000200).toISOString(),
+    session_id: 'main-sess',
+    metadata: { agent_id: 'agent-1' }
+  });
+
+  const state = engine.getState();
+  assert.equal(state.active_subagents.length, 0, 'subagent removed');
+  assert.equal(state.subagent_tools.length, 0, 'orphan tool cleaned up by SubagentStop');
+  assert.equal(state.running_tools.length, 0, 'no main tools either');
+});
+
+test('Stop without session_id preserves subagent tools', () => {
+  const { engine } = makeEngine();
+
+  engine.onEvent({
+    event_type: 'subagent_start',
+    timestamp: new Date(1000000).toISOString(),
+    session_id: 'main-sess',
+    metadata: { agent_id: 'agent-1', agent_type: 'general-purpose' }
+  });
+
+  engine.onEvent({
+    event_type: 'pre_tool_use',
+    timestamp: new Date(1000100).toISOString(),
+    session_id: 'main-sess',
+    metadata: { tool_use_id: 'tool-main', tool_name: 'Bash' }
+  });
+
+  engine.onEvent({
+    event_type: 'pre_tool_use',
+    timestamp: new Date(1000150).toISOString(),
+    session_id: 'main-sess',
+    metadata: { tool_use_id: 'tool-sub', tool_name: 'Read', agent_id: 'agent-1' }
+  });
+
+  engine.onEvent({
+    event_type: 'stop',
+    timestamp: new Date(1000200).toISOString(),
+    session_id: null
+  });
+
+  const state = engine.getState();
+  assert.equal(state.running_tools.length, 0, 'main tool cleared');
+  assert.equal(state.subagent_tools.length, 1, 'subagent tool survives null-session Stop');
+});
+
 test('snapshot restore preserves mainSessionId and activeSubagents', () => {
   let snapshotData = null;
   const store = {

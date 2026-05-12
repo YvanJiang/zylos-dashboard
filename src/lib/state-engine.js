@@ -237,12 +237,14 @@ export class StateEngine {
       case 'stop':
         if (event.session_id) {
           for (const [id, tool] of this._state.runningTools) {
-            if (tool.session_id === event.session_id) {
+            if (tool.session_id === event.session_id && !tool.agent_id) {
               this._state.runningTools.delete(id);
             }
           }
         } else {
-          this._state.runningTools.clear();
+          for (const [id, tool] of this._state.runningTools) {
+            if (!tool.agent_id) this._state.runningTools.delete(id);
+          }
         }
         this._state.openTurn = null;
         this._state.lastProgressAt = now;
@@ -274,6 +276,11 @@ export class StateEngine {
       case 'subagent_stop':
         if (event.metadata?.agent_id) {
           this._state.activeSubagents.delete(event.metadata.agent_id);
+          for (const [id, tool] of this._state.runningTools) {
+            if (tool.agent_id === event.metadata.agent_id) {
+              this._state.runningTools.delete(id);
+            }
+          }
         }
         this._state.lastProgressAt = now;
         break;
