@@ -280,8 +280,9 @@ export class StateEngine {
           let description = null;
           for (const [, tool] of this._state.runningTools) {
             if ((tool.tool_name === 'Agent' || tool.tool_name === 'Task')
-                && !tool.agent_id && tool.tool_detail) {
+                && !tool.agent_id && tool.tool_detail && !tool._descriptionConsumed) {
               description = tool.tool_detail;
+              tool._descriptionConsumed = true;
               break;
             }
           }

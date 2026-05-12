@@ -322,6 +322,41 @@ test('completed Agent tool does not leak description to next subagent', () => {
     'should not inherit description from completed Agent tool');
 });
 
+test('concurrent subagents each get their own Agent description', () => {
+  const { engine } = makeEngine();
+
+  engine.onEvent({
+    event_type: 'pre_tool_use',
+    timestamp: new Date(1000000).toISOString(),
+    session_id: 'main-sess',
+    metadata: { tool_use_id: 'tool-a1', tool_name: 'Agent', tool_detail: 'First subagent task' }
+  });
+  engine.onEvent({
+    event_type: 'subagent_start',
+    timestamp: new Date(1000010).toISOString(),
+    session_id: 'main-sess',
+    metadata: { agent_id: 'agent-1', agent_type: 'general-purpose' }
+  });
+  engine.onEvent({
+    event_type: 'pre_tool_use',
+    timestamp: new Date(1000020).toISOString(),
+    session_id: 'main-sess',
+    metadata: { tool_use_id: 'tool-a2', tool_name: 'Agent', tool_detail: 'Second subagent task' }
+  });
+  engine.onEvent({
+    event_type: 'subagent_start',
+    timestamp: new Date(1000030).toISOString(),
+    session_id: 'main-sess',
+    metadata: { agent_id: 'agent-2', agent_type: 'general-purpose' }
+  });
+
+  const state = engine.getState();
+  const a1 = state.active_subagents.find(a => a.agent_id === 'agent-1');
+  const a2 = state.active_subagents.find(a => a.agent_id === 'agent-2');
+  assert.equal(a1.description, 'First subagent task');
+  assert.equal(a2.description, 'Second subagent task');
+});
+
 test('subagent tools do not appear in main running_tools after stop', () => {
   const { engine } = makeEngine();
 
