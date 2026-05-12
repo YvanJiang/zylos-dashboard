@@ -630,6 +630,10 @@ test('Bash tool_detail shortens paths and strips noise', () => {
       'curl https://example.com/home/a/b/c/d',
       /^curl https:\/\/example\.com\/home\/a\/b\/c\/d$/
     ],
+    [
+      'printf foo|tail -1',
+      /^printf foo \| \.\.\.$/
+    ],
   ];
 
   for (const [input, expected] of cases) {

@@ -153,9 +153,10 @@ export class Sanitizer {
     // Strip leading env exports: export $(grep...) && cmd → cmd
     line = line.replace(/^export\s+\$\([^)]*\)\s*&&\s*/i, '');
 
-    // Take first command in a pipe chain
-    const pipeIdx = line.indexOf(' | ');
-    const pipeCmd = pipeIdx > 0 ? line.slice(0, pipeIdx) : line;
+    // Take first command in a pipe chain (handles optional whitespace around |)
+    const pipeMatch = line.match(/(?<![|\\])\|(?!\|)/);
+    const pipeIdx = pipeMatch ? pipeMatch.index : -1;
+    const pipeCmd = pipeIdx > 0 ? line.slice(0, pipeIdx).trimEnd() : line;
 
     // Strip redirections at the end
     let clean = pipeCmd.replace(/\s+\d*>[>&]?\s*\S+\s*$/g, '').trim();
