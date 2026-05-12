@@ -90,16 +90,19 @@ async function startupSequence() {
   await stateEngine.initialize();
 }
 
+function extractFilePath(summary) {
+  if (!summary) return null;
+  const m = summary.match(/^(?:Read|Edit|Write):\s+(\S+)/);
+  return m ? m[1] : null;
+}
+
 function extractProject(filePath) {
   if (!filePath) return null;
   const parts = filePath.replace(/^\/+/, '').split('/');
   const wsIdx = parts.indexOf('workspace');
   if (wsIdx >= 0 && parts[wsIdx + 1]) return parts[wsIdx + 1];
-  const srcIdx = parts.indexOf('src');
-  if (srcIdx >= 2) return parts[srcIdx - 1];
   const skillsIdx = parts.indexOf('skills');
   if (skillsIdx >= 0 && parts[skillsIdx + 1]) return parts[skillsIdx + 1];
-  if (parts.length >= 2) return parts[parts.length - 2];
   return null;
 }
 
@@ -296,7 +299,7 @@ function handleApi(req, res, pathname, url) {
 
     const projectBreakdown = {};
     for (const e of events) {
-      const fp = e.metadata?.file_path || '';
+      const fp = extractFilePath(e.summary);
       const project = extractProject(fp);
       if (project) projectBreakdown[project] = (projectBreakdown[project] || 0) + 1;
     }
