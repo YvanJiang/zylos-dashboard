@@ -634,6 +634,14 @@ test('Bash tool_detail shortens paths and strips noise', () => {
       'printf foo|tail -1',
       /^printf foo \| \.\.\.$/
     ],
+    [
+      'grep -E "foo|bar" file.txt | head',
+      /^grep -E "foo\|bar" file\.txt \| \.\.\.$/
+    ],
+    [
+      'curl "https://example.com/a|b"',
+      /^curl "https:\/\/example\.com\/a\|b"$/
+    ],
   ];
 
   for (const [input, expected] of cases) {

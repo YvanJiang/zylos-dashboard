@@ -153,9 +153,8 @@ export class Sanitizer {
     // Strip leading env exports: export $(grep...) && cmd → cmd
     line = line.replace(/^export\s+\$\([^)]*\)\s*&&\s*/i, '');
 
-    // Take first command in a pipe chain (handles optional whitespace around |)
-    const pipeMatch = line.match(/(?<![|\\])\|(?!\|)/);
-    const pipeIdx = pipeMatch ? pipeMatch.index : -1;
+    // Take first command in a pipe chain (quote-aware)
+    const pipeIdx = this._findUnquotedPipe(line);
     const pipeCmd = pipeIdx > 0 ? line.slice(0, pipeIdx).trimEnd() : line;
 
     // Strip redirections at the end
@@ -167,6 +166,22 @@ export class Sanitizer {
     // Truncate
     if (pipeIdx > 0 && clean.length < 70) clean += ' | ...';
     return clean.length > 80 ? clean.slice(0, 77) + '...' : clean;
+  }
+
+  _findUnquotedPipe(str) {
+    let inSingle = false;
+    let inDouble = false;
+    for (let i = 0; i < str.length; i++) {
+      const ch = str[i];
+      if (ch === '\\' && !inSingle) { i++; continue; }
+      if (ch === "'" && !inDouble) { inSingle = !inSingle; continue; }
+      if (ch === '"' && !inSingle) { inDouble = !inDouble; continue; }
+      if (ch === '|' && !inSingle && !inDouble) {
+        if (str[i + 1] === '|') { i++; continue; }
+        return i;
+      }
+    }
+    return -1;
   }
 
   _shortenPath(fullPath) {
