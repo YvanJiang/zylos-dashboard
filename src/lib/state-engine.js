@@ -207,7 +207,8 @@ export class StateEngine {
             tool_name: event.metadata.tool_name,
             tool_detail: event.metadata.tool_detail || null,
             started_at: event.timestamp,
-            session_id: event.session_id
+            session_id: event.session_id,
+            agent_id: event.metadata.agent_id || null
           });
         }
         this._state.lastProgressAt = now;
@@ -294,9 +295,8 @@ export class StateEngine {
     const derived = this._deriveState();
     const now = new Date(this._now()).toISOString();
 
-    const mainSid = this._state.mainSessionId;
     const runningTools = [];
-    const subagentTools = [];
+    const subagentToolsMap = new Map();
     for (const [id, tool] of this._state.runningTools) {
       const durationS = Math.floor((this._now() - new Date(tool.started_at).getTime()) / 1000);
       const entry = {
@@ -306,10 +306,13 @@ export class StateEngine {
         started_at: tool.started_at,
         duration_s: durationS
       };
-      if (!mainSid || tool.session_id === mainSid) {
-        runningTools.push(entry);
+      if (tool.agent_id) {
+        if (!subagentToolsMap.has(tool.agent_id)) {
+          subagentToolsMap.set(tool.agent_id, []);
+        }
+        subagentToolsMap.get(tool.agent_id).push(entry);
       } else {
-        subagentTools.push(entry);
+        runningTools.push(entry);
       }
     }
 
@@ -319,8 +322,14 @@ export class StateEngine {
         agent_id: id,
         agent_type: agent.agent_type,
         started_at: agent.started_at,
-        duration_s: Math.floor((this._now() - new Date(agent.started_at).getTime()) / 1000)
+        duration_s: Math.floor((this._now() - new Date(agent.started_at).getTime()) / 1000),
+        running_tools: subagentToolsMap.get(id) || []
       });
+    }
+
+    const subagentTools = [];
+    for (const [, tools] of subagentToolsMap) {
+      subagentTools.push(...tools);
     }
 
     return {
@@ -478,9 +487,8 @@ export class StateEngine {
 
   _oldestRunningTool() {
     let oldest = null;
-    const mainSid = this._state.mainSessionId;
     for (const [, tool] of this._state.runningTools) {
-      if (mainSid && tool.session_id !== mainSid) continue;
+      if (tool.agent_id) continue;
       if (!oldest || new Date(tool.started_at) < new Date(oldest.started_at)) {
         oldest = tool;
       }

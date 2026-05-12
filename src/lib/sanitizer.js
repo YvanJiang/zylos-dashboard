@@ -43,17 +43,16 @@ export class Sanitizer {
         delete metadata[key];
       }
 
-      if (hookEventName === 'SubagentStart' || hookEventName === 'SubagentStop') {
-        const agentId = rawPayload.agent_id || null;
-        const agentType = rawPayload.agent_type || null;
-        if (agentId) metadata.agent_id = agentId;
-        if (agentType) metadata.agent_type = agentType;
-        if (hookEventName === 'SubagentStop') {
-          const msg = rawPayload.last_assistant_message;
-          if (typeof msg === 'string' && msg.length > 0) {
-            const redacted = this.redactCredentials(msg);
-            metadata.assistant_summary = redacted.length > 120 ? redacted.slice(0, 117) + '...' : redacted;
-          }
+      const agentId = rawPayload.agent_id || null;
+      const agentType = rawPayload.agent_type || null;
+      if (agentId) metadata.agent_id = agentId;
+      if (agentType) metadata.agent_type = agentType;
+
+      if (hookEventName === 'SubagentStop') {
+        const msg = rawPayload.last_assistant_message;
+        if (typeof msg === 'string' && msg.length > 0) {
+          const redacted = this.redactCredentials(msg);
+          metadata.assistant_summary = redacted.length > 120 ? redacted.slice(0, 117) + '...' : redacted;
         }
       }
 
