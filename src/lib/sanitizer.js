@@ -73,7 +73,9 @@ export class Sanitizer {
     if (!fullPath || typeof fullPath !== 'string') return '';
     const rel = path.relative(this.zylosDir, fullPath);
     if (rel.startsWith('..')) return path.basename(fullPath);
-    return rel;
+    const parts = rel.split('/');
+    if (parts.length <= 3) return rel;
+    return parts.slice(-3).join('/');
   }
 
   redactCredentials(text) {
@@ -153,6 +155,9 @@ export class Sanitizer {
     // Strip leading env exports: export $(grep...) && cmd → cmd
     line = line.replace(/^export\s+\$\([^)]*\)\s*&&\s*/i, '');
 
+    const friendly = this._friendlyC4Label(line);
+    if (friendly) return friendly;
+
     // Take first command in a pipe chain (quote-aware)
     const pipeIdx = this._findUnquotedPipe(line);
     const pipeCmd = pipeIdx > 0 ? line.slice(0, pipeIdx).trimEnd() : line;
@@ -166,6 +171,45 @@ export class Sanitizer {
     // Truncate
     if (pipeIdx > 0 && clean.length < 70) clean += ' | ...';
     return clean.length > 80 ? clean.slice(0, 77) + '...' : clean;
+  }
+
+  _friendlyC4Label(line) {
+    // Try line start first, then after an unquoted pipe (heredoc stdin form)
+    const cmd = this._c4CommandSegment(line);
+    if (!cmd) return null;
+
+    const sendMatch = cmd.match(/^node\s+(?:\S*\/)?c4-send\.js\s+"([^"]+)"(?:\s+"([^"]*)")?/);
+    if (sendMatch) {
+      const channel = sendMatch[1];
+      const target = sendMatch[2] ? this._extractC4Target(sendMatch[2]) : null;
+      return target ? `Send to ${channel} (${target})` : `Send to ${channel}`;
+    }
+
+    const ctrlMatch = cmd.match(/^node\s+(?:\S*\/)?c4-control\.js\s+(\w+)/);
+    if (ctrlMatch) {
+      const sub = ctrlMatch[1];
+      const idMatch = cmd.match(/--id\s+"?(\d+)"?/);
+      if (idMatch) return `Control: ${sub} #${idMatch[1]}`;
+      return `Control: ${sub}`;
+    }
+
+    return null;
+  }
+
+  _c4CommandSegment(line) {
+    if (/^node\s+/.test(line)) return line;
+    const pipeIdx = this._findUnquotedPipe(line);
+    if (pipeIdx < 0) return null;
+    return line.slice(pipeIdx + 1).trimStart();
+  }
+
+  _extractC4Target(endpoint) {
+    const parts = endpoint.split('|');
+    for (const p of parts) {
+      if (/^(msg|req|org):/.test(p)) continue;
+      return p;
+    }
+    return parts[0];
   }
 
   _findUnquotedPipe(str) {
