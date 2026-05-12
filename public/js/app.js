@@ -169,24 +169,29 @@ function renderToolFeed(tools, p) {
   const lp = p?.last_prompt;
   if (lp && lp.timestamp) {
     const promptAge = ageSec(lp.timestamp) ?? 0;
+    const isNewPrompt = existingPrompt && existingPrompt.dataset.promptTs !== lp.timestamp;
+    if (isNewPrompt) {
+      existingPrompt.remove();
+    }
+    const current = isNewPrompt ? null : existingPrompt;
     if (promptAge < 30) {
-      if (!existingPrompt) {
+      if (!current) {
         const el = document.createElement('div');
         el.className = 'tool-feed-item prompt-source';
         el.dataset.toolId = promptId;
+        el.dataset.promptTs = lp.timestamp;
         el.dataset.addedAt = String(Date.now());
         el.innerHTML = `<span class="mono tool-detail">${esc(lp.summary)}</span><span class="tool-status">${dur(promptAge)}</span>`;
         feed.prepend(el);
       } else {
-        existingPrompt.querySelector('.tool-detail').textContent = lp.summary;
-        existingPrompt.querySelector('.tool-status').textContent = dur(promptAge);
+        current.querySelector('.tool-status').textContent = dur(promptAge);
       }
-    } else if (existingPrompt && !existingPrompt.classList.contains('done')) {
-      existingPrompt.classList.add('done');
+    } else if (current && !current.classList.contains('done')) {
+      current.classList.add('done');
       setTimeout(() => {
-        if (existingPrompt.parentNode) {
-          existingPrompt.classList.add('removing');
-          existingPrompt.addEventListener('animationend', () => existingPrompt.remove(), { once: true });
+        if (current.parentNode) {
+          current.classList.add('removing');
+          current.addEventListener('animationend', () => current.remove(), { once: true });
         }
       }, 5000);
     }

@@ -564,6 +564,40 @@ test('snapshot restore preserves mainSessionId and activeSubagents', () => {
   assert.equal(state.active_subagents[0].running_tools.length, 1, 'subagent running_tools preserved after restore');
 });
 
+test('snapshot restore preserves last_prompt', () => {
+  let snapshotData = null;
+  const store = {
+    ...makeMockStore(),
+    saveSnapshot(data) { snapshotData = data; },
+    latestSnapshot() { return snapshotData; }
+  };
+  const config = { zylosDir: '/tmp/zylos-test', runtime: 'claude' };
+  let clock = 1000000;
+  const engine1 = new StateEngine(store, {}, config, { now: () => clock });
+  engine1._state.amHeartbeat = { state: 'idle', health: 'ok', lastCheck: clock / 1000, lastActivity: clock / 1000 };
+
+  engine1.onEvent({
+    event_type: 'user_prompt_submit',
+    timestamp: new Date(1000000).toISOString(),
+    session_id: 'main-sess',
+    summary: 'Prompt from telegram',
+    metadata: { prompt_source: 'telegram' }
+  });
+
+  assert.ok(engine1.getState().last_prompt, 'last_prompt set after user_prompt_submit');
+  engine1._saveSnapshot();
+  assert.ok(snapshotData.last_prompt, 'last_prompt included in snapshot');
+
+  const engine2 = new StateEngine(store, {}, config, { now: () => clock });
+  engine2._state.amHeartbeat = { state: 'idle', health: 'ok', lastCheck: clock / 1000, lastActivity: clock / 1000 };
+  engine2.initialize();
+
+  const state = engine2.getState();
+  assert.ok(state.last_prompt, 'last_prompt restored from snapshot');
+  assert.equal(state.last_prompt.source, 'telegram');
+  assert.equal(state.last_prompt.summary, 'Prompt from telegram');
+});
+
 test('Stop assistant_summary is redacted and truncated', () => {
   const sanitizer = new Sanitizer('/tmp/zylos-test');
   const longMsg = 'Fixed the config. Key was sk-abcdefghijklmnopqrstuvwx. ' + 'x'.repeat(300);

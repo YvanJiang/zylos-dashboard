@@ -421,6 +421,10 @@ export class StateEngine {
           this._state.lastAssistantMessage = typeof snapshot.last_message === 'string'
             ? JSON.parse(snapshot.last_message) : snapshot.last_message;
         }
+        if (snapshot.last_prompt) {
+          this._state.lastPrompt = typeof snapshot.last_prompt === 'string'
+            ? JSON.parse(snapshot.last_prompt) : snapshot.last_prompt;
+        }
       }
     } catch (err) {
       process.stderr.write(`[state-engine] Snapshot restore error: ${err.message}\n`);
@@ -645,7 +649,8 @@ export class StateEngine {
       pending_permission: JSON.stringify(this._state.pendingPermission),
       possibly_stuck_since: this._state.possiblyStuckSince?.toISOString() || null,
       last_progress_cursor: this._getMaxEventSeq(),
-      last_message: JSON.stringify(this._state.lastAssistantMessage)
+      last_message: JSON.stringify(this._state.lastAssistantMessage),
+      last_prompt: JSON.stringify(this._state.lastPrompt || null)
     });
   }
 
