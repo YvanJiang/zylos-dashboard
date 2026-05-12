@@ -137,6 +137,8 @@ h2 { margin-bottom: 0; font-size: 15px; font-weight: 600; }
 }
 .lang-btn:hover { background: var(--bg-elevated); border-color: var(--border-focus); }
 .lang-btn:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 2px; }
+.logout-btn { opacity: 0.6; }
+.logout-btn:hover { opacity: 1; }
 
 /* ─── Tab Bar ─── */
 .tab-bar {
@@ -451,6 +453,25 @@ main { padding: var(--space-md) var(--space-lg) var(--space-xl); }
 @keyframes tool-remove {
   to { opacity: 0; max-height: 0; padding: 0; border-top-width: 0; overflow: hidden; }
 }
+
+/* ─── Assistant Message ─── */
+.assistant-message {
+  margin-top: var(--space-xs);
+  padding: 6px 10px;
+  border-left: 2px solid rgba(100, 116, 139, 0.3);
+  background: rgba(100, 116, 139, 0.04);
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-muted);
+  animation: tool-enter 200ms ease;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+}
+
+.assistant-message[hidden] { display: none; }
 
 /* ─── Subagent Section ─── */
 .subagent-section {

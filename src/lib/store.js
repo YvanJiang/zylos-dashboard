@@ -78,6 +78,7 @@ CREATE TABLE IF NOT EXISTS state_snapshots (
   pending_permission TEXT,
   possibly_stuck_since TEXT,
   last_progress_cursor INTEGER NOT NULL,
+  last_message TEXT,
   snapshot_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_snapshots_latest ON state_snapshots(runtime, session_id, snapshot_at DESC);
@@ -114,6 +115,13 @@ export class Store {
     if (currentVersion < 2) {
       this.db.exec(SCHEMA_V2_SESSIONS);
       this.db.prepare('INSERT OR IGNORE INTO schema_migrations (version) VALUES (?)').run(2);
+    }
+    if (currentVersion < 3) {
+      const cols = this.db.pragma('table_info(state_snapshots)').map(c => c.name);
+      if (!cols.includes('last_message')) {
+        this.db.exec('ALTER TABLE state_snapshots ADD COLUMN last_message TEXT');
+      }
+      this.db.prepare('INSERT OR IGNORE INTO schema_migrations (version) VALUES (?)').run(3);
     }
   }
 
@@ -199,9 +207,9 @@ export class Store {
 
     this._saveSnapshot = this.db.prepare(`
       INSERT INTO state_snapshots
-        (runtime, session_id, running_tool, open_turn, pending_permission, possibly_stuck_since, last_progress_cursor)
+        (runtime, session_id, running_tool, open_turn, pending_permission, possibly_stuck_since, last_progress_cursor, last_message)
       VALUES
-        (@runtime, @session_id, @running_tool, @open_turn, @pending_permission, @possibly_stuck_since, @last_progress_cursor)
+        (@runtime, @session_id, @running_tool, @open_turn, @pending_permission, @possibly_stuck_since, @last_progress_cursor, @last_message)
     `);
 
     this._latestSnapshot = this.db.prepare(`
@@ -369,7 +377,8 @@ export class Store {
       open_turn: snapshot.open_turn ? JSON.stringify(snapshot.open_turn) : null,
       pending_permission: snapshot.pending_permission ? JSON.stringify(snapshot.pending_permission) : null,
       possibly_stuck_since: snapshot.possibly_stuck_since || null,
-      last_progress_cursor: snapshot.last_progress_cursor
+      last_progress_cursor: snapshot.last_progress_cursor,
+      last_message: snapshot.last_message || null
     });
   }
 

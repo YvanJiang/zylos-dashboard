@@ -155,6 +155,7 @@ function renderState() {
 
   renderToolFeed(tools, p);
   renderSubagents(p);
+  renderAssistantMessage(p);
 }
 
 function renderToolFeed(tools, p) {
@@ -224,11 +225,11 @@ function renderToolFeed(tools, p) {
 
   const fallback = $('#activity-fallback');
   const hasItems = feed.querySelector('.tool-feed-item') !== null;
-  fallback.hidden = hasItems;
-  if (!hasItems) {
-    const s = normState(p?.state);
-    if (s === 'IDLE') fallback.textContent = t('activity.idle');
-    else if (s === 'OFFLINE') fallback.textContent = t('activity.offline');
+  if (hasItems || s === 'IDLE') {
+    fallback.hidden = true;
+  } else {
+    fallback.hidden = false;
+    if (s === 'OFFLINE') fallback.textContent = t('activity.offline');
     else if (s === 'WAITING_HUMAN') fallback.textContent = t('activity.waiting');
     else fallback.textContent = p?.reason || t('value.unavailable');
   }
@@ -247,6 +248,18 @@ function trimFeed(feed) {
     el.classList.add('removing');
     el.addEventListener('animationend', () => el.remove(), { once: true });
     excess--;
+  }
+}
+
+// ─── Render: Assistant Message ───
+function renderAssistantMessage(p) {
+  const el = $('#assistant-message');
+  const msg = p?.last_message;
+  if (msg?.text) {
+    el.textContent = msg.text;
+    el.hidden = false;
+  } else {
+    el.hidden = true;
   }
 }
 
@@ -683,6 +696,15 @@ function initLocaleToggle() {
   });
 }
 
+function initLogout() {
+  $('#logout-btn').addEventListener('click', async () => {
+    try {
+      await fetch(api('/logout'), { method: 'POST' });
+    } catch { /* ignore */ }
+    window.location.href = api('/login');
+  });
+}
+
 function initTips() {
   const btn = $('#confidence-tip');
   const srcPop = $('#confidence-popover');
@@ -852,6 +874,7 @@ initTheme();
 await initI18n();
 initTabs();
 initLocaleToggle();
+initLogout();
 initTips();
 renderAll();
 initCharts();
