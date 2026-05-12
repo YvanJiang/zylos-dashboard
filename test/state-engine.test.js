@@ -743,3 +743,25 @@ test('c4 friendly labels reject false positives', () => {
       `"${input}" should NOT produce friendly label, got: "${detail}"`);
   }
 });
+
+test('Read/Edit/Write tool_detail shortens paths to max 3 segments', () => {
+  const sanitizer = new Sanitizer('/home/howard/zylos');
+
+  const cases = [
+    ['/home/howard/zylos/workspace/zylos-dashboard/src/lib/sanitizer.js', 'src/lib/sanitizer.js'],
+    ['/home/howard/zylos/memory/identity.md', 'memory/identity.md'],
+    ['/home/howard/zylos/a/b/c/d/e.js', 'c/d/e.js'],
+    ['/tmp/outside-zylos/file.txt', 'file.txt'],
+  ];
+
+  for (const [input, expected] of cases) {
+    for (const tool of ['Read', 'Edit', 'Write']) {
+      const result = sanitizer.sanitizeHookPayload('PreToolUse', {
+        session_id: 's', tool_name: tool, tool_use_id: 't',
+        tool_input: { file_path: input }
+      });
+      assert.strictEqual(result.metadata.tool_detail, expected,
+        `${tool} "${input}" → "${result.metadata.tool_detail}"`);
+    }
+  }
+});

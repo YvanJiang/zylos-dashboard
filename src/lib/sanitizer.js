@@ -73,7 +73,9 @@ export class Sanitizer {
     if (!fullPath || typeof fullPath !== 'string') return '';
     const rel = path.relative(this.zylosDir, fullPath);
     if (rel.startsWith('..')) return path.basename(fullPath);
-    return rel;
+    const parts = rel.split('/');
+    if (parts.length <= 3) return rel;
+    return parts.slice(-3).join('/');
   }
 
   redactCredentials(text) {
