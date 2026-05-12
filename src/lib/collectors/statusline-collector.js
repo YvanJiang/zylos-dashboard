@@ -5,7 +5,8 @@ export class StatuslineCollector {
   constructor(store, config) {
     this.store = store;
     this.config = config;
-    this._timer = null;
+    this._watcher = null;
+    this._debounceTimer = null;
     this._lastHash = null;
     this._statusFilePath = path.join(config.zylosDir, 'activity-monitor', 'statusline.json');
   }
@@ -96,14 +97,33 @@ export class StatuslineCollector {
     return { written, data };
   }
 
-  start(intervalMs = 5_000) {
+  start() {
     this.stop();
-    this._timer = setInterval(() => this.collect(), intervalMs);
-    this._timer.unref();
+    const dir = path.dirname(this._statusFilePath);
+    const filename = path.basename(this._statusFilePath);
+    try {
+      this._watcher = fs.watch(dir, (eventType, changed) => {
+        if (changed !== filename) return;
+        clearTimeout(this._debounceTimer);
+        this._debounceTimer = setTimeout(() => this.collect(), 50);
+      });
+      this._watcher.on('error', () => {});
+    } catch {
+      // directory doesn't exist yet — fall back to a slow poll until it appears
+      this._watcher = setInterval(() => {
+        if (fs.existsSync(dir)) { this.stop(); this.start(); }
+      }, 30_000);
+      this._watcher.unref?.();
+    }
   }
 
   stop() {
-    if (this._timer) { clearInterval(this._timer); this._timer = null; }
+    clearTimeout(this._debounceTimer);
+    if (this._watcher) {
+      if (typeof this._watcher.close === 'function') this._watcher.close();
+      else clearInterval(this._watcher);
+      this._watcher = null;
+    }
   }
 }
 

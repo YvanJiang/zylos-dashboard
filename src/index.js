@@ -434,8 +434,7 @@ if (isMain && process.argv.includes('--smoke')) {
   pm2Collector.start(15_000);
   systemCollector.start(30_000);
   otelCollector.start(10_000);
-  // statuslineCollector polling removed — data now arrives event-driven
-  // via am's context-monitor.js → POST /api/ingest/statusline (issue #48)
+  statuslineCollector.start();
 
   // Start snapshot timer
   stateEngine.startSnapshotTimer();
@@ -464,6 +463,7 @@ if (isMain && process.argv.includes('--smoke')) {
       pm2Collector.stop();
       systemCollector.stop();
       otelCollector.stop();
+      statuslineCollector.stop();
       stateEngine.stopSnapshotTimer();
       spoolDrainer.stopPeriodicDrain();
       sse.closeAll();
