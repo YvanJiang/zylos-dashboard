@@ -295,6 +295,33 @@ test('subagent description fallback when no preceding Agent tool', () => {
   assert.equal(state.active_subagents[0].agent_type, 'claude-code-guide');
 });
 
+test('completed Agent tool does not leak description to next subagent', () => {
+  const { engine } = makeEngine();
+
+  engine.onEvent({
+    event_type: 'pre_tool_use',
+    timestamp: new Date(1000000).toISOString(),
+    session_id: 'main-sess',
+    metadata: { tool_use_id: 'tool-agent-1', tool_name: 'Agent', tool_detail: 'First task' }
+  });
+  engine.onEvent({
+    event_type: 'post_tool_use',
+    timestamp: new Date(1000100).toISOString(),
+    session_id: 'main-sess',
+    metadata: { tool_use_id: 'tool-agent-1', tool_name: 'Agent' }
+  });
+  engine.onEvent({
+    event_type: 'subagent_start',
+    timestamp: new Date(1000200).toISOString(),
+    session_id: 'main-sess',
+    metadata: { agent_id: 'agent-2', agent_type: 'general-purpose' }
+  });
+
+  const state = engine.getState();
+  assert.equal(state.active_subagents[0].description, null,
+    'should not inherit description from completed Agent tool');
+});
+
 test('subagent tools do not appear in main running_tools after stop', () => {
   const { engine } = makeEngine();
 
