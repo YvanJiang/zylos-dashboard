@@ -652,7 +652,7 @@ function fmtTime(ts) {
 
 function timelineDotType(eventType) {
   if (eventType === 'session_start' || eventType === 'session_end') return 'session';
-  if (eventType === 'stop') return 'assistant';
+  if (eventType === 'stop' || eventType === 'assistant_message') return 'assistant';
   if (eventType === 'permission_request') return 'permission';
   if (eventType === 'post_compact') return 'compact';
   return '';
@@ -808,7 +808,7 @@ async function refreshHealth() {
 async function refreshTimeline() {
   const since = new Date(Date.now() - 30 * 60_000).toISOString();
   const data = await fetchJson(`/api/timeline?since=${since}&limit=200&order=desc`);
-  state.timeline = (data.events || []).filter((e) => e.event_type !== 'pre_tool_use');
+  state.timeline = (data.events || []).filter((e) => e.event_type !== 'pre_tool_use' && e.event_type !== 'stop');
   state.timelineUpdatedAt = new Date().toISOString();
   renderTimeline();
 }
