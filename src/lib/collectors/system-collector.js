@@ -8,6 +8,7 @@ export class SystemCollector {
     this._cache = null;
     this._timer = null;
     this._onUpdate = null;
+    this._prevCpuTimes = null;
   }
 
   async collect() {
@@ -17,18 +18,31 @@ export class SystemCollector {
     const data = {};
 
     try {
-      const cpus = os.cpus().length || 1;
-      const loadAvg1m = os.loadavg()[0];
-      data.cpu_pct = Math.min(100, loadAvg1m / cpus * 100);
+      const cpuInfo = os.cpus();
+      const cpuCount = cpuInfo.length || 1;
+      const curTimes = { idle: 0, total: 0 };
+      for (const core of cpuInfo) {
+        const t = core.times;
+        curTimes.idle += t.idle;
+        curTimes.total += t.user + t.nice + t.sys + t.idle + t.irq;
+      }
 
-      this.store.insertMetric({
-        timestamp: now, runtime,
-        metric_name: 'cpu_pct',
-        metric_value: data.cpu_pct,
-        dimensions: { load_avg_1m: loadAvg1m, cpus },
-        source: 'system',
-        confidence: 'actual'
-      });
+      if (this._prevCpuTimes) {
+        const idleDelta = curTimes.idle - this._prevCpuTimes.idle;
+        const totalDelta = curTimes.total - this._prevCpuTimes.total;
+        data.cpu_pct = totalDelta > 0 ? (1 - idleDelta / totalDelta) * 100 : 0;
+
+        this.store.insertMetric({
+          timestamp: now, runtime,
+          metric_name: 'cpu_pct',
+          metric_value: data.cpu_pct,
+          dimensions: { cpus: cpuCount },
+          source: 'system',
+          confidence: 'actual'
+        });
+      }
+
+      this._prevCpuTimes = curTimes;
     } catch (err) {
       process.stderr.write(`[system-collector] CPU error: ${err.message}\n`);
     }
