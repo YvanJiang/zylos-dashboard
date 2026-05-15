@@ -7,6 +7,7 @@ setAssetRoot(ASSET_ROOT);
 const METRICS = ['context_pct', 'rate_limit', 'rate_limit_7d', 'session_cost'];
 const THEMES = ['light'];
 const THEME_KEY = 'zylos-dashboard-theme';
+const EFFORT_LABELS = { low: 'Low', medium: 'Medium', high: 'High', xhigh: 'XHigh' };
 
 const state = {
   dashboardState: null,
@@ -186,6 +187,35 @@ function metVal(m) {
   return m.value ?? m.current ?? m.percent ?? null;
 }
 
+// ─── Render: Info Bar ───
+function renderInfoBar() {
+  const bar = $('#info-bar');
+  if (!bar) return;
+  const ri = state.dashboardState?.runtime_info;
+  if (!ri) { bar.textContent = ''; return; }
+
+  const parts = [];
+  if (ri.zylos_version) {
+    let zv = `zylos v${ri.zylos_version}`;
+    if (ri.zylos_update) zv += ` <span class="info-bar-update" title="v${esc(ri.zylos_update)} available — click ⚙️ to upgrade">↑${esc(ri.zylos_update)}</span>`;
+    parts.push(zv);
+  }
+  if (ri.runtime) parts.push(esc(ri.runtime.charAt(0).toUpperCase() + ri.runtime.slice(1)));
+  if (ri.model) {
+    const short = ri.model.replace(' context', '');
+    parts.push(esc(short));
+  }
+  if (ri.effort) parts.push(esc(EFFORT_LABELS[ri.effort] || ri.effort.charAt(0).toUpperCase() + ri.effort.slice(1)));
+  if (ri.cc_version) {
+    let cv = `CC v${esc(ri.cc_version)}`;
+    if (ri.cc_restart) cv += ` <span class="info-bar-update" title="v${esc(ri.cc_restart)} installed — restart to apply">↑${esc(ri.cc_restart)}</span>`;
+    else if (ri.cc_update) cv += ` <span class="info-bar-update" title="v${esc(ri.cc_update)} available — click ⚙️ to upgrade">↑${esc(ri.cc_update)}</span>`;
+    parts.push(cv);
+  }
+
+  bar.innerHTML = `<span class="info-bar-text">${parts.join(' · ')}</span><button class="info-bar-gear" id="gear-btn" type="button" aria-label="Actions">⚙️</button>`;
+}
+
 // ─── Render: State ───
 const FEED_MAX = 5;
 const prevToolIds = new Set();
@@ -198,9 +228,6 @@ function renderState() {
   $('#state-updated').textContent = fmtAge(p?.updated_at || state.sourceUpdatedAt);
 
   const tools = p?.running_tools || [];
-  const badge = $('#tool-count');
-  badge.textContent = String(tools.length);
-  badge.hidden = tools.length === 0;
 
   renderToolFeed(tools, p);
   renderSubagents(p);
@@ -747,6 +774,7 @@ function renderConnection(mode) {
 
 function renderAll() {
   renderI18n();
+  renderInfoBar();
   renderState();
   renderMetrics();
   renderHealth();
@@ -768,6 +796,7 @@ async function fetchJson(path) {
 async function refreshState() {
   state.dashboardState = await fetchJson('/api/state');
   state.sourceUpdatedAt = state.dashboardState.updated_at || new Date().toISOString();
+  renderInfoBar();
   renderState();
   renderHealth();
 }
@@ -837,9 +866,11 @@ async function refreshAll() {
 // ─── SSE ───
 function applySse(name, data) {
   if (name === 'state_change') {
+    const prevRi = state.dashboardState?.runtime_info;
     state.dashboardState = data;
+    if (!data.runtime_info && prevRi) state.dashboardState.runtime_info = prevRi;
     state.sourceUpdatedAt = data.updated_at || new Date().toISOString();
-    renderState(); renderHealth();
+    renderInfoBar(); renderState(); renderHealth(); updateRestartDot();
     refreshTimeline();
   } else if (name === 'metric_update') {
     const mn = data.metric_name || data.name;
@@ -1199,6 +1230,291 @@ function initTrendControls() {
   }
 }
 
+// ─── Actions Modal ───
+let actionsModal = null;
+
+function createActionsModal() {
+  if (actionsModal) return actionsModal;
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.id = 'actions-modal';
+  overlay.hidden = true;
+  overlay.innerHTML = `
+<div class="modal">
+  <div class="modal-head">
+    <h2>Actions</h2>
+    <button class="modal-close" type="button" aria-label="Close">&times;</button>
+  </div>
+  <div class="modal-body">
+    <div class="action-group">
+      <span class="action-group-label">Agent Control</span>
+      <div class="action-row">
+        <button class="action-btn" data-action="interrupt" type="button">Interrupt</button>
+        <button class="action-btn action-warn" data-action="restart-session" type="button">Restart Session</button>
+      </div>
+    </div>
+    <div class="action-group">
+      <span class="action-group-label">Configuration</span>
+      <div class="action-field">
+        <label class="action-field-label">Runtime</label>
+        <select id="action-runtime" class="action-select">
+          <option value="claude">Claude</option>
+          <option value="codex">Codex</option>
+        </select>
+      </div>
+      <div class="action-field">
+        <label class="action-field-label">Model</label>
+        <div class="action-model-wrap">
+          <select id="action-model" class="action-select"></select>
+          <input id="action-model-custom" class="action-input" type="text" placeholder="e.g. claude-opus-4-7" hidden />
+        </div>
+      </div>
+      <div class="action-field" id="action-effort-field">
+        <label class="action-field-label">Effort</label>
+        <select id="action-effort" class="action-select"></select>
+      </div>
+    </div>
+    <div class="action-group">
+      <span class="action-group-label">Upgrade</span>
+      <div class="action-row">
+        <button class="action-btn" data-action="upgrade-zylos" type="button">
+          Upgrade zylos<span class="action-ver" id="action-zylos-ver"></span>
+        </button>
+        <button class="action-btn" data-action="upgrade-cc" type="button">
+          Upgrade CC<span class="action-ver" id="action-cc-ver"></span>
+        </button>
+      </div>
+    </div>
+  </div>
+  <div class="modal-status" id="action-status" hidden></div>
+  <div class="modal-confirm" id="action-confirm" hidden>
+    <p id="action-confirm-text"></p>
+    <div class="modal-confirm-buttons">
+      <button class="action-btn" id="action-confirm-cancel" type="button">Cancel</button>
+      <button class="action-btn danger" id="action-confirm-ok" type="button">Confirm</button>
+    </div>
+  </div>
+</div>`;
+  document.body.appendChild(overlay);
+  actionsModal = overlay;
+
+  overlay.querySelector('.modal-close').addEventListener('click', closeActionsModal);
+  overlay.addEventListener('click', (e) => { if (e.target === overlay) closeActionsModal(); });
+
+  overlay.querySelectorAll('.action-btn[data-action]').forEach((btn) => {
+    btn.addEventListener('click', () => execAction(btn.dataset.action));
+  });
+
+  async function selectAction(sel, action, key) {
+    if (sel._inFlight) return;
+    const prev = sel._prevValue || sel.value;
+    const val = sel.value;
+    if (val === prev) return;
+    sel._inFlight = true;
+    try {
+      const ok = await execAction(action, { [key]: val });
+      if (ok === false) sel.value = prev;
+      else sel._prevValue = val;
+    } finally {
+      sel._inFlight = false;
+    }
+  }
+
+  const modelSel = overlay.querySelector('#action-model');
+  const modelCustom = overlay.querySelector('#action-model-custom');
+  modelSel.addEventListener('change', () => {
+    if (modelSel.value === '__custom__') {
+      modelCustom.hidden = false;
+      modelCustom.focus();
+    } else {
+      modelCustom.hidden = true;
+      if (actionsModal?._renderEffortOptions) actionsModal._renderEffortOptions(modelSel.value);
+      selectAction(modelSel, 'switch-model', 'model');
+    }
+  });
+  modelCustom.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && modelCustom.value.trim()) {
+      execAction('switch-model', { model: modelCustom.value.trim() });
+    }
+  });
+
+  const runtimeSel = overlay.querySelector('#action-runtime');
+  runtimeSel.addEventListener('change', () => {
+    selectAction(runtimeSel, 'switch-runtime', 'runtime');
+  });
+
+  const effortSel = overlay.querySelector('#action-effort');
+  effortSel.addEventListener('change', () => {
+    selectAction(effortSel, 'switch-effort', 'effort');
+  });
+
+  return overlay;
+}
+
+async function openActionsModal() {
+  const modal = createActionsModal();
+  modal.hidden = false;
+
+  const statusEl = modal.querySelector('#action-status');
+  statusEl.hidden = true;
+  updateRestartDot();
+
+  try {
+    const meta = await fetchJson('/api/actions/meta');
+    const runtimeSel = modal.querySelector('#action-runtime');
+    runtimeSel.value = meta.runtime;
+
+    const modelSel = modal.querySelector('#action-model');
+    modelSel.innerHTML = '';
+    for (const m of meta.models || []) {
+      const opt = document.createElement('option');
+      opt.value = m.id;
+      opt.textContent = m.id;
+      if (m.id === meta.current_model) opt.selected = true;
+      modelSel.appendChild(opt);
+    }
+    const customOpt = document.createElement('option');
+    customOpt.value = '__custom__';
+    customOpt.textContent = 'Custom...';
+    modelSel.appendChild(customOpt);
+    modal.querySelector('#action-model-custom').hidden = true;
+
+    const effortField = modal.querySelector('#action-effort-field');
+    const effortSel = modal.querySelector('#action-effort');
+    const effortsByModel = meta.efforts_by_model || {};
+    modal._renderEffortOptions = (modelId) => {
+      const list = effortsByModel[modelId] || effortsByModel['*'] || [];
+      if (!list.length) {
+        effortField.hidden = true;
+        return;
+      }
+      effortField.hidden = false;
+      effortSel.innerHTML = '';
+      for (const e of list) {
+        const opt = document.createElement('option');
+        opt.value = e;
+        opt.textContent = EFFORT_LABELS[e] || e.charAt(0).toUpperCase() + e.slice(1);
+        if (e === meta.current_effort) opt.selected = true;
+        effortSel.appendChild(opt);
+      }
+      effortSel._prevValue = effortSel.value;
+    };
+    modal._renderEffortOptions(meta.current_model);
+
+    const ri = state.dashboardState?.runtime_info;
+    const zylosVer = modal.querySelector('#action-zylos-ver');
+    const ccVer = modal.querySelector('#action-cc-ver');
+    zylosVer.textContent = meta.zylos_version ? ` v${meta.zylos_version}` : '';
+    zylosVer.classList.toggle('action-ver-dot', !!ri?.zylos_update);
+    zylosVer.title = ri?.zylos_update ? `v${ri.zylos_update} available` : '';
+    ccVer.textContent = meta.cc_version ? ` v${meta.cc_version}` : '';
+    ccVer.classList.toggle('action-ver-dot', !!ri?.cc_update);
+    ccVer.title = ri?.cc_update ? `v${ri.cc_update} available` : '';
+
+    runtimeSel._prevValue = runtimeSel.value;
+    modelSel._prevValue = modelSel.value;
+    effortSel._prevValue = effortSel.value;
+  } catch { /* meta unavailable, modal still usable */ }
+}
+
+function closeActionsModal() {
+  if (!actionsModal) return;
+  actionsModal.hidden = true;
+  const confirm = actionsModal.querySelector('#action-confirm');
+  if (confirm) confirm.hidden = true;
+  const status = actionsModal.querySelector('#action-status');
+  if (status) status.hidden = true;
+}
+
+function updateRestartDot() {
+  const btn = actionsModal?.querySelector('.action-btn[data-action="restart-session"]');
+  if (!btn) return;
+  const pending = !!state.dashboardState?.runtime_info?.pending_restart;
+  btn.classList.toggle('action-btn-pending', pending);
+  btn.title = pending ? 'Pending changes require restart to take effect' : '';
+}
+
+const CONFIRM_ACTIONS = new Set(['interrupt', 'restart-session', 'switch-runtime', 'switch-model', 'switch-effort', 'upgrade-zylos', 'upgrade-cc']);
+
+function showConfirm(text) {
+  return new Promise((resolve) => {
+    const box = actionsModal?.querySelector('#action-confirm');
+    const msg = actionsModal?.querySelector('#action-confirm-text');
+    const okBtn = actionsModal?.querySelector('#action-confirm-ok');
+    const cancelBtn = actionsModal?.querySelector('#action-confirm-cancel');
+    if (!box || !msg || !okBtn || !cancelBtn) { resolve(false); return; }
+
+    msg.textContent = text;
+    box.hidden = false;
+
+    function cleanup() {
+      box.hidden = true;
+      okBtn.removeEventListener('click', onOk);
+      cancelBtn.removeEventListener('click', onCancel);
+    }
+    function onOk() { cleanup(); resolve(true); }
+    function onCancel() { cleanup(); resolve(false); }
+    okBtn.addEventListener('click', onOk);
+    cancelBtn.addEventListener('click', onCancel);
+  });
+}
+
+async function execAction(action, body) {
+  if (CONFIRM_ACTIONS.has(action)) {
+    const labels = {
+      'interrupt': 'Interrupt the agent? This will cancel the current operation.',
+      'restart-session': 'Restart the agent session? Context is preserved via memory.',
+      'switch-runtime': `Switch runtime to ${body?.runtime}? Session will restart.`,
+      'switch-model': `Switch model to ${body?.model}?`,
+      'switch-effort': `Switch effort to ${EFFORT_LABELS[body?.effort] || body?.effort}?`,
+      'upgrade-zylos': 'Upgrade zylos-core? All services will restart.',
+      'upgrade-cc': 'Upgrade Claude Code?'
+    };
+    if (!(await showConfirm(labels[action] || `Execute ${action}?`))) return false;
+  }
+
+  const statusEl = actionsModal?.querySelector('#action-status');
+  if (statusEl) {
+    statusEl.hidden = false;
+    statusEl.className = 'modal-status running';
+    statusEl.textContent = 'Executing...';
+  }
+
+  try {
+    const r = await fetch(api(`/api/actions/${action}`), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body || {})
+    });
+    const result = await r.json();
+    if (statusEl) {
+      const isInfo = !result.ok && (result.error === 'already_up_to_date' || result.error === 'already_set');
+      statusEl.className = result.ok ? 'modal-status success' : isInfo ? 'modal-status success' : 'modal-status error';
+      statusEl.textContent = result.message || (result.ok ? 'Done' : result.error);
+      if (result.ok || isInfo) setTimeout(() => { statusEl.hidden = true; }, 5000);
+    }
+    if (result.ok && result.requires_restart) {
+      await new Promise(r => setTimeout(r, 1500));
+      if (statusEl) statusEl.hidden = true;
+      await execAction('restart-session');
+    }
+    return result.ok;
+  } catch (err) {
+    if (statusEl) {
+      statusEl.className = 'modal-status error';
+      statusEl.textContent = `Failed: ${err.message}`;
+    }
+    return false;
+  }
+}
+
+function initActionsGear() {
+  document.addEventListener('click', (e) => {
+    const gear = e.target.closest('#gear-btn, .info-bar-gear, .info-bar-update');
+    if (gear) { e.preventDefault(); openActionsModal(); }
+  });
+}
+
 // ─── Timers ───
 function startTimers() {
   state.timer = setInterval(() => { renderState(); renderMetrics(); renderHealth(); }, 1000);
@@ -1219,6 +1535,7 @@ initTabs();
 initLocaleToggle();
 initLogout();
 initTips();
+initActionsGear();
 renderAll();
 initCharts();
 initTrendControls();

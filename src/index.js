@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import http from 'node:http';
+import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -20,9 +21,37 @@ import { StateEngine } from './lib/state-engine.js';
 import { MetricResolver } from './lib/metric-resolver.js';
 import { SseHub } from './lib/sse.js';
 import { C4Reader } from './lib/c4-reader.js';
+import { handleAction, getActionsMeta } from './lib/actions.js';
+import { VersionChecker } from './lib/version-checker.js';
 import Database from 'better-sqlite3';
 
 const startedAt = new Date();
+
+let zylosVersion = null;
+let ccInstalledVersion = null;
+try {
+  zylosVersion = execFileSync('zylos', ['--version'], { timeout: 5000 }).toString().trim();
+} catch { /* zylos CLI not available */ }
+try {
+  const raw = execFileSync('claude', ['--version'], { timeout: 5000 }).toString().trim();
+  ccInstalledVersion = raw.replace(/\s.*$/, '');
+} catch { /* claude CLI not available */ }
+
+function refreshInstalledVersions() {
+  try {
+    zylosVersion = execFileSync('zylos', ['--version'], { timeout: 5000 }).toString().trim();
+  } catch { /* ignore */ }
+  try {
+    const raw = execFileSync('claude', ['--version'], { timeout: 5000 }).toString().trim();
+    ccInstalledVersion = raw.replace(/\s.*$/, '');
+  } catch { /* ignore */ }
+  const st = stateEngine?.getState();
+  if (st) {
+    st.runtime_info = buildRuntimeInfo();
+    sse.broadcast('state_change', st);
+  }
+}
+
 const config = loadConfig();
 ensureDataDirs(config);
 
@@ -55,9 +84,67 @@ const collectors = { pm2: pm2Collector, system: systemCollector, otel: otelColle
 // SSE hub
 const sse = new SseHub(15_000);
 
+// 6b. Version checker (polls GitHub every 12h)
+const versionChecker = new VersionChecker({
+  onUpdate: () => {
+    if (stateEngine) {
+      const st = stateEngine.getState();
+      st.runtime_info = buildRuntimeInfo();
+      sse.broadcast('state_change', st);
+    }
+  },
+});
+versionChecker.start();
+
+function readClaudeSettings() {
+  try {
+    return JSON.parse(fs.readFileSync(path.join(config.zylosDir, '.claude', 'settings.json'), 'utf8'));
+  } catch { return {}; }
+}
+
+function buildRuntimeInfo() {
+  const slInfo = statuslineCollector.getRuntimeInfo();
+  const latest = versionChecker.getLatest();
+  const ccRunning = slInfo?.cc_version || null;
+
+  // Derive pending_restart from settings vs running state (compare IDs, not display names)
+  const settings = readClaudeSettings();
+  const needsRestart =
+    (settings.model && slInfo?.model_id && settings.model !== slInfo.model_id) ||
+    (settings.effortLevel && slInfo?.effort && settings.effortLevel !== slInfo.effort) ||
+    (ccInstalledVersion && ccRunning && ccInstalledVersion !== ccRunning);
+
+  const info = {
+    zylos_version: zylosVersion,
+    runtime: process.env.ZYLOS_RUNTIME || 'claude',
+    model: slInfo?.model || null,
+    effort: slInfo?.effort || null,
+    cc_version: ccRunning,
+    cc_installed: ccInstalledVersion || null,
+    pending_restart: !!needsRestart,
+  };
+  // info bar: running != installed → show restart hint
+  if (ccInstalledVersion && ccRunning && ccInstalledVersion !== ccRunning) {
+    info.cc_restart = ccInstalledVersion;
+  }
+  // upgrade button: installed != GitHub latest → show upgrade dot
+  const ccEffective = ccInstalledVersion || ccRunning;
+  if (latest.cc && ccEffective && latest.cc !== ccEffective) {
+    info.cc_update = latest.cc;
+  }
+  // same pattern for zylos
+  if (latest.zylos && zylosVersion && latest.zylos !== zylosVersion) {
+    info.zylos_update = latest.zylos;
+  }
+  return info;
+}
+
 // 7. State engine
 const stateEngine = new StateEngine(store, collectors, config, {
-  onStateChange: (state) => sse.broadcast('state_change', state)
+  onStateChange: (st) => {
+    st.runtime_info = buildRuntimeInfo();
+    sse.broadcast('state_change', st);
+  }
 });
 
 // Wire collector updates to state engine
@@ -96,6 +183,14 @@ async function startupSequence() {
 
   // State engine initialize (snapshot restore + replay)
   await stateEngine.initialize();
+}
+
+function loadZylosConfig(zylosDir) {
+  try {
+    return JSON.parse(fs.readFileSync(path.join(zylosDir, '.zylos', 'config.json'), 'utf8'));
+  } catch {
+    return {};
+  }
 }
 
 function extractFilePath(summary) {
@@ -195,7 +290,9 @@ function handleApi(req, res, pathname, url) {
   }
 
   if (pathname === '/api/state') {
-    sendJson(res, 200, stateEngine.getState());
+    const stateData = stateEngine.getState();
+    stateData.runtime_info = buildRuntimeInfo();
+    sendJson(res, 200, stateData);
     return true;
   }
 
@@ -358,6 +455,17 @@ function handleApi(req, res, pathname, url) {
     return true;
   }
 
+  if (pathname === '/api/actions/meta') {
+    const zylosConfig = loadZylosConfig(config.zylosDir);
+    zylosConfig.zylosDir = config.zylosDir;
+    const slMeta = statuslineCollector.getRuntimeInfo();
+    const meta = getActionsMeta(zylosConfig, slMeta);
+    meta.zylos_version = zylosVersion;
+    meta.cc_version = ccInstalledVersion || slMeta?.cc_version || null;
+    sendJson(res, 200, meta);
+    return true;
+  }
+
   if (pathname === '/api/stream') {
     sse.addClient(res);
     return true;
@@ -496,6 +604,22 @@ export function createServer() {
     if (pathname === '/api/stream') {
       handleApi(req, res, pathname, url);
       return;
+    }
+
+    if (pathname.startsWith('/api/actions/') && req.method === 'POST') {
+      const action = pathname.slice('/api/actions/'.length);
+      if (action && action !== 'meta') {
+        let body = {};
+        try { body = await readJsonBody(req, 4096); } catch { /* no body is ok for some actions */ }
+        const zylosConfig = loadZylosConfig(config.zylosDir);
+        zylosConfig.zylosDir = config.zylosDir;
+        const result = await handleAction(action, body, zylosConfig);
+        if (result.ok && (action === 'upgrade-cc' || action === 'upgrade-zylos')) {
+          refreshInstalledVersions();
+        }
+        sendJson(res, result.ok ? 200 : 400, result);
+        return;
+      }
     }
 
     if (req.method !== 'GET' && req.method !== 'HEAD') {
