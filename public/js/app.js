@@ -988,7 +988,8 @@ function initTips() {
     ['#confidence-tip', '#confidence-popover'],
     ['#cost-tip', '#cost-popover'],
     ['#cost-trend-tip', '#cost-trend-popover'],
-    ['#projects-tip', '#projects-popover']
+    ['#projects-tip', '#projects-popover'],
+    ['#context-tip', '#context-popover']
   ];
   const allPops = [];
 
@@ -1319,7 +1320,8 @@ function createActionsModal() {
           <svg width="14" height="14" viewBox="0 0 16 16" fill="none"><circle cx="8" cy="8" r="7" stroke="currentColor" stroke-width="1.5"/><path d="M8 7v4M8 5.5v0" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
         </button>
         <div class="tip-popover" id="threshold-popover" hidden>
-          <p>200K context: recommend 70%. 1M context: recommend ≤40%.</p>
+          <p><strong>New Session Threshold</strong> — the context level at which the agent should start a new session to avoid degraded performance.</p>
+          <p style="margin-top:4px">Recommended: 200K context → 70%, 1M context → ≤40%.</p>
         </div>
         <div class="action-threshold-wrap">
           <input id="action-threshold" class="action-input action-threshold-input" type="number" min="10" max="95" step="5" />
