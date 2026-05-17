@@ -786,6 +786,7 @@ function renderConnection(mode) {
 
 function renderAll() {
   renderI18n();
+  updateChartLabels();
   renderInfoBar();
   renderState();
   renderMetrics();
@@ -967,6 +968,7 @@ function initLocaleToggle() {
   $('#locale-toggle').addEventListener('click', async () => {
     await initI18n(getLocale() === 'zh' ? 'en' : 'zh');
     renderAll();
+    refreshCharts();
   });
 }
 
@@ -1148,6 +1150,28 @@ function initCharts() {
       });
     }
   } catch { /* chart init failed — overview still works */ }
+}
+
+function updateChartLabels() {
+  if (!window.Chart) return;
+  if (state.charts.tokens) {
+    state.charts.tokens.data.datasets[0].label = t('trends.input');
+    state.charts.tokens.data.datasets[1].label = t('trends.output');
+    state.charts.tokens.update('none');
+  }
+  if (state.charts.cost) {
+    state.charts.cost.data.datasets[0].label = t('trends.cost');
+    state.charts.cost.update('none');
+  }
+  if (state.charts.messages) {
+    state.charts.messages.data.datasets[0].label = t('trends.msg_in');
+    state.charts.messages.data.datasets[1].label = t('trends.msg_out');
+    state.charts.messages.update('none');
+  }
+  if (state.charts.projects) {
+    state.charts.projects.data.datasets[0].label = t('trends.tool_calls');
+    state.charts.projects.update('none');
+  }
 }
 
 function getTrendRange() {
