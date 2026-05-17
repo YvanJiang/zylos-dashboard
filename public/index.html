@@ -45,20 +45,11 @@
         </div>
         <div class="runtime-split">
           <div class="runtime-left">
-            <div class="state-indicator">
-              <span class="state-dot state-unknown" id="state-dot" aria-hidden="true"></span>
+            <div class="mascot-area" id="mascot-area">
+              <div class="mascot-sprite" id="mascot-sprite"></div>
               <p class="state-label" id="state-title">--</p>
             </div>
-            <div class="state-meta">
-              <span class="kv-label" data-i18n="label.confidence">Confidence</span>
-              <button class="tip-btn" id="confidence-tip" type="button" aria-label="Info">
-                <svg width="14" height="14" viewBox="0 0 16 16" fill="none"><circle cx="8" cy="8" r="7" stroke="currentColor" stroke-width="1.5"/><path d="M8 7v4M8 5.5v0" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
-              </button>
-              <div class="tip-popover" id="confidence-popover" hidden>
-                <p data-i18n="tip.confidence"></p>
-              </div>
-              <span class="kv-value" id="state-confidence">--</span>
-            </div>
+            <span class="state-dot state-unknown" id="state-dot" aria-hidden="true" hidden></span>
           </div>
           <div class="runtime-right">
             <div class="activity-head">

@@ -382,12 +382,68 @@ main { padding: var(--space-md) var(--space-lg) var(--space-xl); }
   50% { opacity: 0.5; transform: scale(0.85); box-shadow: 0 0 0 8px rgba(37, 99, 235, 0.06); }
 }
 
+.mascot-area {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-sm);
+  padding: var(--space-md) 0;
+}
+
+.mascot-sprite {
+  width: 80px;
+  height: 80px;
+  image-rendering: pixelated;
+}
+
+.mascot-sprite svg {
+  width: 100%;
+  height: 100%;
+  image-rendering: pixelated;
+}
+
+.mascot-busy .mascot-sprite { animation: mascot-bob 0.8s ease-in-out infinite; }
+.mascot-idle .mascot-sprite { animation: mascot-breathe 3s ease-in-out infinite; }
+.mascot-offline .mascot-sprite { opacity: 0.5; filter: grayscale(0.6); }
+.mascot-waiting .mascot-sprite { animation: mascot-look 2s ease-in-out infinite; }
+.mascot-stuck .mascot-sprite { animation: mascot-shake 0.4s ease-in-out infinite; }
+.mascot-possibly-stuck .mascot-sprite { animation: mascot-worry 1.5s ease-in-out infinite; }
+
+@keyframes mascot-bob {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-4px); }
+}
+
+@keyframes mascot-breathe {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.03); }
+}
+
+@keyframes mascot-look {
+  0%, 100% { transform: translateX(0); }
+  25% { transform: translateX(3px); }
+  75% { transform: translateX(-3px); }
+}
+
+@keyframes mascot-shake {
+  0%, 100% { transform: translateX(0); }
+  25% { transform: translateX(-2px) rotate(-2deg); }
+  75% { transform: translateX(2px) rotate(2deg); }
+}
+
+@keyframes mascot-worry {
+  0%, 100% { transform: translateY(0); }
+  30% { transform: translateY(-2px); }
+  60% { transform: translateY(1px); }
+}
+
 .state-label {
   margin: 0;
   font-size: 18px;
   font-weight: 700;
   line-height: 1.25;
   letter-spacing: -0.01em;
+  text-align: center;
 }
 
 .kv {
