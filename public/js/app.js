@@ -1652,10 +1652,10 @@ async function openActionsModal() {
     const ccVer = modal.querySelector('#action-cc-ver');
     zylosVer.textContent = meta.zylos_version ? ` v${meta.zylos_version}` : '';
     zylosVer.classList.toggle('action-ver-dot', !!ri?.zylos_update);
-    zylosVer.title = ri?.zylos_update ? `v${ri.zylos_update} available` : '';
+    zylosVer.title = ri?.zylos_update ? t('info.version_available', { version: ri.zylos_update }) : '';
     ccVer.textContent = meta.cc_version ? ` v${meta.cc_version}` : '';
     ccVer.classList.toggle('action-ver-dot', !!ri?.cc_update);
-    ccVer.title = ri?.cc_update ? `v${ri.cc_update} available` : '';
+    ccVer.title = ri?.cc_update ? t('info.version_available', { version: ri.cc_update }) : '';
 
     runtimeSel._prevValue = runtimeSel.value;
     modelSel._prevValue = modelSel.value;
@@ -1680,7 +1680,7 @@ function updateRestartDot() {
   if (!btn) return;
   const pending = !!state.dashboardState?.runtime_info?.pending_restart;
   btn.classList.toggle('action-btn-pending', pending);
-  btn.title = pending ? 'Pending changes require restart to take effect' : '';
+  btn.title = pending ? t('info.pending_restart') : '';
 }
 
 const CONFIRM_ACTIONS = new Set(['interrupt', 'restart-session', 'switch-runtime', 'switch-model', 'switch-effort', 'upgrade-zylos', 'upgrade-cc']);
@@ -1711,22 +1711,22 @@ function showConfirm(text) {
 async function execAction(action, body) {
   if (CONFIRM_ACTIONS.has(action)) {
     const labels = {
-      'interrupt': 'Interrupt the agent? This will cancel the current operation.',
-      'restart-session': 'Restart the agent session? Context is preserved via memory.',
-      'switch-runtime': `Switch runtime to ${body?.runtime}? Session will restart.`,
-      'switch-model': `Switch model to ${body?.model}?`,
-      'switch-effort': `Switch effort to ${EFFORT_LABELS[body?.effort] || body?.effort}?`,
-      'upgrade-zylos': 'Upgrade zylos-core? All services will restart.',
-      'upgrade-cc': 'Upgrade Claude Code?'
+      'interrupt': t('confirm.interrupt'),
+      'restart-session': t('confirm.restart'),
+      'switch-runtime': t('confirm.switch_runtime', { value: body?.runtime }),
+      'switch-model': t('confirm.switch_model', { value: body?.model }),
+      'switch-effort': t('confirm.switch_effort', { value: EFFORT_LABELS[body?.effort] || body?.effort }),
+      'upgrade-zylos': t('confirm.upgrade_zylos'),
+      'upgrade-cc': t('confirm.upgrade_cc')
     };
-    if (!(await showConfirm(labels[action] || `Execute ${action}?`))) return false;
+    if (!(await showConfirm(labels[action] || t('confirm.fallback', { action })))) return false;
   }
 
   const statusEl = actionsModal?.querySelector('#action-status');
   if (statusEl) {
     statusEl.hidden = false;
     statusEl.className = 'modal-status running';
-    statusEl.textContent = 'Executing...';
+    statusEl.textContent = t('status.executing');
   }
 
   try {
@@ -1739,7 +1739,7 @@ async function execAction(action, body) {
     if (statusEl) {
       const isInfo = !result.ok && (result.error === 'already_up_to_date' || result.error === 'already_set');
       statusEl.className = result.ok ? 'modal-status success' : isInfo ? 'modal-status success' : 'modal-status error';
-      statusEl.textContent = result.message || (result.ok ? 'Done' : result.error);
+      statusEl.textContent = result.message || (result.ok ? t('status.done') : result.error);
       if (result.ok || isInfo) setTimeout(() => { statusEl.hidden = true; }, 5000);
     }
     if (result.ok && result.requires_restart) {

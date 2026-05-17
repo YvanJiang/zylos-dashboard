@@ -136,5 +136,17 @@
   "actions.upgrade_zylos": "Upgrade zylos",
   "actions.upgrade_cc": "Upgrade CC",
   "info.update_available": "v{version} available — click Actions to upgrade",
-  "info.restart_available": "v{version} installed — restart to apply"
+  "info.restart_available": "v{version} installed — restart to apply",
+  "info.version_available": "v{version} available",
+  "info.pending_restart": "Pending changes require restart to take effect",
+  "confirm.interrupt": "Interrupt the agent? This will cancel the current operation.",
+  "confirm.restart": "Restart the agent session? Context is preserved via memory.",
+  "confirm.switch_runtime": "Switch runtime to {value}? Session will restart.",
+  "confirm.switch_model": "Switch model to {value}?",
+  "confirm.switch_effort": "Switch effort to {value}?",
+  "confirm.upgrade_zylos": "Upgrade zylos-core? All services will restart.",
+  "confirm.upgrade_cc": "Upgrade Claude Code?",
+  "confirm.fallback": "Execute {action}?",
+  "status.executing": "Executing...",
+  "status.done": "Done"
 }
