@@ -57,7 +57,7 @@
   "time.hours_exact": "{h} 小时前",
   "lang.switch": "EN",
   "trends.tokens": "Token 用量",
-  "trends.cost": "成本",
+  "trends.cost": "成本 (USD)",
   "trends.messages": "消息吞吐",
   "trends.projects": "项目分布",
   "trends.context": "上下文使用率",

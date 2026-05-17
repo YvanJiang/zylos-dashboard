@@ -57,7 +57,7 @@
   "time.hours_exact": "{h}h ago",
   "lang.switch": "中文",
   "trends.tokens": "Token Usage",
-  "trends.cost": "Cost",
+  "trends.cost": "Cost (USD)",
   "trends.messages": "Message Throughput",
   "trends.projects": "Project Distribution",
   "trends.context": "Context Usage",
