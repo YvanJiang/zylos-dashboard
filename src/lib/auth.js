@@ -189,18 +189,19 @@ function loginPageHtml(base, error = '', next = '') {
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Login - Zylos Dashboard</title>
     <style>
-      body { font-family: system-ui, sans-serif; background: #1a1a2e; color: #e0e0e0; display: flex; justify-content: center; align-items: center; min-height: 100vh; margin: 0; }
-      .login-shell { width: 100%; max-width: 360px; padding: 1rem; }
-      .login-panel { background: #16213e; border-radius: 8px; padding: 2rem; }
-      .eyebrow { font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.1em; color: #888; margin: 0 0 0.25rem; }
-      h1 { margin: 0 0 1.5rem; font-size: 1.5rem; font-weight: 500; }
-      .login-error { color: #e74c3c; font-size: 0.85rem; margin: 0 0 1rem; }
-      .login-label { display: block; font-size: 0.85rem; color: #aaa; margin-bottom: 0.5rem; }
-      .login-input { width: 100%; padding: 0.6rem; border: 1px solid #333; border-radius: 4px; background: #0f1a30; color: #e0e0e0; font-size: 1rem; box-sizing: border-box; }
-      .login-remember { display: flex; align-items: center; gap: 0.5rem; margin-top: 0.75rem; font-size: 0.85rem; color: #aaa; cursor: pointer; }
-      .login-remember input { accent-color: #3498db; cursor: pointer; }
-      .login-button { width: 100%; padding: 0.7rem; margin-top: 1rem; border: none; border-radius: 4px; background: #3498db; color: #fff; font-size: 1rem; cursor: pointer; }
-      .login-button:hover { background: #2980b9; }
+      body { font-family: system-ui, -apple-system, sans-serif; background: #f7faf9; color: #101827; display: flex; justify-content: center; align-items: center; min-height: 100vh; margin: 0; }
+      .login-shell { width: 100%; max-width: 380px; padding: 1rem; }
+      .login-panel { background: rgba(255,255,255,0.88); backdrop-filter: blur(12px); border-radius: 12px; padding: 2.5rem 2rem; box-shadow: 0 18px 42px rgba(15,23,42,0.08), inset 0 1px 0 rgba(255,255,255,0.9); border: 1px solid rgba(15,118,110,0.1); }
+      .eyebrow { font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.15em; color: #0d9488; margin: 0 0 0.25rem; font-weight: 600; }
+      h1 { margin: 0 0 1.5rem; font-size: 1.5rem; font-weight: 600; color: #101827; }
+      .login-error { color: #dc2626; font-size: 0.85rem; margin: 0 0 1rem; }
+      .login-label { display: block; font-size: 0.85rem; color: #526170; margin-bottom: 0.5rem; }
+      .login-input { width: 100%; padding: 0.6rem 0.75rem; border: 1px solid rgba(15,118,110,0.16); border-radius: 8px; background: #fff; color: #101827; font-size: 1rem; box-sizing: border-box; transition: border-color 200ms, box-shadow 200ms; outline: none; }
+      .login-input:focus { border-color: #0d9488; box-shadow: 0 0 0 3px rgba(13,148,136,0.12); }
+      .login-remember { display: flex; align-items: center; gap: 0.5rem; margin-top: 0.75rem; font-size: 0.85rem; color: #526170; cursor: pointer; }
+      .login-remember input { accent-color: #0d9488; cursor: pointer; }
+      .login-button { width: 100%; padding: 0.7rem; margin-top: 1rem; border: none; border-radius: 8px; background: #0d9488; color: #fff; font-size: 1rem; font-weight: 500; cursor: pointer; transition: background 200ms; }
+      .login-button:hover { background: #0f766e; }
     </style>
   </head>
   <body>
