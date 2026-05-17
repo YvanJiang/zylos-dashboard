@@ -613,6 +613,8 @@ main { padding: var(--space-md) var(--space-lg) var(--space-xl); }
   align-items: baseline;
   justify-content: space-between;
   gap: var(--space-sm);
+  min-width: 0;
+  overflow: hidden;
 }
 
 .metric-label {

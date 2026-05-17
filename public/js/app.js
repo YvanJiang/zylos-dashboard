@@ -7,7 +7,7 @@ setAssetRoot(ASSET_ROOT);
 const METRICS = ['context_pct', 'rate_limit', 'rate_limit_7d', 'session_cost'];
 const THEMES = ['light'];
 const THEME_KEY = 'zylos-dashboard-theme';
-const EFFORT_LABELS = { low: 'Low', medium: 'Medium', high: 'High', xhigh: 'XHigh' };
+function effortLabel(level) { return t(`effort.${level}`) || level?.charAt(0).toUpperCase() + level?.slice(1) || ''; }
 
 const state = {
   dashboardState: null,
@@ -123,12 +123,12 @@ function fmtResetTime(unixSeconds) {
   if (!Number.isFinite(ts) || ts <= 0) return '';
   const ms = ts < 1e12 ? ts * 1000 : ts;
   const diff = ms - Date.now();
-  if (diff <= 0) return 'now';
+  if (diff <= 0) return t('reset.now');
   const h = Math.floor(diff / 3600000);
   const m = Math.floor((diff % 3600000) / 60000);
-  if (h > 24) { const d = Math.floor(h / 24); return `in ${d}d ${h % 24}h`; }
-  if (h > 0) return `in ${h}h ${m}m`;
-  return `in ${m}m`;
+  if (h > 24) { const d = Math.floor(h / 24); return t('reset.days', { d, h: h % 24 }); }
+  if (h > 0) return t('reset.hours', { h, m });
+  return t('reset.minutes', { m });
 }
 
 function esc(v) {
@@ -168,13 +168,13 @@ function srcLabel(m) {
   if (!m) return t('confidence.unavailable');
   const src = m.selected_source || m.source || '';
   const friendly = {
-    statusline: 'current session',
-    statusline_current_usage: 'current session',
-    jsonl_usage: 'JSONL usage',
-    rollout: 'rollout',
-    token_price_estimated: 'estimated',
-    derived_token_estimate: 'estimated',
-    hook_postToolUse: 'tool hooks'
+    statusline: t('metric.current_session'),
+    statusline_current_usage: t('metric.current_session'),
+    jsonl_usage: t('source.jsonl_usage'),
+    rollout: t('source.rollout'),
+    token_price_estimated: t('source.estimated'),
+    derived_token_estimate: t('source.estimated'),
+    hook_postToolUse: t('source.tool_hooks')
   };
   return friendly[src] || src || t('confidence.unavailable');
 }
@@ -203,7 +203,7 @@ function renderInfoBar() {
     const short = ri.model.replace(' context', '');
     parts.push(esc(short));
   }
-  if (ri.effort) parts.push(esc(EFFORT_LABELS[ri.effort] || ri.effort.charAt(0).toUpperCase() + ri.effort.slice(1)));
+  if (ri.effort) parts.push(esc(effortLabel(ri.effort)));
   if (ri.cc_version) {
     let cv = `CC v${esc(ri.cc_version)}`;
     if (ri.cc_restart) cv += ` <span class="info-bar-update" title="${esc(t('info.restart_available', { version: ri.cc_restart }))}">↑${esc(ri.cc_restart)}</span>`;
@@ -321,7 +321,7 @@ function renderToolFeed(tools, p) {
       el.className = 'tool-feed-item thinking';
       el.dataset.toolId = thinkingId;
       el.dataset.startedAt = new Date().toISOString();
-      el.innerHTML = `<span class="mono tool-detail">Thinking...</span><span class="tool-status">0s</span>`;
+      el.innerHTML = `<span class="mono tool-detail">${esc(t('activity.thinking'))}</span><span class="tool-status">0s</span>`;
       feed.appendChild(el);
     } else {
       const thinkAge = ageSec(existingThinking.dataset.startedAt) ?? 0;
@@ -416,7 +416,7 @@ function renderSubagents(p) {
 
   for (const agent of agents) {
     let grp = list.querySelector(`[data-agent-id="${agent.agent_id}"]`);
-    const label = agent.description || agent.agent_type || 'subagent';
+    const label = agent.description || agent.agent_type || t('activity.subagent');
     const shortId = agent.agent_id.slice(0, 7);
     const subtitle = agent.description ? agent.agent_type : null;
 
@@ -501,7 +501,7 @@ function renderMetrics() {
   if (thresholdMarker) {
     thresholdMarker.hidden = false;
     thresholdMarker.style.left = `${threshold}%`;
-    thresholdMarker.title = `New Session @ ${threshold}%`;
+    thresholdMarker.title = t('metric.threshold_at', { value: threshold });
   }
   const thresholdLabel = $('#metric-context-threshold-label');
   if (thresholdLabel) {
@@ -522,8 +522,8 @@ function renderMetrics() {
 
   const r5Reset = rate?.dimensions?.resets_at ?? rate?.resets_at;
   const r7Reset = rate7d?.dimensions?.resets_at ?? rate7d?.resets_at;
-  $('#metric-rate-5h-reset').textContent = r5Reset ? `resets ${fmtResetTime(r5Reset)}` : '';
-  $('#metric-rate-7d-reset').textContent = r7Reset ? `resets ${fmtResetTime(r7Reset)}` : '';
+  $('#metric-rate-5h-reset').textContent = r5Reset ? t('metric.resets', { time: fmtResetTime(r5Reset) }) : '';
+  $('#metric-rate-7d-reset').textContent = r7Reset ? t('metric.resets', { time: fmtResetTime(r7Reset) }) : '';
 
   const agg = state.aggregated || {};
   const hasCostSession = agg.cost_session != null;
@@ -532,7 +532,7 @@ function renderMetrics() {
   $('#metric-cost-7d').textContent = agg['cost_7d'] != null ? usd(agg['cost_7d']) : '--';
 
   const costSessionLabel = $('#metric-cost-session-label');
-  if (costSessionLabel) costSessionLabel.textContent = hasCostSession ? 'session' : 'lifetime';
+  if (costSessionLabel) costSessionLabel.textContent = hasCostSession ? t('cost.session') : t('cost.lifetime');
 
   // Tokens — stacked bar + cache ring
   const ts = agg.tokens_session;
@@ -660,12 +660,12 @@ function renderHealth() {
   const schedCount = $('#scheduler-count');
   const schedTimeline = $('#scheduler-timeline');
   if (schedCount) {
-    schedCount.textContent = sched?.pending ? `${sched.pending} pending` : '';
+    schedCount.textContent = sched?.pending ? t('sched.pending', { count: sched.pending }) : '';
   }
   if (schedTimeline) {
     const tasks = sched?.upcoming || [];
     if (tasks.length === 0) {
-      schedTimeline.innerHTML = '<span class="gauge-detail">No pending tasks</span>';
+      schedTimeline.innerHTML = `<span class="gauge-detail">${esc(t('sched.no_pending'))}</span>`;
     } else {
       const now = Date.now();
       schedTimeline.innerHTML = tasks.map((task, i) => {
@@ -1142,7 +1142,7 @@ function initCharts() {
         type: 'bar',
         data: {
           labels: [],
-          datasets: [{ label: 'Tool Calls', data: [], backgroundColor: CHART_COLORS.green }]
+          datasets: [{ label: t('trends.tool_calls'), data: [], backgroundColor: CHART_COLORS.green }]
         },
         options: horizontalBarOpts()
       });
@@ -1206,7 +1206,7 @@ async function refreshCharts() {
     const totalInput = pts.reduce((s, p) => s + (p.input_sum || 0), 0);
     const totalOutput = pts.reduce((s, p) => s + (p.output_sum || 0), 0);
     const tokensTotalEl = $('#chart-tokens-total');
-    if (tokensTotalEl) tokensTotalEl.textContent = `Total: ${tok(totalInput + totalOutput)} (↑${tok(totalInput)} ↓${tok(totalOutput)})`;
+    if (tokensTotalEl) tokensTotalEl.textContent = t('metric.total_tokens', { total: tok(totalInput + totalOutput), input: tok(totalInput), output: tok(totalOutput) });
   }
 
   // 2. Cost — bar
@@ -1216,7 +1216,7 @@ async function refreshCharts() {
     state.charts.cost.update('none');
     const totalCost = pts.reduce((s, p) => s + (p.cost_sum || 0), 0);
     const costTotalEl = $('#chart-cost-total');
-    if (costTotalEl) costTotalEl.textContent = `Total: ${usd(totalCost)}`;
+    if (costTotalEl) costTotalEl.textContent = t('metric.total_cost', { total: usd(totalCost) });
   }
 
   // 3. Message Throughput — stacked bar
@@ -1348,7 +1348,7 @@ function addPriceRow(prefix, prices, builtIn) {
     <td><input class="settings-input settings-num" type="number" step="0.01" min="0" value="${prices.output}" /></td>
     <td><input class="settings-input settings-num" type="number" step="0.01" min="0" value="${prices.cacheRead}" /></td>
     <td><input class="settings-input settings-num" type="number" step="0.01" min="0" value="${prices.cacheCreation}" /></td>
-    <td>${builtIn ? '' : '<button class="settings-remove-btn" type="button" title="Remove">&times;</button>'}</td>`;
+    <td>${builtIn ? '' : `<button class="settings-remove-btn" type="button" title="${esc(t('btn.remove'))}">&times;</button>`}</td>`;
   if (!builtIn) {
     tr.querySelector('.settings-remove-btn').addEventListener('click', () => tr.remove());
   }
@@ -1459,7 +1459,7 @@ function createActionsModal() {
         <label class="action-field-label">${esc(t('actions.model'))}</label>
         <div class="action-model-wrap">
           <select id="action-model" class="action-select"></select>
-          <input id="action-model-custom" class="action-input" type="text" placeholder="e.g. claude-opus-4-7" hidden />
+          <input id="action-model-custom" class="action-input" type="text" placeholder="${esc(t('actions.model_placeholder'))}" hidden />
         </div>
       </div>
       <div class="action-field" id="action-effort-field">
@@ -1621,7 +1621,7 @@ async function openActionsModal() {
     }
     const customOpt = document.createElement('option');
     customOpt.value = '__custom__';
-    customOpt.textContent = 'Custom...';
+    customOpt.textContent = t('actions.custom');
     modelSel.appendChild(customOpt);
     modal.querySelector('#action-model-custom').hidden = true;
 
@@ -1639,7 +1639,7 @@ async function openActionsModal() {
       for (const e of list) {
         const opt = document.createElement('option');
         opt.value = e;
-        opt.textContent = EFFORT_LABELS[e] || e.charAt(0).toUpperCase() + e.slice(1);
+        opt.textContent = effortLabel(e);
         if (e === meta.current_effort) opt.selected = true;
         effortSel.appendChild(opt);
       }
@@ -1715,7 +1715,7 @@ async function execAction(action, body) {
       'restart-session': t('confirm.restart'),
       'switch-runtime': t('confirm.switch_runtime', { value: body?.runtime }),
       'switch-model': t('confirm.switch_model', { value: body?.model }),
-      'switch-effort': t('confirm.switch_effort', { value: EFFORT_LABELS[body?.effort] || body?.effort }),
+      'switch-effort': t('confirm.switch_effort', { value: effortLabel(body?.effort) }),
       'upgrade-zylos': t('confirm.upgrade_zylos'),
       'upgrade-cc': t('confirm.upgrade_cc')
     };
@@ -1751,7 +1751,7 @@ async function execAction(action, body) {
   } catch (err) {
     if (statusEl) {
       statusEl.className = 'modal-status error';
-      statusEl.textContent = `Failed: ${err.message}`;
+      statusEl.textContent = t('status.failed', { error: err.message });
     }
     return false;
   }

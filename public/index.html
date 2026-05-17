@@ -93,8 +93,7 @@
                   <svg width="14" height="14" viewBox="0 0 16 16" fill="none"><circle cx="8" cy="8" r="7" stroke="currentColor" stroke-width="1.5"/><path d="M8 7v4M8 5.5v0" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
                 </button>
                 <div class="tip-popover" id="context-popover" hidden>
-                  <p><strong>New Session Threshold</strong> — the context level at which the agent should start a new session to avoid degraded performance.</p>
-                  <p style="margin-top:4px">Recommended: 200K context → 70%, 1M context → ≤40%.</p>
+                  <p data-i18n="tip.threshold"></p>
                 </div>
               </span>
               <strong class="metric-value" id="metric-context-value">--</strong>
@@ -135,20 +134,20 @@
             <div class="cost-grid">
               <div class="cost-card">
                 <strong class="cost-amount" id="metric-cost-session">--</strong>
-                <small id="metric-cost-session-label">session</small>
+                <small id="metric-cost-session-label" data-i18n="cost.session">session</small>
               </div>
               <div class="cost-card">
                 <strong class="cost-amount" id="metric-cost-today">--</strong>
-                <small>today</small>
+                <small data-i18n="cost.today">today</small>
               </div>
               <div class="cost-card">
                 <strong class="cost-amount" id="metric-cost-7d">--</strong>
-                <small>7 days</small>
+                <small data-i18n="cost.7d">7 days</small>
               </div>
             </div>
           </div>
           <div class="tokens-section">
-            <span class="metric-label">Tokens</span>
+            <span class="metric-label" data-i18n="metric.tokens">Tokens</span>
             <div class="tokens-row">
               <div class="tokens-bar-wrap">
                 <div class="tokens-stacked-bar" id="tokens-bar">
@@ -158,7 +157,7 @@
                 <div class="tokens-bar-legend">
                   <span class="tokens-legend-item"><span class="legend-dot input"></span>↑<span id="metric-tokens-input">--</span></span>
                   <span class="tokens-legend-item"><span class="legend-dot output"></span>↓<span id="metric-tokens-output">--</span></span>
-                  <small>session</small>
+                  <small data-i18n="cost.session">session</small>
                 </div>
               </div>
               <div class="tokens-cache-wrap">
@@ -169,19 +168,19 @@
                   </svg>
                   <span class="ring-value ring-value-sm" id="metric-tokens-cache">--</span>
                 </div>
-                <small>cache hit</small>
+                <small data-i18n="metric.cache_hit">cache hit</small>
               </div>
             </div>
             <div class="tokens-periods">
               <div class="tokens-period-row">
                 <span class="metric-value-sub" id="metric-tokens-today">--</span>
                 <div class="tokens-mini-bar" id="tokens-bar-today"><div class="tokens-bar-input"></div><div class="tokens-bar-output"></div></div>
-                <small>today</small>
+                <small data-i18n="cost.today">today</small>
               </div>
               <div class="tokens-period-row">
                 <span class="metric-value-sub" id="metric-tokens-7d">--</span>
                 <div class="tokens-mini-bar" id="tokens-bar-7d"><div class="tokens-bar-input"></div><div class="tokens-bar-output"></div></div>
-                <small>7 days</small>
+                <small data-i18n="cost.7d">7 days</small>
               </div>
             </div>
           </div>
