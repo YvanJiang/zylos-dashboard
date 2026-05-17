@@ -580,38 +580,25 @@ export class Store {
       }
     }
 
-    // Supplement with hook-based tool call data for records without project attribution
-    const events = this.db.prepare(`
-      SELECT summary FROM runtime_events
-      WHERE event_type = 'post_tool_use' AND timestamp >= @since AND timestamp <= @until
-    `).all({ since: s, until: u });
+    // Distribute unattributed output tokens using hook tool call proportions
+    const attributedOutput = Object.values(projectOutputTokens).reduce((a, b) => a + b, 0);
+    const unattributedOutput = totalOutput - attributedOutput;
 
-    const hookProjects = new Set();
-    for (const e of events) {
-      const fp = this._extractFilePath(e.summary);
-      const project = this._extractProject(fp);
-      if (project && !projectOutputTokens[project]) {
-        hookProjects.add(project);
+    if (unattributedOutput > 0) {
+      const events = this.db.prepare(`
+        SELECT summary FROM runtime_events
+        WHERE event_type = 'post_tool_use' AND timestamp >= @since AND timestamp <= @until
+      `).all({ since: s, until: u });
+
+      const hookCounts = {};
+      for (const e of events) {
+        const fp = this._extractFilePath(e.summary);
+        const project = this._extractProject(fp);
+        if (project) hookCounts[project] = (hookCounts[project] || 0) + 1;
       }
-    }
-
-    // For hook-only projects (no JSONL attribution), estimate from tool call proportion
-    if (hookProjects.size > 0 && totalOutput > 0) {
-      const attributedOutput = Object.values(projectOutputTokens).reduce((a, b) => a + b, 0);
-      const unattributedOutput = totalOutput - attributedOutput;
-      if (unattributedOutput > 0) {
-        const hookCounts = {};
-        for (const e of events) {
-          const fp = this._extractFilePath(e.summary);
-          const project = this._extractProject(fp);
-          if (project && hookProjects.has(project)) {
-            hookCounts[project] = (hookCounts[project] || 0) + 1;
-          }
-        }
-        const totalHookCalls = Object.values(hookCounts).reduce((a, b) => a + b, 0) || 1;
-        for (const [p, count] of Object.entries(hookCounts)) {
-          projectOutputTokens[p] = (projectOutputTokens[p] || 0) + unattributedOutput * (count / totalHookCalls);
-        }
+      const totalHookCalls = Object.values(hookCounts).reduce((a, b) => a + b, 0) || 1;
+      for (const [p, count] of Object.entries(hookCounts)) {
+        projectOutputTokens[p] = (projectOutputTokens[p] || 0) + unattributedOutput * (count / totalHookCalls);
       }
     }
 
