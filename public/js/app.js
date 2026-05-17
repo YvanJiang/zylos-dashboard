@@ -195,7 +195,7 @@ function renderInfoBar() {
   const parts = [];
   if (ri.zylos_version) {
     let zv = `zylos v${ri.zylos_version}`;
-    if (ri.zylos_update) zv += ` <span class="info-bar-update" title="v${esc(ri.zylos_update)} available — click Actions to upgrade">↑${esc(ri.zylos_update)}</span>`;
+    if (ri.zylos_update) zv += ` <span class="info-bar-update" title="${esc(t('info.update_available', { version: ri.zylos_update }))}">↑${esc(ri.zylos_update)}</span>`;
     parts.push(zv);
   }
   if (ri.runtime) parts.push(esc(ri.runtime.charAt(0).toUpperCase() + ri.runtime.slice(1)));
@@ -206,12 +206,12 @@ function renderInfoBar() {
   if (ri.effort) parts.push(esc(EFFORT_LABELS[ri.effort] || ri.effort.charAt(0).toUpperCase() + ri.effort.slice(1)));
   if (ri.cc_version) {
     let cv = `CC v${esc(ri.cc_version)}`;
-    if (ri.cc_restart) cv += ` <span class="info-bar-update" title="v${esc(ri.cc_restart)} installed — restart to apply">↑${esc(ri.cc_restart)}</span>`;
-    else if (ri.cc_update) cv += ` <span class="info-bar-update" title="v${esc(ri.cc_update)} available — click Actions to upgrade">↑${esc(ri.cc_update)}</span>`;
+    if (ri.cc_restart) cv += ` <span class="info-bar-update" title="${esc(t('info.restart_available', { version: ri.cc_restart }))}">↑${esc(ri.cc_restart)}</span>`;
+    else if (ri.cc_update) cv += ` <span class="info-bar-update" title="${esc(t('info.update_available', { version: ri.cc_update }))}">↑${esc(ri.cc_update)}</span>`;
     parts.push(cv);
   }
 
-  bar.innerHTML = `<span class="info-bar-text">${parts.join(' · ')}</span><span class="info-bar-buttons"><button class="info-bar-actions-btn" id="actions-btn" type="button">Actions</button><button class="info-bar-gear" id="settings-btn" type="button" aria-label="Settings">⚙️</button></span>`;
+  bar.innerHTML = `<span class="info-bar-text">${parts.join(' · ')}</span><span class="info-bar-buttons"><button class="info-bar-actions-btn" id="actions-btn" type="button">${esc(t('btn.actions'))}</button><button class="info-bar-gear" id="settings-btn" type="button" aria-label="${esc(t('btn.settings'))}">⚙️</button></span>`;
 }
 
 // ─── Render: State ───
@@ -1280,34 +1280,33 @@ function createSettingsModal() {
   overlay.innerHTML = `
 <div class="modal">
   <div class="modal-head">
-    <h2>Settings</h2>
+    <h2>${esc(t('settings.title'))}</h2>
     <button class="modal-close" type="button" aria-label="Close">&times;</button>
   </div>
   <div class="modal-body">
     <div class="action-group">
-      <span class="action-group-label">Model Pricing (USD / MTok)
+      <span class="action-group-label">${esc(t('settings.model_pricing'))}
         <button class="tip-btn tip-btn-inline" id="pricing-tip" type="button" aria-label="Pricing info">
           <svg width="14" height="14" viewBox="0 0 16 16" fill="none"><circle cx="8" cy="8" r="7" stroke="currentColor" stroke-width="1.5"/><path d="M8 7v4M8 5.5v0" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
         </button>
         <div class="tip-popover" id="pricing-popover" hidden>
-          <p><strong>Model Prefix Matching</strong> — each entry matches API model names by prefix. E.g. <code>claude-opus-4</code> matches <code>claude-opus-4-6</code>, <code>claude-opus-4-7</code>, etc.</p>
-          <p style="margin-top:4px">If a model doesn't match any prefix, token metrics are still recorded but cost is not calculated.</p>
+          <p>${t('tip.pricing')}</p>
         </div>
       </span>
       <div class="settings-table-scroll">
       <table class="settings-price-table" id="settings-price-table">
         <thead>
-          <tr><th>Model Prefix</th><th>Input</th><th>Output</th><th>Cache Read</th><th>Cache Write</th><th></th></tr>
+          <tr><th>${esc(t('settings.col_prefix'))}</th><th>${esc(t('settings.col_input'))}</th><th>${esc(t('settings.col_output'))}</th><th>${esc(t('settings.col_cache_read'))}</th><th>${esc(t('settings.col_cache_write'))}</th><th></th></tr>
         </thead>
         <tbody id="settings-price-rows"></tbody>
       </table>
       </div>
-      <button class="action-btn action-btn-sm" id="settings-add-model" type="button">+ Add Model</button>
+      <button class="action-btn action-btn-sm" id="settings-add-model" type="button">${esc(t('btn.add_model'))}</button>
     </div>
     <div class="action-group">
-      <span class="action-group-label">Fast Mode</span>
+      <span class="action-group-label">${esc(t('settings.fast_mode'))}</span>
       <div class="action-field">
-        <label class="action-field-label">Price Multiplier</label>
+        <label class="action-field-label">${esc(t('settings.price_multiplier'))}</label>
         <div class="action-threshold-wrap">
           <input id="settings-fast-multiplier" class="action-input action-threshold-input" type="number" min="0.1" step="0.1" />
           <span class="action-threshold-unit">x</span>
@@ -1317,8 +1316,8 @@ function createSettingsModal() {
   </div>
   <div class="modal-status" id="settings-status" hidden></div>
   <div class="settings-footer">
-    <button class="action-btn" id="settings-cancel" type="button">Cancel</button>
-    <button class="action-btn action-btn-primary" id="settings-save" type="button">Save</button>
+    <button class="action-btn" id="settings-cancel" type="button">${esc(t('btn.cancel'))}</button>
+    <button class="action-btn action-btn-primary" id="settings-save" type="button">${esc(t('btn.save'))}</button>
   </div>
 </div>`;
   document.body.appendChild(overlay);
@@ -1412,8 +1411,8 @@ async function saveSettings() {
       body: JSON.stringify({ modelPrices, fastModeMultiplier })
     });
     const data = await resp.json();
-    if (!resp.ok) throw new Error(data.error || 'Save failed');
-    status.textContent = 'Settings saved';
+    if (!resp.ok) throw new Error(data.error || t('settings.save_failed'));
+    status.textContent = t('settings.saved');
     status.className = 'modal-status settings-status-ok';
     status.hidden = false;
     setTimeout(() => closeSettingsModal(), 1200);
@@ -1436,61 +1435,60 @@ function createActionsModal() {
   overlay.innerHTML = `
 <div class="modal">
   <div class="modal-head">
-    <h2>Actions</h2>
+    <h2>${esc(t('actions.title'))}</h2>
     <button class="modal-close" type="button" aria-label="Close">&times;</button>
   </div>
   <div class="modal-body">
     <div class="action-group">
-      <span class="action-group-label">Agent Control</span>
+      <span class="action-group-label">${esc(t('actions.agent_control'))}</span>
       <div class="action-row">
-        <button class="action-btn" data-action="interrupt" type="button">Interrupt</button>
-        <button class="action-btn action-warn" data-action="restart-session" type="button">Restart Session</button>
+        <button class="action-btn" data-action="interrupt" type="button">${esc(t('actions.interrupt'))}</button>
+        <button class="action-btn action-warn" data-action="restart-session" type="button">${esc(t('actions.restart'))}</button>
       </div>
     </div>
     <div class="action-group">
-      <span class="action-group-label">Configuration</span>
+      <span class="action-group-label">${esc(t('actions.configuration'))}</span>
       <div class="action-field">
-        <label class="action-field-label">Runtime</label>
+        <label class="action-field-label">${esc(t('actions.runtime'))}</label>
         <select id="action-runtime" class="action-select">
           <option value="claude">Claude</option>
           <option value="codex">Codex</option>
         </select>
       </div>
       <div class="action-field">
-        <label class="action-field-label">Model</label>
+        <label class="action-field-label">${esc(t('actions.model'))}</label>
         <div class="action-model-wrap">
           <select id="action-model" class="action-select"></select>
           <input id="action-model-custom" class="action-input" type="text" placeholder="e.g. claude-opus-4-7" hidden />
         </div>
       </div>
       <div class="action-field" id="action-effort-field">
-        <label class="action-field-label">Effort</label>
+        <label class="action-field-label">${esc(t('actions.effort'))}</label>
         <select id="action-effort" class="action-select"></select>
       </div>
       <div class="action-field">
-        <label class="action-field-label">New Session Threshold</label>
+        <label class="action-field-label">${esc(t('actions.threshold'))}</label>
         <button class="tip-btn tip-btn-inline" id="threshold-tip" type="button" aria-label="Threshold info">
           <svg width="14" height="14" viewBox="0 0 16 16" fill="none"><circle cx="8" cy="8" r="7" stroke="currentColor" stroke-width="1.5"/><path d="M8 7v4M8 5.5v0" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
         </button>
         <div class="tip-popover" id="threshold-popover" hidden>
-          <p><strong>New Session Threshold</strong> — the context level at which the agent should start a new session to avoid degraded performance.</p>
-          <p style="margin-top:4px">Recommended: 200K context → 70%, 1M context → ≤40%.</p>
+          <p>${t('tip.threshold')}</p>
         </div>
         <div class="action-threshold-wrap">
           <input id="action-threshold" class="action-input action-threshold-input" type="number" min="10" max="95" step="5" />
           <span class="action-threshold-unit">%</span>
-          <button class="action-btn action-btn-sm" id="action-threshold-apply" type="button">Apply</button>
+          <button class="action-btn action-btn-sm" id="action-threshold-apply" type="button">${esc(t('btn.apply'))}</button>
         </div>
       </div>
     </div>
     <div class="action-group">
-      <span class="action-group-label">Upgrade</span>
+      <span class="action-group-label">${esc(t('actions.upgrade'))}</span>
       <div class="action-row">
         <button class="action-btn" data-action="upgrade-zylos" type="button">
-          Upgrade zylos<span class="action-ver" id="action-zylos-ver"></span>
+          ${esc(t('actions.upgrade_zylos'))}<span class="action-ver" id="action-zylos-ver"></span>
         </button>
         <button class="action-btn" data-action="upgrade-cc" type="button">
-          Upgrade CC<span class="action-ver" id="action-cc-ver"></span>
+          ${esc(t('actions.upgrade_cc'))}<span class="action-ver" id="action-cc-ver"></span>
         </button>
       </div>
     </div>
@@ -1499,8 +1497,8 @@ function createActionsModal() {
   <div class="modal-confirm" id="action-confirm" hidden>
     <p id="action-confirm-text"></p>
     <div class="modal-confirm-buttons">
-      <button class="action-btn" id="action-confirm-cancel" type="button">Cancel</button>
-      <button class="action-btn danger" id="action-confirm-ok" type="button">Confirm</button>
+      <button class="action-btn" id="action-confirm-cancel" type="button">${esc(t('btn.cancel'))}</button>
+      <button class="action-btn danger" id="action-confirm-ok" type="button">${esc(t('btn.confirm'))}</button>
     </div>
   </div>
 </div>`;
