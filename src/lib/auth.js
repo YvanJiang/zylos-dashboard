@@ -7,6 +7,8 @@ const SCRYPT_KEYLEN = 64;
 const COOKIE_NAME = '__Host-zylos_dashboard_session';
 const SESSION_ABSOLUTE_MS = 86_400_000;
 const SESSION_IDLE_MS = 3_600_000;
+const REMEMBER_ABSOLUTE_MS = 30 * 86_400_000;
+const REMEMBER_IDLE_MS = 7 * 86_400_000;
 const CLEANUP_INTERVAL_MS = 300_000;
 const MAX_FAILURES = 5;
 const WINDOW_MS = 60_000;
@@ -64,11 +66,11 @@ function sha256(data) {
   return crypto.createHash('sha256').update(data).digest('hex');
 }
 
-function createSession() {
+function createSession(remember = false) {
   const token = crypto.randomBytes(64).toString('hex');
   const now = Date.now();
   if (_store) {
-    _store.insertSession(sha256(token), now);
+    _store.insertSession(sha256(token), now, remember);
   }
   return token;
 }
@@ -80,8 +82,10 @@ function validateSession(token) {
   const session = _store.getSession(hash);
   if (!session) return false;
   const now = Date.now();
-  if (now - session.created_at > SESSION_ABSOLUTE_MS ||
-      now - session.last_activity_at > SESSION_IDLE_MS) {
+  const absoluteMs = session.remember ? REMEMBER_ABSOLUTE_MS : SESSION_ABSOLUTE_MS;
+  const idleMs = session.remember ? REMEMBER_IDLE_MS : SESSION_IDLE_MS;
+  if (now - session.created_at > absoluteMs ||
+      now - session.last_activity_at > idleMs) {
     _store.deleteSession(hash);
     return false;
   }
@@ -107,8 +111,9 @@ function getSessionCookie(req) {
   return parseCookies(req.headers.cookie)[COOKIE_NAME] || null;
 }
 
-function setSessionCookie(res, token) {
-  res.setHeader('Set-Cookie', `${COOKIE_NAME}=${token}; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age=86400`);
+function setSessionCookie(res, token, remember = false) {
+  const maxAge = remember ? 30 * 86400 : 86400;
+  res.setHeader('Set-Cookie', `${COOKIE_NAME}=${token}; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age=${maxAge}`);
 }
 
 function clearSessionCookie(res) {
@@ -192,6 +197,8 @@ function loginPageHtml(base, error = '', next = '') {
       .login-error { color: #e74c3c; font-size: 0.85rem; margin: 0 0 1rem; }
       .login-label { display: block; font-size: 0.85rem; color: #aaa; margin-bottom: 0.5rem; }
       .login-input { width: 100%; padding: 0.6rem; border: 1px solid #333; border-radius: 4px; background: #0f1a30; color: #e0e0e0; font-size: 1rem; box-sizing: border-box; }
+      .login-remember { display: flex; align-items: center; gap: 0.5rem; margin-top: 0.75rem; font-size: 0.85rem; color: #aaa; cursor: pointer; }
+      .login-remember input { accent-color: #3498db; cursor: pointer; }
       .login-button { width: 100%; padding: 0.7rem; margin-top: 1rem; border: none; border-radius: 4px; background: #3498db; color: #fff; font-size: 1rem; cursor: pointer; }
       .login-button:hover { background: #2980b9; }
     </style>
@@ -205,6 +212,7 @@ function loginPageHtml(base, error = '', next = '') {
         <label class="login-label" for="password">Password</label>
         <input class="login-input" id="password" name="password" type="password" autocomplete="current-password" autofocus required>
         ${safeNext ? `<input type="hidden" name="next" value="${htmlEscape(safeNext)}">` : ''}
+        <label class="login-remember"><input type="checkbox" name="remember"> Remember me</label>
         <button class="login-button" type="submit">Sign in</button>
       </form>
     </main>
@@ -266,7 +274,7 @@ export class AuthGate {
     if (_store) {
       this._cleanupTimer = setInterval(() => {
         const now = Date.now();
-        _store.cleanupSessions(now - SESSION_ABSOLUTE_MS, now - SESSION_IDLE_MS);
+        _store.cleanupSessions(now - REMEMBER_ABSOLUTE_MS, now - REMEMBER_IDLE_MS);
       }, CLEANUP_INTERVAL_MS);
       this._cleanupTimer.unref?.();
     }
@@ -355,7 +363,8 @@ export class AuthGate {
     }
 
     clearFailures(ip);
-    setSessionCookie(res, createSession());
+    const remember = body.remember === 'on';
+    setSessionCookie(res, createSession(remember), remember);
     const redirectTo = body.next && isPathWithinBase(body.next, base) ? body.next : browserRoot(base);
     redirect(res, redirectTo);
     return true;

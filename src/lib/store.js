@@ -6,7 +6,8 @@ const SCHEMA_V2_SESSIONS = `
 CREATE TABLE IF NOT EXISTS auth_sessions (
   token_hash TEXT PRIMARY KEY,
   created_at INTEGER NOT NULL,
-  last_activity_at INTEGER NOT NULL
+  last_activity_at INTEGER NOT NULL,
+  remember INTEGER NOT NULL DEFAULT 0
 );
 `;
 
@@ -144,6 +145,13 @@ export class Store {
       }
       this.db.prepare('INSERT OR IGNORE INTO schema_migrations (version) VALUES (?)').run(6);
     }
+    if (currentVersion < 7) {
+      const cols = this.db.pragma('table_info(auth_sessions)').map(c => c.name);
+      if (!cols.includes('remember')) {
+        this.db.exec('ALTER TABLE auth_sessions ADD COLUMN remember INTEGER NOT NULL DEFAULT 0');
+      }
+      this.db.prepare('INSERT OR IGNORE INTO schema_migrations (version) VALUES (?)').run(7);
+    }
   }
 
   _prepareStatements() {
@@ -254,7 +262,7 @@ export class Store {
     `);
 
     this._insertSession = this.db.prepare(
-      'INSERT OR REPLACE INTO auth_sessions (token_hash, created_at, last_activity_at) VALUES (?, ?, ?)'
+      'INSERT OR REPLACE INTO auth_sessions (token_hash, created_at, last_activity_at, remember) VALUES (?, ?, ?, ?)'
     );
     this._getSession = this.db.prepare(
       'SELECT * FROM auth_sessions WHERE token_hash = ?'
@@ -432,8 +440,8 @@ export class Store {
     };
   }
 
-  insertSession(tokenHash, now) {
-    this._insertSession.run(tokenHash, now, now);
+  insertSession(tokenHash, now, remember = false) {
+    this._insertSession.run(tokenHash, now, now, remember ? 1 : 0);
   }
 
   getSession(tokenHash) {
