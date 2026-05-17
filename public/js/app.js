@@ -7,7 +7,7 @@ setAssetRoot(ASSET_ROOT);
 const METRICS = ['context_pct', 'rate_limit', 'rate_limit_7d', 'session_cost'];
 const THEMES = ['light'];
 const THEME_KEY = 'zylos-dashboard-theme';
-const EFFORT_LABELS = { low: 'Low', medium: 'Medium', high: 'High', xhigh: 'XHigh' };
+function effortLabel(level) { return t(`effort.${level}`) || level?.charAt(0).toUpperCase() + level?.slice(1) || ''; }
 
 const state = {
   dashboardState: null,
@@ -80,7 +80,7 @@ function tok(v) {
 function usd(v) {
   const n = Number(v);
   if (!Number.isFinite(n)) return '--';
-  return new Intl.NumberFormat(getLocale() === 'zh' ? 'zh-CN' : 'en-US', {
+  return new Intl.NumberFormat('en-US', {
     style: 'currency', currency: 'USD', maximumFractionDigits: n < 1 ? 4 : 2
   }).format(n);
 }
@@ -123,12 +123,12 @@ function fmtResetTime(unixSeconds) {
   if (!Number.isFinite(ts) || ts <= 0) return '';
   const ms = ts < 1e12 ? ts * 1000 : ts;
   const diff = ms - Date.now();
-  if (diff <= 0) return 'now';
+  if (diff <= 0) return t('reset.now');
   const h = Math.floor(diff / 3600000);
   const m = Math.floor((diff % 3600000) / 60000);
-  if (h > 24) { const d = Math.floor(h / 24); return `in ${d}d ${h % 24}h`; }
-  if (h > 0) return `in ${h}h ${m}m`;
-  return `in ${m}m`;
+  if (h > 24) { const d = Math.floor(h / 24); return t('reset.days', { d, h: h % 24 }); }
+  if (h > 0) return t('reset.hours', { h, m });
+  return t('reset.minutes', { m });
 }
 
 function esc(v) {
@@ -168,13 +168,13 @@ function srcLabel(m) {
   if (!m) return t('confidence.unavailable');
   const src = m.selected_source || m.source || '';
   const friendly = {
-    statusline: 'current session',
-    statusline_current_usage: 'current session',
-    jsonl_usage: 'JSONL usage',
-    rollout: 'rollout',
-    token_price_estimated: 'estimated',
-    derived_token_estimate: 'estimated',
-    hook_postToolUse: 'tool hooks'
+    statusline: t('metric.current_session'),
+    statusline_current_usage: t('metric.current_session'),
+    jsonl_usage: t('source.jsonl_usage'),
+    rollout: t('source.rollout'),
+    token_price_estimated: t('source.estimated'),
+    derived_token_estimate: t('source.estimated'),
+    hook_postToolUse: t('source.tool_hooks')
   };
   return friendly[src] || src || t('confidence.unavailable');
 }
@@ -195,7 +195,7 @@ function renderInfoBar() {
   const parts = [];
   if (ri.zylos_version) {
     let zv = `zylos v${ri.zylos_version}`;
-    if (ri.zylos_update) zv += ` <span class="info-bar-update" title="v${esc(ri.zylos_update)} available — click Actions to upgrade">↑${esc(ri.zylos_update)}</span>`;
+    if (ri.zylos_update) zv += ` <span class="info-bar-update" title="${esc(t('info.update_available', { version: ri.zylos_update }))}">↑${esc(ri.zylos_update)}</span>`;
     parts.push(zv);
   }
   if (ri.runtime) parts.push(esc(ri.runtime.charAt(0).toUpperCase() + ri.runtime.slice(1)));
@@ -203,15 +203,15 @@ function renderInfoBar() {
     const short = ri.model.replace(' context', '');
     parts.push(esc(short));
   }
-  if (ri.effort) parts.push(esc(EFFORT_LABELS[ri.effort] || ri.effort.charAt(0).toUpperCase() + ri.effort.slice(1)));
+  if (ri.effort) parts.push(esc(effortLabel(ri.effort)));
   if (ri.cc_version) {
     let cv = `CC v${esc(ri.cc_version)}`;
-    if (ri.cc_restart) cv += ` <span class="info-bar-update" title="v${esc(ri.cc_restart)} installed — restart to apply">↑${esc(ri.cc_restart)}</span>`;
-    else if (ri.cc_update) cv += ` <span class="info-bar-update" title="v${esc(ri.cc_update)} available — click Actions to upgrade">↑${esc(ri.cc_update)}</span>`;
+    if (ri.cc_restart) cv += ` <span class="info-bar-update" title="${esc(t('info.restart_available', { version: ri.cc_restart }))}">↑${esc(ri.cc_restart)}</span>`;
+    else if (ri.cc_update) cv += ` <span class="info-bar-update" title="${esc(t('info.update_available', { version: ri.cc_update }))}">↑${esc(ri.cc_update)}</span>`;
     parts.push(cv);
   }
 
-  bar.innerHTML = `<span class="info-bar-text">${parts.join(' · ')}</span><span class="info-bar-buttons"><button class="info-bar-actions-btn" id="actions-btn" type="button">Actions</button><button class="info-bar-gear" id="settings-btn" type="button" aria-label="Settings">⚙️</button></span>`;
+  bar.innerHTML = `<span class="info-bar-text">${parts.join(' · ')}</span><span class="info-bar-buttons"><button class="info-bar-actions-btn" id="actions-btn" type="button">${esc(t('btn.actions'))}</button><button class="info-bar-gear" id="settings-btn" type="button" aria-label="${esc(t('btn.settings'))}">⚙️</button></span>`;
 }
 
 // ─── Render: State ───
@@ -321,7 +321,7 @@ function renderToolFeed(tools, p) {
       el.className = 'tool-feed-item thinking';
       el.dataset.toolId = thinkingId;
       el.dataset.startedAt = new Date().toISOString();
-      el.innerHTML = `<span class="mono tool-detail">Thinking...</span><span class="tool-status">0s</span>`;
+      el.innerHTML = `<span class="mono tool-detail">${esc(t('activity.thinking'))}</span><span class="tool-status">0s</span>`;
       feed.appendChild(el);
     } else {
       const thinkAge = ageSec(existingThinking.dataset.startedAt) ?? 0;
@@ -416,7 +416,7 @@ function renderSubagents(p) {
 
   for (const agent of agents) {
     let grp = list.querySelector(`[data-agent-id="${agent.agent_id}"]`);
-    const label = agent.description || agent.agent_type || 'subagent';
+    const label = agent.description || agent.agent_type || t('activity.subagent');
     const shortId = agent.agent_id.slice(0, 7);
     const subtitle = agent.description ? agent.agent_type : null;
 
@@ -501,7 +501,7 @@ function renderMetrics() {
   if (thresholdMarker) {
     thresholdMarker.hidden = false;
     thresholdMarker.style.left = `${threshold}%`;
-    thresholdMarker.title = `New Session @ ${threshold}%`;
+    thresholdMarker.title = t('metric.threshold_at', { value: threshold });
   }
   const thresholdLabel = $('#metric-context-threshold-label');
   if (thresholdLabel) {
@@ -522,8 +522,8 @@ function renderMetrics() {
 
   const r5Reset = rate?.dimensions?.resets_at ?? rate?.resets_at;
   const r7Reset = rate7d?.dimensions?.resets_at ?? rate7d?.resets_at;
-  $('#metric-rate-5h-reset').textContent = r5Reset ? `resets ${fmtResetTime(r5Reset)}` : '';
-  $('#metric-rate-7d-reset').textContent = r7Reset ? `resets ${fmtResetTime(r7Reset)}` : '';
+  $('#metric-rate-5h-reset').textContent = r5Reset ? t('metric.resets', { time: fmtResetTime(r5Reset) }) : '';
+  $('#metric-rate-7d-reset').textContent = r7Reset ? t('metric.resets', { time: fmtResetTime(r7Reset) }) : '';
 
   const agg = state.aggregated || {};
   const hasCostSession = agg.cost_session != null;
@@ -532,7 +532,7 @@ function renderMetrics() {
   $('#metric-cost-7d').textContent = agg['cost_7d'] != null ? usd(agg['cost_7d']) : '--';
 
   const costSessionLabel = $('#metric-cost-session-label');
-  if (costSessionLabel) costSessionLabel.textContent = hasCostSession ? 'session' : 'lifetime';
+  if (costSessionLabel) costSessionLabel.textContent = hasCostSession ? t('cost.session') : t('cost.lifetime');
 
   // Tokens — stacked bar + cache ring
   const ts = agg.tokens_session;
@@ -660,12 +660,12 @@ function renderHealth() {
   const schedCount = $('#scheduler-count');
   const schedTimeline = $('#scheduler-timeline');
   if (schedCount) {
-    schedCount.textContent = sched?.pending ? `${sched.pending} pending` : '';
+    schedCount.textContent = sched?.pending ? t('sched.pending', { count: sched.pending }) : '';
   }
   if (schedTimeline) {
     const tasks = sched?.upcoming || [];
     if (tasks.length === 0) {
-      schedTimeline.innerHTML = '<span class="gauge-detail">No pending tasks</span>';
+      schedTimeline.innerHTML = `<span class="gauge-detail">${esc(t('sched.no_pending'))}</span>`;
     } else {
       const now = Date.now();
       schedTimeline.innerHTML = tasks.map((task, i) => {
@@ -1142,7 +1142,7 @@ function initCharts() {
         type: 'bar',
         data: {
           labels: [],
-          datasets: [{ label: 'Tool Calls', data: [], backgroundColor: CHART_COLORS.green }]
+          datasets: [{ label: t('trends.tool_calls'), data: [], backgroundColor: CHART_COLORS.green }]
         },
         options: horizontalBarOpts()
       });
@@ -1206,7 +1206,7 @@ async function refreshCharts() {
     const totalInput = pts.reduce((s, p) => s + (p.input_sum || 0), 0);
     const totalOutput = pts.reduce((s, p) => s + (p.output_sum || 0), 0);
     const tokensTotalEl = $('#chart-tokens-total');
-    if (tokensTotalEl) tokensTotalEl.textContent = `Total: ${tok(totalInput + totalOutput)} (↑${tok(totalInput)} ↓${tok(totalOutput)})`;
+    if (tokensTotalEl) tokensTotalEl.textContent = t('metric.total_tokens', { total: tok(totalInput + totalOutput), input: tok(totalInput), output: tok(totalOutput) });
   }
 
   // 2. Cost — bar
@@ -1216,7 +1216,7 @@ async function refreshCharts() {
     state.charts.cost.update('none');
     const totalCost = pts.reduce((s, p) => s + (p.cost_sum || 0), 0);
     const costTotalEl = $('#chart-cost-total');
-    if (costTotalEl) costTotalEl.textContent = `Total: ${usd(totalCost)}`;
+    if (costTotalEl) costTotalEl.textContent = t('metric.total_cost', { total: usd(totalCost) });
   }
 
   // 3. Message Throughput — stacked bar
@@ -1280,34 +1280,33 @@ function createSettingsModal() {
   overlay.innerHTML = `
 <div class="modal">
   <div class="modal-head">
-    <h2>Settings</h2>
+    <h2>${esc(t('settings.title'))}</h2>
     <button class="modal-close" type="button" aria-label="Close">&times;</button>
   </div>
   <div class="modal-body">
     <div class="action-group">
-      <span class="action-group-label">Model Pricing (USD / MTok)
+      <span class="action-group-label">${esc(t('settings.model_pricing'))}
         <button class="tip-btn tip-btn-inline" id="pricing-tip" type="button" aria-label="Pricing info">
           <svg width="14" height="14" viewBox="0 0 16 16" fill="none"><circle cx="8" cy="8" r="7" stroke="currentColor" stroke-width="1.5"/><path d="M8 7v4M8 5.5v0" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
         </button>
         <div class="tip-popover" id="pricing-popover" hidden>
-          <p><strong>Model Prefix Matching</strong> — each entry matches API model names by prefix. E.g. <code>claude-opus-4</code> matches <code>claude-opus-4-6</code>, <code>claude-opus-4-7</code>, etc.</p>
-          <p style="margin-top:4px">If a model doesn't match any prefix, token metrics are still recorded but cost is not calculated.</p>
+          <p>${t('tip.pricing')}</p>
         </div>
       </span>
       <div class="settings-table-scroll">
       <table class="settings-price-table" id="settings-price-table">
         <thead>
-          <tr><th>Model Prefix</th><th>Input</th><th>Output</th><th>Cache Read</th><th>Cache Write</th><th></th></tr>
+          <tr><th>${esc(t('settings.col_prefix'))}</th><th>${esc(t('settings.col_input'))}</th><th>${esc(t('settings.col_output'))}</th><th>${esc(t('settings.col_cache_read'))}</th><th>${esc(t('settings.col_cache_write'))}</th><th></th></tr>
         </thead>
         <tbody id="settings-price-rows"></tbody>
       </table>
       </div>
-      <button class="action-btn action-btn-sm" id="settings-add-model" type="button">+ Add Model</button>
+      <button class="action-btn action-btn-sm" id="settings-add-model" type="button">${esc(t('btn.add_model'))}</button>
     </div>
     <div class="action-group">
-      <span class="action-group-label">Fast Mode</span>
+      <span class="action-group-label">${esc(t('settings.fast_mode'))}</span>
       <div class="action-field">
-        <label class="action-field-label">Price Multiplier</label>
+        <label class="action-field-label">${esc(t('settings.price_multiplier'))}</label>
         <div class="action-threshold-wrap">
           <input id="settings-fast-multiplier" class="action-input action-threshold-input" type="number" min="0.1" step="0.1" />
           <span class="action-threshold-unit">x</span>
@@ -1317,8 +1316,8 @@ function createSettingsModal() {
   </div>
   <div class="modal-status" id="settings-status" hidden></div>
   <div class="settings-footer">
-    <button class="action-btn" id="settings-cancel" type="button">Cancel</button>
-    <button class="action-btn action-btn-primary" id="settings-save" type="button">Save</button>
+    <button class="action-btn" id="settings-cancel" type="button">${esc(t('btn.cancel'))}</button>
+    <button class="action-btn action-btn-primary" id="settings-save" type="button">${esc(t('btn.save'))}</button>
   </div>
 </div>`;
   document.body.appendChild(overlay);
@@ -1349,7 +1348,7 @@ function addPriceRow(prefix, prices, builtIn) {
     <td><input class="settings-input settings-num" type="number" step="0.01" min="0" value="${prices.output}" /></td>
     <td><input class="settings-input settings-num" type="number" step="0.01" min="0" value="${prices.cacheRead}" /></td>
     <td><input class="settings-input settings-num" type="number" step="0.01" min="0" value="${prices.cacheCreation}" /></td>
-    <td>${builtIn ? '' : '<button class="settings-remove-btn" type="button" title="Remove">&times;</button>'}</td>`;
+    <td>${builtIn ? '' : `<button class="settings-remove-btn" type="button" title="${esc(t('btn.remove'))}">&times;</button>`}</td>`;
   if (!builtIn) {
     tr.querySelector('.settings-remove-btn').addEventListener('click', () => tr.remove());
   }
@@ -1412,8 +1411,8 @@ async function saveSettings() {
       body: JSON.stringify({ modelPrices, fastModeMultiplier })
     });
     const data = await resp.json();
-    if (!resp.ok) throw new Error(data.error || 'Save failed');
-    status.textContent = 'Settings saved';
+    if (!resp.ok) throw new Error(data.error || t('settings.save_failed'));
+    status.textContent = t('settings.saved');
     status.className = 'modal-status settings-status-ok';
     status.hidden = false;
     setTimeout(() => closeSettingsModal(), 1200);
@@ -1436,61 +1435,60 @@ function createActionsModal() {
   overlay.innerHTML = `
 <div class="modal">
   <div class="modal-head">
-    <h2>Actions</h2>
+    <h2>${esc(t('actions.title'))}</h2>
     <button class="modal-close" type="button" aria-label="Close">&times;</button>
   </div>
   <div class="modal-body">
     <div class="action-group">
-      <span class="action-group-label">Agent Control</span>
+      <span class="action-group-label">${esc(t('actions.agent_control'))}</span>
       <div class="action-row">
-        <button class="action-btn" data-action="interrupt" type="button">Interrupt</button>
-        <button class="action-btn action-warn" data-action="restart-session" type="button">Restart Session</button>
+        <button class="action-btn" data-action="interrupt" type="button">${esc(t('actions.interrupt'))}</button>
+        <button class="action-btn action-warn" data-action="restart-session" type="button">${esc(t('actions.restart'))}</button>
       </div>
     </div>
     <div class="action-group">
-      <span class="action-group-label">Configuration</span>
+      <span class="action-group-label">${esc(t('actions.configuration'))}</span>
       <div class="action-field">
-        <label class="action-field-label">Runtime</label>
+        <label class="action-field-label">${esc(t('actions.runtime'))}</label>
         <select id="action-runtime" class="action-select">
           <option value="claude">Claude</option>
           <option value="codex">Codex</option>
         </select>
       </div>
       <div class="action-field">
-        <label class="action-field-label">Model</label>
+        <label class="action-field-label">${esc(t('actions.model'))}</label>
         <div class="action-model-wrap">
           <select id="action-model" class="action-select"></select>
-          <input id="action-model-custom" class="action-input" type="text" placeholder="e.g. claude-opus-4-7" hidden />
+          <input id="action-model-custom" class="action-input" type="text" placeholder="${esc(t('actions.model_placeholder'))}" hidden />
         </div>
       </div>
       <div class="action-field" id="action-effort-field">
-        <label class="action-field-label">Effort</label>
+        <label class="action-field-label">${esc(t('actions.effort'))}</label>
         <select id="action-effort" class="action-select"></select>
       </div>
       <div class="action-field">
-        <label class="action-field-label">New Session Threshold</label>
+        <label class="action-field-label">${esc(t('actions.threshold'))}</label>
         <button class="tip-btn tip-btn-inline" id="threshold-tip" type="button" aria-label="Threshold info">
           <svg width="14" height="14" viewBox="0 0 16 16" fill="none"><circle cx="8" cy="8" r="7" stroke="currentColor" stroke-width="1.5"/><path d="M8 7v4M8 5.5v0" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
         </button>
         <div class="tip-popover" id="threshold-popover" hidden>
-          <p><strong>New Session Threshold</strong> — the context level at which the agent should start a new session to avoid degraded performance.</p>
-          <p style="margin-top:4px">Recommended: 200K context → 70%, 1M context → ≤40%.</p>
+          <p>${t('tip.threshold')}</p>
         </div>
         <div class="action-threshold-wrap">
           <input id="action-threshold" class="action-input action-threshold-input" type="number" min="10" max="95" step="5" />
           <span class="action-threshold-unit">%</span>
-          <button class="action-btn action-btn-sm" id="action-threshold-apply" type="button">Apply</button>
+          <button class="action-btn action-btn-sm" id="action-threshold-apply" type="button">${esc(t('btn.apply'))}</button>
         </div>
       </div>
     </div>
     <div class="action-group">
-      <span class="action-group-label">Upgrade</span>
+      <span class="action-group-label">${esc(t('actions.upgrade'))}</span>
       <div class="action-row">
         <button class="action-btn" data-action="upgrade-zylos" type="button">
-          Upgrade zylos<span class="action-ver" id="action-zylos-ver"></span>
+          ${esc(t('actions.upgrade_zylos'))}<span class="action-ver" id="action-zylos-ver"></span>
         </button>
         <button class="action-btn" data-action="upgrade-cc" type="button">
-          Upgrade CC<span class="action-ver" id="action-cc-ver"></span>
+          ${esc(t('actions.upgrade_cc'))}<span class="action-ver" id="action-cc-ver"></span>
         </button>
       </div>
     </div>
@@ -1499,8 +1497,8 @@ function createActionsModal() {
   <div class="modal-confirm" id="action-confirm" hidden>
     <p id="action-confirm-text"></p>
     <div class="modal-confirm-buttons">
-      <button class="action-btn" id="action-confirm-cancel" type="button">Cancel</button>
-      <button class="action-btn danger" id="action-confirm-ok" type="button">Confirm</button>
+      <button class="action-btn" id="action-confirm-cancel" type="button">${esc(t('btn.cancel'))}</button>
+      <button class="action-btn danger" id="action-confirm-ok" type="button">${esc(t('btn.confirm'))}</button>
     </div>
   </div>
 </div>`;
@@ -1623,7 +1621,7 @@ async function openActionsModal() {
     }
     const customOpt = document.createElement('option');
     customOpt.value = '__custom__';
-    customOpt.textContent = 'Custom...';
+    customOpt.textContent = t('actions.custom');
     modelSel.appendChild(customOpt);
     modal.querySelector('#action-model-custom').hidden = true;
 
@@ -1641,7 +1639,7 @@ async function openActionsModal() {
       for (const e of list) {
         const opt = document.createElement('option');
         opt.value = e;
-        opt.textContent = EFFORT_LABELS[e] || e.charAt(0).toUpperCase() + e.slice(1);
+        opt.textContent = effortLabel(e);
         if (e === meta.current_effort) opt.selected = true;
         effortSel.appendChild(opt);
       }
@@ -1654,10 +1652,10 @@ async function openActionsModal() {
     const ccVer = modal.querySelector('#action-cc-ver');
     zylosVer.textContent = meta.zylos_version ? ` v${meta.zylos_version}` : '';
     zylosVer.classList.toggle('action-ver-dot', !!ri?.zylos_update);
-    zylosVer.title = ri?.zylos_update ? `v${ri.zylos_update} available` : '';
+    zylosVer.title = ri?.zylos_update ? t('info.version_available', { version: ri.zylos_update }) : '';
     ccVer.textContent = meta.cc_version ? ` v${meta.cc_version}` : '';
     ccVer.classList.toggle('action-ver-dot', !!ri?.cc_update);
-    ccVer.title = ri?.cc_update ? `v${ri.cc_update} available` : '';
+    ccVer.title = ri?.cc_update ? t('info.version_available', { version: ri.cc_update }) : '';
 
     runtimeSel._prevValue = runtimeSel.value;
     modelSel._prevValue = modelSel.value;
@@ -1682,7 +1680,7 @@ function updateRestartDot() {
   if (!btn) return;
   const pending = !!state.dashboardState?.runtime_info?.pending_restart;
   btn.classList.toggle('action-btn-pending', pending);
-  btn.title = pending ? 'Pending changes require restart to take effect' : '';
+  btn.title = pending ? t('info.pending_restart') : '';
 }
 
 const CONFIRM_ACTIONS = new Set(['interrupt', 'restart-session', 'switch-runtime', 'switch-model', 'switch-effort', 'upgrade-zylos', 'upgrade-cc']);
@@ -1713,22 +1711,22 @@ function showConfirm(text) {
 async function execAction(action, body) {
   if (CONFIRM_ACTIONS.has(action)) {
     const labels = {
-      'interrupt': 'Interrupt the agent? This will cancel the current operation.',
-      'restart-session': 'Restart the agent session? Context is preserved via memory.',
-      'switch-runtime': `Switch runtime to ${body?.runtime}? Session will restart.`,
-      'switch-model': `Switch model to ${body?.model}?`,
-      'switch-effort': `Switch effort to ${EFFORT_LABELS[body?.effort] || body?.effort}?`,
-      'upgrade-zylos': 'Upgrade zylos-core? All services will restart.',
-      'upgrade-cc': 'Upgrade Claude Code?'
+      'interrupt': t('confirm.interrupt'),
+      'restart-session': t('confirm.restart'),
+      'switch-runtime': t('confirm.switch_runtime', { value: body?.runtime }),
+      'switch-model': t('confirm.switch_model', { value: body?.model }),
+      'switch-effort': t('confirm.switch_effort', { value: effortLabel(body?.effort) }),
+      'upgrade-zylos': t('confirm.upgrade_zylos'),
+      'upgrade-cc': t('confirm.upgrade_cc')
     };
-    if (!(await showConfirm(labels[action] || `Execute ${action}?`))) return false;
+    if (!(await showConfirm(labels[action] || t('confirm.fallback', { action })))) return false;
   }
 
   const statusEl = actionsModal?.querySelector('#action-status');
   if (statusEl) {
     statusEl.hidden = false;
     statusEl.className = 'modal-status running';
-    statusEl.textContent = 'Executing...';
+    statusEl.textContent = t('status.executing');
   }
 
   try {
@@ -1741,7 +1739,7 @@ async function execAction(action, body) {
     if (statusEl) {
       const isInfo = !result.ok && (result.error === 'already_up_to_date' || result.error === 'already_set');
       statusEl.className = result.ok ? 'modal-status success' : isInfo ? 'modal-status success' : 'modal-status error';
-      statusEl.textContent = result.message || (result.ok ? 'Done' : result.error);
+      statusEl.textContent = result.message || (result.ok ? t('status.done') : result.error);
       if (result.ok || isInfo) setTimeout(() => { statusEl.hidden = true; }, 5000);
     }
     if (result.ok && result.requires_restart) {
@@ -1753,7 +1751,7 @@ async function execAction(action, body) {
   } catch (err) {
     if (statusEl) {
       statusEl.className = 'modal-status error';
-      statusEl.textContent = `Failed: ${err.message}`;
+      statusEl.textContent = t('status.failed', { error: err.message });
     }
     return false;
   }
