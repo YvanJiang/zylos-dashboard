@@ -80,7 +80,7 @@ function tok(v) {
 function usd(v) {
   const n = Number(v);
   if (!Number.isFinite(n)) return '--';
-  return new Intl.NumberFormat(getLocale() === 'zh' ? 'zh-CN' : 'en-US', {
+  return new Intl.NumberFormat('en-US', {
     style: 'currency', currency: 'USD', maximumFractionDigits: n < 1 ? 4 : 2
   }).format(n);
 }

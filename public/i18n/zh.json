@@ -23,7 +23,7 @@
   "label.context": "上下文",
   "label.rate_limit_5h": "5 小时限额",
   "label.rate_limit_7d": "7 天限额",
-  "label.cost": "成本",
+  "label.cost": "成本 (USD)",
   "label.cache_hit": "缓存命中率",
   "label.cpu": "CPU",
   "label.memory": "内存",
