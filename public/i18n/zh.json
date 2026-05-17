@@ -180,5 +180,6 @@
   "source.rollout": "滚动更新",
   "source.estimated": "估算",
   "source.tool_hooks": "工具钩子",
-  "trends.tool_calls": "工具调用"
+  "trends.tool_calls": "工具调用",
+  "trends.output_tokens": "输出 Token"
 }

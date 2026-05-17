@@ -134,9 +134,11 @@ export class ConversationCollector {
       const timestamp = msg.timestamp || now;
       const sessionId = msg.sessionId || null;
 
+      const projects = this._extractProjectsFromContent(content);
+
       if (usage) {
         const speed = usage.speed || 'standard';
-        usageWritten += this._ingestUsage(usage, model, sessionId, timestamp, uuid, speed);
+        usageWritten += this._ingestUsage(usage, model, sessionId, timestamp, uuid, speed, projects);
       }
 
       if (!Array.isArray(content)) continue;
@@ -200,7 +202,7 @@ export class ConversationCollector {
     return written;
   }
 
-  _ingestUsage(usage, model, sessionId, timestamp, uuid, speed) {
+  _ingestUsage(usage, model, sessionId, timestamp, uuid, speed, projects = []) {
     const inputTokens = usage.input_tokens || 0;
     const outputTokens = usage.output_tokens || 0;
     const cacheRead = usage.cache_read_input_tokens || 0;
@@ -211,11 +213,14 @@ export class ConversationCollector {
 
     if (this._hasUsageForUuid(uuid)) return 0;
 
+    const dims = { input: inputTokens, output: outputTokens, cache_read: cacheRead, cache_creation: cacheCreation, model, speed, uuid };
+    if (projects.length > 0) dims.projects = projects;
+
     let written = 0;
     this.store.insertMetric({
       timestamp, runtime: 'claude', session_id: sessionId,
       metric_name: 'api_request_tokens', metric_value: totalInput,
-      dimensions: { input: inputTokens, output: outputTokens, cache_read: cacheRead, cache_creation: cacheCreation, model, speed, uuid },
+      dimensions: dims,
       source: 'jsonl_usage', confidence: 'actual'
     });
     written++;
@@ -247,6 +252,42 @@ export class ConversationCollector {
     });
 
     return written;
+  }
+
+  _extractProjectsFromContent(content) {
+    if (!Array.isArray(content)) return [];
+    const projects = new Set();
+    for (const block of content) {
+      if (block.type !== 'tool_use') continue;
+      const fp = block.input?.file_path || block.input?.path;
+      if (fp) {
+        const project = this._extractProject(fp);
+        if (project) projects.add(project);
+        continue;
+      }
+      const cmd = block.input?.command;
+      if (cmd) {
+        const project = this._extractProjectFromCommand(cmd);
+        if (project) projects.add(project);
+      }
+    }
+    return [...projects];
+  }
+
+  _extractProject(filePath) {
+    if (!filePath) return null;
+    const parts = filePath.replace(/^\/+/, '').split('/');
+    const wsIdx = parts.indexOf('workspace');
+    if (wsIdx >= 0 && parts[wsIdx + 1]) return parts[wsIdx + 1];
+    const skillsIdx = parts.indexOf('skills');
+    if (skillsIdx >= 0 && parts[skillsIdx + 1]) return parts[skillsIdx + 1];
+    return null;
+  }
+
+  _extractProjectFromCommand(cmd) {
+    if (!cmd) return null;
+    const m = cmd.match(/(?:workspace|skills)\/([^/\s]+)/);
+    return m ? m[1] : null;
   }
 
   start(intervalMs = 5_000) {

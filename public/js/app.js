@@ -1075,13 +1075,16 @@ function horizontalBarOpts() {
     interaction: { mode: 'index', intersect: false },
     plugins: {
       legend: { display: false },
-      tooltip: { backgroundColor: '#101827', titleFont: { size: 11 }, bodyFont: { size: 11 }, padding: 8, cornerRadius: 6 }
+      tooltip: {
+        backgroundColor: '#101827', titleFont: { size: 11 }, bodyFont: { size: 11 }, padding: 8, cornerRadius: 6,
+        callbacks: { label: (ctx) => `${ctx.dataset.label}: ${tok(ctx.raw)}` }
+      }
     },
     scales: {
       x: {
         min: 0,
         grid: { color: CHART_COLORS.grid },
-        ticks: { font: { size: 10 }, color: CHART_COLORS.text },
+        ticks: { font: { size: 10 }, color: CHART_COLORS.text, callback: (v) => tok(v) },
         border: { display: false }
       },
       y: {
@@ -1144,7 +1147,7 @@ function initCharts() {
         type: 'bar',
         data: {
           labels: [],
-          datasets: [{ label: t('trends.tool_calls'), data: [], backgroundColor: CHART_COLORS.green }]
+          datasets: [{ label: t('trends.output_tokens'), data: [], backgroundColor: CHART_COLORS.green }]
         },
         options: horizontalBarOpts()
       });
@@ -1169,7 +1172,7 @@ function updateChartLabels() {
     state.charts.messages.update('none');
   }
   if (state.charts.projects) {
-    state.charts.projects.data.datasets[0].label = t('trends.tool_calls');
+    state.charts.projects.data.datasets[0].label = t('trends.output_tokens');
     state.charts.projects.update('none');
   }
 }
@@ -1254,9 +1257,9 @@ async function refreshCharts() {
   // 4. Project Distribution — horizontal bar
   if (state.charts.projects && projData.status === 'fulfilled') {
     const items = projData.value.items || [];
-    items.sort((a, b) => (b.calls || 0) - (a.calls || 0));
+    items.sort((a, b) => (b.outputTokens || 0) - (a.outputTokens || 0));
     state.charts.projects.data.labels = items.map((i) => i.name);
-    state.charts.projects.data.datasets[0].data = items.map((i) => i.calls || 0);
+    state.charts.projects.data.datasets[0].data = items.map((i) => i.outputTokens || 0);
     state.charts.projects.update('none');
   }
 }

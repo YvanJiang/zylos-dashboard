@@ -549,25 +549,71 @@ export class Store {
     const s = since || '1970-01-01T00:00:00Z';
     const u = until || '2099-12-31T23:59:59Z';
 
-    // Count tool calls per event, extract project from summary file paths
+    // Get rows with project attribution from JSONL-ingested metrics
+    const rows = this.db.prepare(`
+      SELECT dimensions FROM metric_points
+      WHERE metric_name = 'api_request_tokens'
+        AND timestamp >= @since AND timestamp <= @until
+    `).all({ since: s, until: u });
+
+    let totalTokens = 0;
+    let totalOutput = 0;
+    const projectOutputTokens = {};
+
+    for (const row of rows) {
+      let dims;
+      try { dims = JSON.parse(row.dimensions); } catch { continue; }
+      const output = dims.output || 0;
+      const input = (dims.input || 0) + (dims.cache_read || 0) + (dims.cache_creation || 0) + output;
+      totalTokens += input;
+      totalOutput += output;
+
+      const projects = dims.projects;
+      if (Array.isArray(projects) && projects.length > 0) {
+        const share = output / projects.length;
+        for (const p of projects) {
+          projectOutputTokens[p] = (projectOutputTokens[p] || 0) + share;
+        }
+      } else {
+        // Fall back to hook-based project extraction for older data without project attribution
+        // (these records were ingested before the project extraction was added)
+      }
+    }
+
+    // Supplement with hook-based tool call data for records without project attribution
     const events = this.db.prepare(`
-      SELECT summary, metadata FROM runtime_events
+      SELECT summary FROM runtime_events
       WHERE event_type = 'post_tool_use' AND timestamp >= @since AND timestamp <= @until
     `).all({ since: s, until: u });
 
-    // Get token totals for the period
-    const tokenRow = this.db.prepare(`
-      SELECT COALESCE(SUM(json_extract(dimensions, '$.input')), 0) +
-             COALESCE(SUM(json_extract(dimensions, '$.cache_read')), 0) +
-             COALESCE(SUM(json_extract(dimensions, '$.cache_creation')), 0) +
-             COALESCE(SUM(json_extract(dimensions, '$.output')), 0) AS total_tokens,
-             COALESCE(SUM(json_extract(dimensions, '$.output')), 0) AS total_output
-      FROM metric_points
-      WHERE metric_name = 'api_request_tokens'
-        AND timestamp >= @since AND timestamp <= @until
-    `).get({ since: s, until: u });
-    const totalTokens = tokenRow?.total_tokens || 0;
-    const totalOutput = tokenRow?.total_output || 0;
+    const hookProjects = new Set();
+    for (const e of events) {
+      const fp = this._extractFilePath(e.summary);
+      const project = this._extractProject(fp);
+      if (project && !projectOutputTokens[project]) {
+        hookProjects.add(project);
+      }
+    }
+
+    // For hook-only projects (no JSONL attribution), estimate from tool call proportion
+    if (hookProjects.size > 0 && totalOutput > 0) {
+      const attributedOutput = Object.values(projectOutputTokens).reduce((a, b) => a + b, 0);
+      const unattributedOutput = totalOutput - attributedOutput;
+      if (unattributedOutput > 0) {
+        const hookCounts = {};
+        for (const e of events) {
+          const fp = this._extractFilePath(e.summary);
+          const project = this._extractProject(fp);
+          if (project && hookProjects.has(project)) {
+            hookCounts[project] = (hookCounts[project] || 0) + 1;
+          }
+        }
+        const totalHookCalls = Object.values(hookCounts).reduce((a, b) => a + b, 0) || 1;
+        for (const [p, count] of Object.entries(hookCounts)) {
+          projectOutputTokens[p] = (projectOutputTokens[p] || 0) + unattributedOutput * (count / totalHookCalls);
+        }
+      }
+    }
 
     const costRow = this.db.prepare(`
       SELECT COALESCE(SUM(metric_value), 0) AS total_cost
@@ -577,27 +623,14 @@ export class Store {
     `).get({ since: s, until: u });
     const totalCost = costRow?.total_cost || 0;
 
-    // Count tool calls per project
-    const projectCounts = {};
-    for (const e of events) {
-      const fp = this._extractFilePath(e.summary);
-      const project = this._extractProject(fp);
-      if (project) {
-        projectCounts[project] = (projectCounts[project] || 0) + 1;
-      }
-    }
-
-    const totalCalls = Object.values(projectCounts).reduce((a, b) => a + b, 0) || 1;
-    const items = Object.entries(projectCounts)
+    const items = Object.entries(projectOutputTokens)
       .sort((a, b) => b[1] - a[1])
       .slice(0, 10)
-      .map(([name, calls]) => {
-        const pct = calls / totalCalls;
+      .map(([name, outputTok]) => {
+        const pct = totalOutput > 0 ? outputTok / totalOutput : 0;
         return {
           name,
-          calls,
-          tokens: Math.round(totalTokens * pct),
-          outputTokens: Math.round(totalOutput * pct),
+          outputTokens: Math.round(outputTok),
           cost: +(totalCost * pct).toFixed(4),
           percentage: +(pct * 100).toFixed(1)
         };
