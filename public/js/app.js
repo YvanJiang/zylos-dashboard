@@ -1842,6 +1842,47 @@ function updateRestartDot() {
 
 const CONFIRM_ACTIONS = new Set(['interrupt', 'restart-session', 'switch-runtime', 'switch-model', 'switch-effort', 'upgrade-zylos', 'upgrade-cc']);
 
+let countdownTimer = null;
+
+function startCountdownAndReload(seconds, statusEl) {
+  if (countdownTimer) clearInterval(countdownTimer);
+  let remaining = seconds;
+
+  const btns = actionsModal?.querySelectorAll('button, select, input');
+  btns?.forEach(el => { if (!el.classList.contains('modal-close')) el.disabled = true; });
+
+  const tick = () => {
+    if (!statusEl) return;
+    statusEl.hidden = false;
+    statusEl.className = 'modal-status running';
+    statusEl.textContent = t('status.countdown', { seconds: remaining });
+  };
+  tick();
+
+  countdownTimer = setInterval(() => {
+    remaining--;
+    if (remaining <= 0) {
+      clearInterval(countdownTimer);
+      countdownTimer = null;
+      if (statusEl) statusEl.textContent = t('status.reloading');
+      pollAndReload();
+      return;
+    }
+    tick();
+  }, 1000);
+}
+
+async function pollAndReload() {
+  for (let i = 0; i < 15; i++) {
+    await new Promise(r => setTimeout(r, 2000));
+    try {
+      const r = await fetch(api('/api/health'), { cache: 'no-store' });
+      if (r.ok) { window.location.reload(); return; }
+    } catch {}
+  }
+  window.location.reload();
+}
+
 function showConfirm(text) {
   return new Promise((resolve) => {
     const box = actionsModal?.querySelector('#action-confirm');
@@ -1895,6 +1936,10 @@ async function execAction(action, body) {
       body: JSON.stringify(body || {})
     });
     const result = await r.json();
+    if (result.ok && result.detached) {
+      startCountdownAndReload(15, statusEl);
+      return true;
+    }
     if (statusEl) {
       const isInfo = !result.ok && (result.error === 'already_up_to_date' || result.error === 'already_set');
       statusEl.className = result.ok ? 'modal-status success' : isInfo ? 'modal-status success' : 'modal-status error';

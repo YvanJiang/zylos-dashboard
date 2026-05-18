@@ -183,5 +183,7 @@
   "source.tool_hooks": "工具钩子",
   "trends.tool_calls": "工具调用",
   "trends.output_tokens": "输出 Token",
-  "banner.codex_degraded": "部分功能需要 Claude 运行时"
+  "banner.codex_degraded": "部分功能需要 Claude 运行时",
+  "status.countdown": "{seconds} 秒后重启...",
+  "status.reloading": "正在刷新页面..."
 }
