@@ -1,4 +1,4 @@
-# AI Component Development Guide
+# zylos-dashboard Development Guide
 
 This document guides AI assistants working on the zylos-dashboard component.
 
@@ -7,9 +7,79 @@ This document guides AI assistants working on the zylos-dashboard component.
 - **ESM only** — `import`/`export`, never `require()`. `"type": "module"` in package.json. Exception: `ecosystem.config.cjs` (PM2 requires CJS) and `src/lib/hook-ingest.cjs` (standalone Claude Code hook — must use only Node built-ins, no ESM setup, 500ms deadline)
 - **Node.js 20+** — Minimum runtime version
 - **Conventional commits** — `feat:`, `fix:`, `chore:`, `docs:`, `refactor:`, `test:`
-- **No `files` in package.json** — Rely on `.gitignore` to exclude
-- **All config in `config.json`** — Secrets and runtime config both live in `~/zylos/components/<name>/config.json`. This file is in the data directory (never committed to git). Mark sensitive fields with `sensitive: true` in SKILL.md for future vault integration
+- **All config in `config.json`** — Runtime config lives in `~/zylos/components/dashboard/config.json` (data directory, never committed)
 - **English for code** — Comments, commit messages, PR descriptions, documentation
+
+## Architecture
+
+### Backend (`src/`)
+
+| File | Purpose |
+|------|---------|
+| `index.js` | Entry point — wires collectors, HTTP, SSE, spool drainer |
+| `lib/store.js` | SQLite DB with incremental migrations (`schema_migrations` table) |
+| `lib/state-engine.js` | Infers agent state (idle/busy/stuck/waiting) from events |
+| `lib/http.js` | HTTP server — API routes, static files, auth middleware |
+| `lib/sse.js` | Server-Sent Events for live dashboard updates |
+| `lib/auth.js` | Cookie-based auth with scrypt hashing, rate limiting, lockout |
+| `lib/config.js` | Loads and validates `config.json` |
+| `lib/actions.js` | Actions modal endpoints (runtime switch, model change, etc.) |
+| `lib/hook-ingest.cjs` | CJS hook for Claude Code — posts tool/event data to dashboard (500ms deadline, Node built-ins only) |
+| `lib/hook-installer.js` | Injects/removes dashboard hooks into Claude Code `settings.json` |
+| `lib/ingest-handler.js` | HTTP handler for hook event ingestion with security gates |
+| `lib/spool-drainer.js` | Replays spooled events when dashboard restarts |
+| `lib/metric-resolver.js` | Resolves metrics from multiple sources with confidence levels |
+| `lib/c4-reader.js` | Reads C4 communication bridge data |
+| `lib/sanitizer.js` | Strips sensitive data from tool output before storage |
+
+### Collectors (`src/lib/collectors/`)
+
+| Collector | Data source | Runtime |
+|-----------|-------------|---------|
+| `statusline-collector.js` | `activity-monitor/statusline.json` (fs.watch) | All |
+| `system-collector.js` | `os.cpus()`, `os.totalmem()`, `vm_stat` (macOS), `fs.statfsSync` | All |
+| `pm2-collector.js` | PM2 programmatic API | All |
+| `conversation-collector.js` | Hook events (assistant text messages) | Claude |
+
+### Frontend (`public/`)
+
+| File | Purpose |
+|------|---------|
+| `index.html` | Single-page app shell |
+| `js/app.js` | Main UI — SSE, DOM updates, modals, charts (vanilla JS, no framework) |
+| `js/i18n.js` | Bilingual strings (EN/ZH), locale toggle |
+| `js/gauge-utils.js` | Shared gauge display logic (production + test) |
+| `css/style.css` | Main stylesheet |
+| `themes/light.css` | Light theme overrides |
+
+### Lifecycle Hooks (`hooks/`)
+
+| Hook | When | Purpose |
+|------|------|---------|
+| `post-install.js` | After `zylos add` | Create data dir, generate auth password, inject Claude hooks |
+| `pre-upgrade.js` | Before `zylos upgrade` | Backup config |
+| `post-upgrade.js` | After `zylos upgrade` | Migrate config schema |
+| `pre-uninstall.js` | Before `zylos remove` | Remove Claude hooks from settings.json |
+| `configure.js` | `zylos configure dashboard` | Set password, toggle auth |
+
+## Key Constraints
+
+- **hook-ingest.cjs** must use only Node built-ins (no imports from node_modules). It runs as a Claude Code hook with a 500ms deadline. Must be CJS, not ESM.
+- **Frontend is vanilla JS** — no build step, no framework, no bundler. `app.js` uses cache-busting via query string (`?v=N`). Bump the version after any frontend change.
+- **DB migrations are incremental** — each migration checks `currentVersion < N` and is idempotent. Never modify existing migrations; only append new ones.
+- **macOS vs Linux** — `system-collector.js` uses `vm_stat` on macOS for accurate memory reporting. Test on both platforms when changing system metrics.
+- **Codex runtime** — dashboard detects runtime from config. Claude-only panels are hidden on Codex. Use `config.runtime` checks, not environment sniffing.
+
+## Testing
+
+```bash
+npm run check      # Syntax check all JS/CJS files
+npm test           # Unit tests (node --test)
+npm run smoke      # Start server, verify health, exit
+npm run smoke:api  # API endpoint smoke test
+```
+
+Tests live in `test/`. Use `node:test` and `node:assert/strict`. Shared logic (like `gauge-utils.js`) must be imported by both production code and tests — never duplicate logic.
 
 ## Release Process
 
@@ -22,153 +92,13 @@ When releasing a new version, **all four files** must be updated in the same com
 
 Version bump commit message: `chore: bump version to X.Y.Z`
 
-CHANGELOG entry format:
-```markdown
-## [X.Y.Z] - YYYY-MM-DD
-
-### Added / Changed / Fixed / Removed / Security
-- Description of change (#PR)
-```
-
 After merge, create a GitHub Release with tag `vX.Y.Z` from the merge commit.
 
-## Quick Start
-
-### Step 1: Copy Template
-
-```bash
-cd ~/src
-git clone https://github.com/zylos-ai/zylos-component-template.git temp-clone
-cp -r temp-clone/template zylos-<name>
-rm -rf temp-clone
-cd zylos-<name>
-```
-
-### Step 2: Gather Component Info
-
-Confirm with user:
-- **Name**: lowercase, e.g., `discord`, `slack`, `browser`
-- **Description**: one-line description
-- **Type**: `communication` | `capability` | `utility`
-
-### Step 3: Replace Placeholders
-
-| Placeholder | Replace With | Example |
-|-------------|--------------|---------|
-| `{{COMPONENT_NAME}}` | Component name (lowercase) | `discord` |
-| `{{COMPONENT_NAME_UPPER}}` | Component name (uppercase) | `DISCORD` |
-| `{{COMPONENT_TITLE}}` | Component title | `Discord` |
-| `{{COMPONENT_DESCRIPTION}}` | Component description | `Discord bot integration` |
-| `{{COMPONENT_TYPE}}` | Component type | `communication` |
-| `{{DATE}}` | Current date | `2026-02-09` |
-
-```bash
-find . -type f -exec sed -i "s|{{COMPONENT_NAME}}|$NAME|g" {} \;
-# Repeat for all placeholders
-```
-
-### Step 4: Handle Component Type
-
-- **communication**: Keep all files as-is
-- **capability / utility**: Delete `scripts/send.js`
-
-### Step 5: Implement Component Logic
-
-Read the type-specific guide:
-- **Communication**: See [references/communication.md](./references/communication.md) — C4 bridge integration, message format, owner binding, group context. Also see [references/channel-standards.md](./references/channel-standards.md) — security pitfalls, coding standards, and pre-commit checklist
-- **Capability / Utility**: See [references/capability.md](./references/capability.md) — service pattern, CLI tool pattern
-
-### Step 6: Update SKILL.md
-
-The SKILL.md `description` field is how Claude decides when to use this component. Write it following create-skill principles:
-
-- Include **what** the component does AND **when** to use it (trigger patterns)
-- Put all "when to use" information in the frontmatter `description`, NOT in the body
-- Body should contain only concise usage examples — Claude can run `--help` for details
-
-Example description for a discord component:
-```
-Discord messaging for Zylos agents. Use when the user wants to communicate via
-Discord, send messages to Discord channels, or configure Discord bot settings.
-```
-
-Fill in `config.required` if the component needs API keys or secrets.
-
-### Step 7: Update README.md
-
-Replace placeholder features with actual features. The template includes centered logo, badge icons, and standard sections — fill in component-specific content.
-
-### Step 8: Initialize Git
-
-```bash
-git init && git add . && git commit -m "Initial commit: zylos-<name>"
-git branch -M main
-git remote add origin git@github.com:zylos-ai/zylos-<name>.git
-git push -u origin main
-```
-
-## Best Practices
-
-### Config Management
-
-All component configuration lives in one place:
-
-| Location | What goes here | Example |
-|----------|---------------|---------|
-| `~/zylos/components/<name>/config.json` | All config (secrets + runtime) | `{"api_key": "xxx", "enabled": true}` |
-
-This file is in the data directory — never committed to git, preserved across upgrades. Declare sensitive fields in SKILL.md frontmatter for future vault integration:
-
-```yaml
-config:
-  required:
-    - name: DISCORD_BOT_TOKEN
-      description: Discord bot token
-      sensitive: true    # Marks this field for vault migration
-```
-
-### Directory Convention
+## Directory Convention
 
 ```
-Code:    ~/zylos/.claude/skills/<component>/    # Overwritten on upgrade
-Data:    ~/zylos/components/<component>/         # Preserved across upgrades (config.json + data/)
+Code:    ~/zylos/.claude/skills/dashboard/    # Overwritten on upgrade
+Data:    ~/zylos/components/dashboard/         # Preserved across upgrades
 ```
 
 **Code is disposable, data is permanent.** Never store user data in the skills directory.
-
-### Logging
-
-Use consistent prefix: `[component-name]`
-
-### Error Handling
-
-- **Startup**: Fail fast on missing credentials (`process.exit(1)`)
-- **Runtime**: Log and continue (don't crash the service)
-- **Shutdown**: Graceful on SIGINT/SIGTERM
-
-### Hooks
-
-| Hook | When | Purpose |
-|------|------|---------|
-| `post-install.js` | After `zylos add` | Create data dirs, default config |
-| `pre-upgrade.js` | Before `zylos upgrade` | Backup config. Exit 1 to abort |
-| `post-upgrade.js` | After `zylos upgrade` | Migrate config schema |
-
-## Acceptance Checklist
-
-- [ ] SKILL.md frontmatter complete (name, version, type, lifecycle, upgrade)
-- [ ] SKILL.md description includes trigger patterns (what + when to use)
-- [ ] SKILL.md body has concise usage examples only
-- [ ] README.md has real features, badges, and setup instructions
-- [ ] `npm install && npm start` works
-- [ ] post-install.js creates data directory and default config
-- [ ] post-upgrade.js handles config migrations
-- [ ] PM2 can manage the service (`pm2 start ecosystem.config.cjs`)
-- [ ] (communication) scripts/send.js sends text and media
-- [ ] (communication) Messages forwarded to C4 in correct format
-
-## Reference Implementations
-
-- [zylos-telegram](https://github.com/zylos-ai/zylos-telegram) — Telegram communication component
-- [zylos-lark](https://github.com/zylos-ai/zylos-lark) — Lark/Feishu communication component
-- [zylos-imagegen](https://github.com/zylos-ai/zylos-imagegen) — Image generation capability component
