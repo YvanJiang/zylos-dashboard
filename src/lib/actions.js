@@ -144,7 +144,15 @@ async function switchRuntime(reqId, body, config) {
   });
   child.unref();
 
-  return { ok: true, message: `Switching to ${target}. Dashboard will restart momentarily.`, detached: true };
+  setTimeout(() => {
+    log(reqId, 'self-restart: pm2 restart zylos-dashboard');
+    const restart = spawn('pm2', ['restart', 'zylos-dashboard'], {
+      detached: true, stdio: 'ignore',
+    });
+    restart.unref();
+  }, 15_000);
+
+  return { ok: true, message: `Switching to ${target}. Dashboard will restart in ~15s.`, detached: true };
 }
 
 async function switchModel(reqId, body, config, zylosDir) {
