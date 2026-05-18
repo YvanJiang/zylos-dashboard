@@ -1827,11 +1827,13 @@ async function openActionsModal() {
 
 function closeActionsModal() {
   if (!actionsModal) return;
+  if (pendingConfirmCancel) { pendingConfirmCancel(); pendingConfirmCancel = null; }
   actionsModal.hidden = true;
   const confirm = actionsModal.querySelector('#action-confirm');
   if (confirm) confirm.hidden = true;
   const status = actionsModal.querySelector('#action-status');
   if (status) status.hidden = true;
+  setModalBodyDisabled(false);
 }
 
 function updateRestartDot() {
@@ -1845,6 +1847,7 @@ function updateRestartDot() {
 const CONFIRM_ACTIONS = new Set(['interrupt', 'restart-session', 'switch-runtime', 'switch-model', 'switch-effort', 'upgrade-zylos', 'upgrade-cc']);
 
 let countdownTimer = null;
+let pendingConfirmCancel = null;
 
 function startCountdownAndReload(seconds, statusEl) {
   if (countdownTimer) clearInterval(countdownTimer);
@@ -1905,6 +1908,7 @@ function showConfirm(text) {
     setModalBodyDisabled(true);
 
     function cleanup() {
+      pendingConfirmCancel = null;
       box.hidden = true;
       setModalBodyDisabled(false);
       okBtn.removeEventListener('click', onOk);
@@ -1912,6 +1916,7 @@ function showConfirm(text) {
     }
     function onOk() { cleanup(); resolve(true); }
     function onCancel() { cleanup(); resolve(false); }
+    pendingConfirmCancel = onCancel;
     okBtn.addEventListener('click', onOk);
     cancelBtn.addEventListener('click', onCancel);
   });
