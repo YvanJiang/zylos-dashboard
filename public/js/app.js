@@ -1885,6 +1885,13 @@ async function pollAndReload() {
   window.location.reload();
 }
 
+function setModalBodyDisabled(disabled) {
+  const body = actionsModal?.querySelector('.modal-body');
+  if (!body) return;
+  body.classList.toggle('modal-body-disabled', disabled);
+  body.querySelectorAll('button, select, input').forEach(el => { el.disabled = disabled; });
+}
+
 function showConfirm(text) {
   return new Promise((resolve) => {
     const box = actionsModal?.querySelector('#action-confirm');
@@ -1895,9 +1902,11 @@ function showConfirm(text) {
 
     msg.textContent = text;
     box.hidden = false;
+    setModalBodyDisabled(true);
 
     function cleanup() {
       box.hidden = true;
+      setModalBodyDisabled(false);
       okBtn.removeEventListener('click', onOk);
       cancelBtn.removeEventListener('click', onCancel);
     }
