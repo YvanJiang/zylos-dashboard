@@ -19,10 +19,10 @@ if (!fs.existsSync(configPath)) {
     host: '127.0.0.1',
     theme: 'default',
     refreshMs: 5000,
+    ingestToken: null,
     auth: {
       enabled: false,
-      bearerToken: null,
-      allowUrlTokenOnLocalhost: false
+      password: null
     },
     retention: {
       metrics: 'full',

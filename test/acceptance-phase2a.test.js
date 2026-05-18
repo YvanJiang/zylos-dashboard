@@ -13,7 +13,7 @@ if (!process.env.ACCEPTANCE) {
 const DATA_DIR = path.join(os.homedir(), 'zylos', 'components', 'dashboard');
 const DB_PATH = path.join(DATA_DIR, 'dashboard.db');
 const SPOOL_PATH = path.join(DATA_DIR, 'spool', 'hook-events.jsonl');
-const HOOK_SCRIPT = path.resolve(new URL('../lib/hook-ingest.cjs', import.meta.url).pathname);
+const HOOK_SCRIPT = path.resolve(new URL('../src/lib/hook-ingest.cjs', import.meta.url).pathname);
 const BASE = 'http://127.0.0.1:3470';
 
 function sql(query) {

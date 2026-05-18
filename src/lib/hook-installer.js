@@ -14,8 +14,8 @@ export class HookInstaller {
   constructor(projectRoot, zylosDir) {
     this.projectRoot = projectRoot || path.resolve(__dirname, '..', '..');
     this.zylosDir = zylosDir || process.env.ZYLOS_DIR || path.join(os.homedir(), 'zylos');
-    this.hookScript = path.join(this.projectRoot, 'lib', 'hook-ingest.cjs');
-    this.statuslineScript = path.join(this.projectRoot, 'lib', 'statusline-ingest.cjs');
+    this.hookScript = path.join(this.projectRoot, 'src', 'lib', 'hook-ingest.cjs');
+    this.statuslineScript = path.join(this.projectRoot, 'src', 'lib', 'statusline-ingest.cjs');
   }
 
   detectRuntime() {

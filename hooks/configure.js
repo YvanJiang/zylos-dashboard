@@ -102,6 +102,10 @@ try {
     }
   }
 
+  if (config.auth?.password && !config.auth.enabled) {
+    config.auth.enabled = true;
+  }
+
   writeJsonFile(CONFIG_PATH, config);
   console.log(`[configure] Wrote config to ${CONFIG_PATH}`);
 } catch (err) {
