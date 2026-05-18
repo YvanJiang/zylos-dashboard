@@ -241,9 +241,9 @@ export class IngestHandler {
 
 ---
 
-### 2.4 Hook Ingest Script — `lib/hook-ingest.cjs`
+### 2.4 Hook Ingest Script — `src/lib/hook-ingest.cjs`
 
-**Location**: `components/dashboard/lib/hook-ingest.cjs` (NOT under `src/` — runs as independent process)
+**Location**: `components/dashboard/src/lib/hook-ingest.cjs` (NOT under `src/` — runs as independent process)
 
 **Owned writes**: Spool file (`components/dashboard/spool/hook-events.jsonl`)
 
@@ -253,7 +253,7 @@ export class IngestHandler {
 
 Standalone script. No exports. Invoked by runtime hooks:
 ```
-echo '<json>' | node ~/zylos/components/dashboard/lib/hook-ingest.cjs
+echo '<json>' | node ~/zylos/components/dashboard/src/lib/hook-ingest.cjs
 ```
 
 #### Implementation Details
@@ -1252,7 +1252,7 @@ export class HookInstaller {
 
 - **Claude**: Read `~/.claude/settings.json`. Merge into `hooks` object — for each of the 5 event names, append the dashboard command if not already present. Preserve existing user hooks.
 - **Codex**: Read `~/.codex/hooks.json` (array format). Append entries for each of the 5 events if not already present. Preserve existing entries.
-- **Uninstall**: Remove only entries whose command path matches the dashboard script pattern (`components/dashboard/lib/hook-ingest.cjs`). Never touch core skill hooks, other component hooks, or user-created hooks.
+- **Uninstall**: Remove only entries whose command path matches the dashboard script pattern (`components/dashboard/src/lib/hook-ingest.cjs`). Never touch core skill hooks, other component hooks, or user-created hooks.
 - **Safety boundary**: The HookInstaller operates only on its own entries, identified by script path. It reads the full hooks file for merging, but must not modify or remove any entry that does not match the dashboard's own script path. This ensures coexistence with zylos-core's `sync-settings-hooks.js` (which preserves non-core entries), other components, and user customizations. If the dashboard is later absorbed into zylos-core, its hooks migrate naturally into the template and `sync-settings-hooks.js` management.
 - **Detection**: Read `process.env.ZYLOS_RUNTIME` (canonical interface). Default to `'claude'` if unset. No PM2 fallback — PM2 manages service modules, not the agent runtime.
 - **Idempotent**: Running install twice produces the same result (no duplicate entries). Running uninstall twice produces the same result (no errors on missing entries).
