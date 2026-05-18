@@ -54,6 +54,10 @@ function refreshInstalledVersions() {
 const config = loadConfig();
 ensureDataDirs(config);
 
+const activeRuntime = loadZylosConfig(config.zylosDir).runtime || process.env.ZYLOS_RUNTIME || 'claude';
+const isClaudeRuntime = activeRuntime === 'claude';
+config.runtime = activeRuntime;
+
 // 1-2. Store
 const dbPath = path.join(config.dataDir, 'dashboard.db');
 const store = new Store(dbPath);
@@ -73,11 +77,13 @@ if (spoolResult.processed > 0) {
 // 5-6. Collectors
 const pm2Collector = new PM2Collector(store, config);
 const systemCollector = new SystemCollector(store, config);
-const statuslineCollector = new StatuslineCollector(store, config);
+const statuslineCollector = isClaudeRuntime ? new StatuslineCollector(store, config) : null;
+const conversationCollector = isClaudeRuntime ? new ConversationCollector(store, config) : null;
 
-const conversationCollector = new ConversationCollector(store, config);
-
-const collectors = { pm2: pm2Collector, system: systemCollector, statusline: statuslineCollector, conversation: conversationCollector };
+const collectors = { pm2: pm2Collector, system: systemCollector };
+if (statuslineCollector) collectors.statusline = statuslineCollector;
+if (conversationCollector) collectors.conversation = conversationCollector;
+if (!isClaudeRuntime) process.stderr.write(`[startup] Runtime "${activeRuntime}" — Claude-only collectors skipped\n`);
 
 // SSE hub
 const sse = new SseHub(15_000);
@@ -101,20 +107,19 @@ function readClaudeSettings() {
 }
 
 function buildRuntimeInfo() {
-  const slInfo = statuslineCollector.getRuntimeInfo();
+  const slInfo = statuslineCollector?.getRuntimeInfo();
   const latest = versionChecker.getLatest();
   const ccRunning = slInfo?.cc_version || null;
 
-  // Derive pending_restart from settings vs running state (compare IDs, not display names)
-  const settings = readClaudeSettings();
-  const needsRestart =
-    (settings.model && slInfo?.model_id && settings.model !== slInfo.model_id) ||
+  const settings = isClaudeRuntime ? readClaudeSettings() : {};
+  const needsRestart = isClaudeRuntime &&
+    ((settings.model && slInfo?.model_id && settings.model !== slInfo.model_id) ||
     (settings.effortLevel && slInfo?.effort && settings.effortLevel !== slInfo.effort) ||
-    (ccInstalledVersion && ccRunning && ccInstalledVersion !== ccRunning);
+    (ccInstalledVersion && ccRunning && ccInstalledVersion !== ccRunning));
 
   const info = {
     zylos_version: zylosVersion,
-    runtime: process.env.ZYLOS_RUNTIME || 'claude',
+    runtime: activeRuntime,
     model: slInfo?.model || null,
     effort: slInfo?.effort || null,
     cc_version: ccRunning,
@@ -148,8 +153,10 @@ const stateEngine = new StateEngine(store, collectors, config, {
 // Wire collector updates to state engine
 pm2Collector._onUpdate = (data) => stateEngine.onPM2Update(data);
 systemCollector._onUpdate = (data) => stateEngine.onSystemUpdate(data);
-conversationCollector._stateEngine = stateEngine;
-conversationCollector._onEvent = (event) => stateEngine.onEvent(event);
+if (conversationCollector) {
+  conversationCollector._stateEngine = stateEngine;
+  conversationCollector._onEvent = (event) => stateEngine.onEvent(event);
+}
 
 // 8. Metric resolver
 const metricResolver = new MetricResolver(store, collectors, config, { stateEngine });
@@ -168,11 +175,15 @@ async function startupSequence() {
   try { await systemCollector.collect(); } catch (err) {
     process.stderr.write(`[startup] System collector initial run failed: ${err.message}\n`);
   }
-  try { await statuslineCollector.collect(); } catch (err) {
-    process.stderr.write(`[startup] StatusLine collector initial run failed: ${err.message}\n`);
+  if (statuslineCollector) {
+    try { await statuslineCollector.collect(); } catch (err) {
+      process.stderr.write(`[startup] StatusLine collector initial run failed: ${err.message}\n`);
+    }
   }
-  try { conversationCollector.collect(); } catch (err) {
-    process.stderr.write(`[startup] Conversation collector initial run failed: ${err.message}\n`);
+  if (conversationCollector) {
+    try { conversationCollector.collect(); } catch (err) {
+      process.stderr.write(`[startup] Conversation collector initial run failed: ${err.message}\n`);
+    }
   }
 
   // State engine initialize (snapshot restore + replay)
@@ -456,7 +467,7 @@ function handleApi(req, res, pathname, url) {
   if (pathname === '/api/actions/meta') {
     const zylosConfig = loadZylosConfig(config.zylosDir);
     zylosConfig.zylosDir = config.zylosDir;
-    const slMeta = statuslineCollector.getRuntimeInfo();
+    const slMeta = statuslineCollector?.getRuntimeInfo();
     const meta = getActionsMeta(zylosConfig, slMeta);
     meta.zylos_version = zylosVersion;
     meta.cc_version = ccInstalledVersion || slMeta?.cc_version || null;
@@ -746,8 +757,8 @@ if (isMain && process.argv.includes('--smoke')) {
   // Start periodic collectors
   pm2Collector.start(10_000);
   systemCollector.start(30_000);
-  statuslineCollector.start();
-  conversationCollector.start(5_000);
+  if (statuslineCollector) statuslineCollector.start();
+  if (conversationCollector) conversationCollector.start(5_000);
 
   // Start snapshot timer
   stateEngine.startSnapshotTimer();
@@ -775,7 +786,8 @@ if (isMain && process.argv.includes('--smoke')) {
     process.on(signal, () => {
       pm2Collector.stop();
       systemCollector.stop();
-      statuslineCollector.stop();
+      if (statuslineCollector) statuslineCollector.stop();
+      if (conversationCollector) conversationCollector.stop();
       stateEngine.stopSnapshotTimer();
       spoolDrainer.stopPeriodicDrain();
       sse.closeAll();

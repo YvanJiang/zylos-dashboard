@@ -8,8 +8,10 @@ When running on Codex runtime, the dashboard should automatically hide Claude-sp
 
 **In scope** (from issue consensus):
 - Runtime detection from zylos config (single source of truth)
+- Unified `config.runtime` set at startup — all downstream code (collectors, state engine, actions, buildRuntimeInfo) uses the same source
 - Skip Claude-only collectors on non-Claude runtimes
 - Frontend: hide Runtime State card, Capacity & Cost card, Trends tab, Work Timeline on Codex
+- Frontend: skip Claude-only fetches (metrics, timeline, summary) on Codex refreshAll
 - Frontend: 3 null guards (refreshState, applySse state_change, refreshTimeline)
 - Frontend: "Some features require Claude runtime" banner on Codex
 - Actions modal: enhanced confirm dialog for Claude->Codex switch (warn about feature reduction)
@@ -24,28 +26,29 @@ When running on Codex runtime, the dashboard should automatically hide Claude-sp
 ## Development Checklist
 
 ### Backend (`src/index.js`)
-- [ ] **B1**: Fix `buildRuntimeInfo()` (line 117) — use `loadZylosConfig(config.zylosDir).runtime || process.env.ZYLOS_RUNTIME || 'claude'` instead of just env var, for consistency with actions.js
-- [ ] **B2**: Skip `StatuslineCollector` and `ConversationCollector` construction when runtime !== 'claude'. Keep PM2 and System collectors. Wire remaining collectors to state engine accordingly
-- [ ] **B3**: Add `runtime` field to `/api/state` response from `buildRuntimeInfo()` (already present via `runtime_info.runtime`, verify it propagates)
+- [x] **B1**: Compute `activeRuntime` from `loadZylosConfig().runtime || process.env.ZYLOS_RUNTIME || 'claude'` at startup. Set `config.runtime = activeRuntime` so all downstream code (PM2Collector, SystemCollector, StateEngine, actions.js) reads the same value via `config.runtime`
+- [x] **B2**: Skip `StatuslineCollector` and `ConversationCollector` construction when runtime !== 'claude'. All direct references null-safe (optional chaining in `buildRuntimeInfo`, conditional wiring for state engine, conditional startup collect)
+- [x] **B3**: `buildRuntimeInfo()` uses `activeRuntime` directly instead of env var. Handles null `statuslineCollector` with optional chaining
 
 ### Frontend (`public/js/app.js`)
-- [ ] **F1**: Add null guard in `refreshState()` (line 869-878) — check that fetchJson result is an object before accessing `.updated_at`
-- [ ] **F2**: Add null guard in `applySse('state_change')` (line 943-951) — check `data` is an object before accessing `.runtime_info`, `.updated_at`
-- [ ] **F3**: Add null guard in `refreshTimeline()` (line 913-919) — check `data` is an object before accessing `.events`
-- [ ] **F4**: Add runtime-aware panel visibility — read `runtime_info.runtime` from state, hide/show panels:
-  - `.runtime-card` (Live Runtime State): hide on Codex
-  - Capacity & Cost card (section with `#capacity-title`): hide on Codex
-  - `.timeline-card` (Current Work Timeline): hide on Codex
-  - Trends tab button + panel: hide on Codex
-- [ ] **F5**: Add degraded-mode banner below info bar — "Some features require Claude runtime" text, visible only on Codex
-- [ ] **F6**: Enhance runtime switch confirm dialog — when switching Claude->Codex, show expanded text warning about dashboard feature reduction. Codex->Claude stays as-is.
+- [x] **F1**: Null guard in `refreshState()` — early return if response is not an object
+- [x] **F2**: Null guard in `applySse()` — early return at top if data is null/non-object
+- [x] **F3**: Null guard in `refreshTimeline()` — early return if response is not an object
+- [x] **F4**: `applyRuntimeVisibility()` function — reads `runtime_info.runtime`, hides/shows panels. Cached to avoid redundant DOM updates
+- [x] **F5**: Degraded-mode banner (`#codex-degraded-banner`) injected after info bar, visible only on Codex
+- [x] **F6**: Enhanced confirm dialog — `confirm.switch_runtime_codex` key for Claude->Codex (warns about feature reduction)
+- [x] **F7**: `refreshAll()` skips `refreshMetrics()`, `refreshTimeline()`, `refreshSummary()` on non-Claude runtime
+- [x] **F8**: `isClaudeRuntime()` helper for frontend runtime checks
 
 ### i18n
-- [ ] **I1**: Add keys to `en.json`: `banner.codex_degraded`, `confirm.switch_runtime_codex`
-- [ ] **I2**: Add keys to `zh.json`: same keys with Chinese translations
+- [x] **I1**: `en.json`: `banner.codex_degraded`, `confirm.switch_runtime_codex`
+- [x] **I2**: `zh.json`: same keys with Chinese translations
+
+### CSS
+- [x] **C1**: `.codex-banner` style (grid-column span, subtle bg, centered text)
 
 ### SKILL.md
-- [ ] **S1**: Add note: "Full features on Claude runtime. PM2/system/communication/scheduler monitoring on all runtimes."
+- [x] **S1**: Updated description with runtime support note
 
 ## Test Checklist
 
@@ -63,8 +66,8 @@ When running on Codex runtime, the dashboard should automatically hide Claude-sp
 - [ ] Null guard: `/api/state` returns null-ish response — page degrades gracefully
 - [ ] SSE `state_change` with null data — no JS errors
 - [ ] `/api/timeline` returns null — no JS errors
-- [ ] `npm test` passes (if tests exist)
-- [ ] Lint clean
+- [ ] No startup errors in console when running on Codex (collectors skipped cleanly)
+- [ ] `npm run check` passes (if available)
 
 ## Acceptance Checklist
 

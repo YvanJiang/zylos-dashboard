@@ -185,6 +185,48 @@ function metVal(m) {
   return m.value ?? m.current ?? m.percent ?? null;
 }
 
+// ─── Runtime Visibility ───
+let _lastRuntimeApplied = null;
+
+function applyRuntimeVisibility() {
+  const rt = state.dashboardState?.runtime_info?.runtime || 'claude';
+  if (rt === _lastRuntimeApplied) return;
+  _lastRuntimeApplied = rt;
+  const isClaude = rt === 'claude';
+
+  const runtimeCard = $('.runtime-card');
+  const capacityCard = $('[aria-labelledby="capacity-title"]');
+  const timelineCard = $('.timeline-card');
+  const trendsTab = $('[data-tab="trends"]');
+  const trendsPanel = $('#tab-trends');
+
+  if (runtimeCard) runtimeCard.hidden = !isClaude;
+  if (capacityCard) capacityCard.hidden = !isClaude;
+  if (timelineCard) timelineCard.hidden = !isClaude;
+  if (trendsTab) trendsTab.hidden = !isClaude;
+  if (trendsPanel && !isClaude) trendsPanel.hidden = true;
+
+  let banner = $('#codex-degraded-banner');
+  if (!isClaude) {
+    if (!banner) {
+      banner = document.createElement('div');
+      banner.id = 'codex-degraded-banner';
+      banner.className = 'codex-banner';
+      banner.textContent = t('banner.codex_degraded');
+      const infoBar = $('#info-bar');
+      if (infoBar) infoBar.after(banner);
+    }
+    banner.hidden = false;
+  } else if (banner) {
+    banner.hidden = true;
+  }
+
+  if (!isClaude && $('[data-tab="trends"].active')) {
+    const overviewTab = $('[data-tab="overview"]');
+    if (overviewTab) overviewTab.click();
+  }
+}
+
 // ─── Render: Info Bar ───
 function renderInfoBar() {
   const bar = $('#info-bar');
@@ -867,11 +909,14 @@ async function fetchJson(path) {
 }
 
 async function refreshState() {
-  state.dashboardState = await fetchJson('/api/state');
-  state.sourceUpdatedAt = state.dashboardState.updated_at || new Date().toISOString();
-  if (state.dashboardState.new_session_threshold) {
-    state.newSessionThreshold = state.dashboardState.new_session_threshold;
+  const data = await fetchJson('/api/state');
+  if (!data || typeof data !== 'object') return;
+  state.dashboardState = data;
+  state.sourceUpdatedAt = data.updated_at || new Date().toISOString();
+  if (data.new_session_threshold) {
+    state.newSessionThreshold = data.new_session_threshold;
   }
+  applyRuntimeVisibility();
   renderInfoBar();
   renderState();
   renderHealth();
@@ -913,6 +958,7 @@ async function refreshHealth() {
 async function refreshTimeline() {
   const since = new Date(Date.now() - 30 * 60_000).toISOString();
   const data = await fetchJson(`/api/timeline?since=${since}&limit=200&order=desc`);
+  if (!data || typeof data !== 'object') return;
   state.timeline = (data.events || []).filter((e) => e.event_type !== 'pre_tool_use' && e.event_type !== 'stop');
   state.timelineUpdatedAt = new Date().toISOString();
   renderTimeline();
@@ -929,11 +975,16 @@ async function refreshComm() {
   renderComm();
 }
 
+function isClaudeRuntime() {
+  return (state.dashboardState?.runtime_info?.runtime || 'claude') === 'claude';
+}
+
 async function refreshAll() {
-  const results = await Promise.allSettled([
-    refreshState(), refreshMetrics(), refreshHealth(),
-    refreshTimeline(), refreshSummary(), refreshComm()
-  ]);
+  const fetches = [refreshState(), refreshHealth(), refreshComm()];
+  if (isClaudeRuntime()) {
+    fetches.push(refreshMetrics(), refreshTimeline(), refreshSummary());
+  }
+  const results = await Promise.allSettled(fetches);
   const ok = results.some((r) => r.status === 'fulfilled');
   const sseOpen = state.eventSource?.readyState === EventSource.OPEN;
   renderConnection(ok ? (sseOpen ? 'live' : 'polling') : 'degraded');
@@ -941,12 +992,14 @@ async function refreshAll() {
 
 // ─── SSE ───
 function applySse(name, data) {
+  if (!data || typeof data !== 'object') return;
   if (name === 'state_change') {
     const prevRi = state.dashboardState?.runtime_info;
     state.dashboardState = data;
     if (!data.runtime_info && prevRi) state.dashboardState.runtime_info = prevRi;
     if (data.new_session_threshold) state.newSessionThreshold = data.new_session_threshold;
     state.sourceUpdatedAt = data.updated_at || new Date().toISOString();
+    applyRuntimeVisibility();
     renderInfoBar(); renderState(); renderHealth(); updateRestartDot();
     refreshTimeline();
   } else if (name === 'metric_update') {
@@ -1800,7 +1853,9 @@ async function execAction(action, body) {
     const labels = {
       'interrupt': t('confirm.interrupt'),
       'restart-session': t('confirm.restart'),
-      'switch-runtime': t('confirm.switch_runtime', { value: body?.runtime }),
+      'switch-runtime': body?.runtime === 'codex'
+        ? t('confirm.switch_runtime_codex')
+        : t('confirm.switch_runtime', { value: body?.runtime }),
       'switch-model': t('confirm.switch_model', { value: body?.model }),
       'switch-effort': t('confirm.switch_effort', { value: effortLabel(body?.effort) }),
       'upgrade-zylos': t('confirm.upgrade_zylos'),

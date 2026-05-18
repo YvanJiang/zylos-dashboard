@@ -142,6 +142,7 @@
   "confirm.interrupt": "Interrupt the agent? This will cancel the current operation.",
   "confirm.restart": "Restart the agent session? Context is preserved via memory.",
   "confirm.switch_runtime": "Switch runtime to {value}? Session will restart.",
+  "confirm.switch_runtime_codex": "Switch to Codex? Agent state, cost tracking, and trends will be unavailable. PM2, system health, communication, and scheduler remain functional.",
   "confirm.switch_model": "Switch model to {value}?",
   "confirm.switch_effort": "Switch effort to {value}?",
   "confirm.upgrade_zylos": "Upgrade zylos-core? All services will restart.",
@@ -181,5 +182,6 @@
   "source.estimated": "estimated",
   "source.tool_hooks": "tool hooks",
   "trends.tool_calls": "Tool Calls",
-  "trends.output_tokens": "Output Tokens"
+  "trends.output_tokens": "Output Tokens",
+  "banner.codex_degraded": "Some features require Claude runtime"
 }
