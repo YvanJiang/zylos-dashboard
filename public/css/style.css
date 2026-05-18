@@ -1614,6 +1614,7 @@ main { padding: var(--space-md) var(--space-lg) var(--space-xl); }
 .modal-confirm-buttons .action-btn { min-width: 80px; font-size: 13px; padding: 6px 16px; }
 .modal-confirm-buttons .action-btn.danger { background: #ef4444; color: #fff; border-color: #ef4444; }
 .modal-confirm-buttons .action-btn.danger:hover { background: #dc2626; }
+.modal-body-disabled { opacity: 0.45; pointer-events: none; }
 
 /* ─── Responsive ─── */
 @media (min-width: 640px) {

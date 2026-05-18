@@ -1827,11 +1827,13 @@ async function openActionsModal() {
 
 function closeActionsModal() {
   if (!actionsModal) return;
+  if (pendingConfirmCancel) { pendingConfirmCancel(); pendingConfirmCancel = null; }
   actionsModal.hidden = true;
   const confirm = actionsModal.querySelector('#action-confirm');
   if (confirm) confirm.hidden = true;
   const status = actionsModal.querySelector('#action-status');
   if (status) status.hidden = true;
+  setModalBodyDisabled(false);
 }
 
 function updateRestartDot() {
@@ -1845,6 +1847,7 @@ function updateRestartDot() {
 const CONFIRM_ACTIONS = new Set(['interrupt', 'restart-session', 'switch-runtime', 'switch-model', 'switch-effort', 'upgrade-zylos', 'upgrade-cc']);
 
 let countdownTimer = null;
+let pendingConfirmCancel = null;
 
 function startCountdownAndReload(seconds, statusEl) {
   if (countdownTimer) clearInterval(countdownTimer);
@@ -1885,6 +1888,13 @@ async function pollAndReload() {
   window.location.reload();
 }
 
+function setModalBodyDisabled(disabled) {
+  const body = actionsModal?.querySelector('.modal-body');
+  if (!body) return;
+  body.classList.toggle('modal-body-disabled', disabled);
+  body.querySelectorAll('button, select, input').forEach(el => { el.disabled = disabled; });
+}
+
 function showConfirm(text) {
   return new Promise((resolve) => {
     const box = actionsModal?.querySelector('#action-confirm');
@@ -1895,14 +1905,18 @@ function showConfirm(text) {
 
     msg.textContent = text;
     box.hidden = false;
+    setModalBodyDisabled(true);
 
     function cleanup() {
+      pendingConfirmCancel = null;
       box.hidden = true;
+      setModalBodyDisabled(false);
       okBtn.removeEventListener('click', onOk);
       cancelBtn.removeEventListener('click', onCancel);
     }
     function onOk() { cleanup(); resolve(true); }
     function onCancel() { cleanup(); resolve(false); }
+    pendingConfirmCancel = onCancel;
     okBtn.addEventListener('click', onOk);
     cancelBtn.addEventListener('click', onCancel);
   });
