@@ -185,6 +185,48 @@ function metVal(m) {
   return m.value ?? m.current ?? m.percent ?? null;
 }
 
+// ─── Runtime Visibility ───
+let _lastRuntimeApplied = null;
+
+function applyRuntimeVisibility() {
+  const rt = state.dashboardState?.runtime_info?.runtime || 'claude';
+  if (rt === _lastRuntimeApplied) return;
+  _lastRuntimeApplied = rt;
+  const isClaude = rt === 'claude';
+
+  const runtimeCard = $('.runtime-card');
+  const capacityCard = $('[aria-labelledby="capacity-title"]');
+  const timelineCard = $('.timeline-card');
+  const trendsTab = $('[data-tab="trends"]');
+  const trendsPanel = $('#tab-trends');
+
+  if (runtimeCard) runtimeCard.hidden = !isClaude;
+  if (capacityCard) capacityCard.hidden = !isClaude;
+  if (timelineCard) timelineCard.hidden = !isClaude;
+  if (trendsTab) trendsTab.hidden = !isClaude;
+  if (trendsPanel && !isClaude) trendsPanel.hidden = true;
+
+  let banner = $('#codex-degraded-banner');
+  if (!isClaude) {
+    if (!banner) {
+      banner = document.createElement('div');
+      banner.id = 'codex-degraded-banner';
+      banner.className = 'codex-banner';
+      const infoBar = $('#info-bar');
+      if (infoBar) infoBar.after(banner);
+    }
+    banner.textContent = t('banner.codex_degraded');
+    banner.hidden = false;
+  } else if (banner) {
+    banner.hidden = true;
+  }
+
+  if (!isClaude && $('[data-tab="trends"].active')) {
+    const overviewTab = $('[data-tab="overview"]');
+    if (overviewTab) overviewTab.click();
+  }
+}
+
 // ─── Render: Info Bar ───
 function renderInfoBar() {
   const bar = $('#info-bar');
@@ -846,6 +888,8 @@ function renderConnection(mode) {
 
 function renderAll() {
   renderI18n();
+  _lastRuntimeApplied = null;
+  applyRuntimeVisibility();
   updateChartLabels();
   renderInfoBar();
   renderState();
@@ -867,11 +911,14 @@ async function fetchJson(path) {
 }
 
 async function refreshState() {
-  state.dashboardState = await fetchJson('/api/state');
-  state.sourceUpdatedAt = state.dashboardState.updated_at || new Date().toISOString();
-  if (state.dashboardState.new_session_threshold) {
-    state.newSessionThreshold = state.dashboardState.new_session_threshold;
+  const data = await fetchJson('/api/state');
+  if (!data || typeof data !== 'object') return;
+  state.dashboardState = data;
+  state.sourceUpdatedAt = data.updated_at || new Date().toISOString();
+  if (data.new_session_threshold) {
+    state.newSessionThreshold = data.new_session_threshold;
   }
+  applyRuntimeVisibility();
   renderInfoBar();
   renderState();
   renderHealth();
@@ -913,6 +960,7 @@ async function refreshHealth() {
 async function refreshTimeline() {
   const since = new Date(Date.now() - 30 * 60_000).toISOString();
   const data = await fetchJson(`/api/timeline?since=${since}&limit=200&order=desc`);
+  if (!data || typeof data !== 'object') return;
   state.timeline = (data.events || []).filter((e) => e.event_type !== 'pre_tool_use' && e.event_type !== 'stop');
   state.timelineUpdatedAt = new Date().toISOString();
   renderTimeline();
@@ -929,26 +977,35 @@ async function refreshComm() {
   renderComm();
 }
 
+function isClaudeRuntime() {
+  return (state.dashboardState?.runtime_info?.runtime || 'claude') === 'claude';
+}
+
 async function refreshAll() {
-  const results = await Promise.allSettled([
-    refreshState(), refreshMetrics(), refreshHealth(),
-    refreshTimeline(), refreshSummary(), refreshComm()
-  ]);
-  const ok = results.some((r) => r.status === 'fulfilled');
+  const stateResult = await Promise.allSettled([refreshState()]);
+  const fetches = [refreshHealth(), refreshComm()];
+  if (isClaudeRuntime()) {
+    fetches.push(refreshMetrics(), refreshTimeline(), refreshSummary());
+  }
+  const restResults = await Promise.allSettled(fetches);
+  const all = [...stateResult, ...restResults];
+  const ok = all.some((r) => r.status === 'fulfilled');
   const sseOpen = state.eventSource?.readyState === EventSource.OPEN;
   renderConnection(ok ? (sseOpen ? 'live' : 'polling') : 'degraded');
 }
 
 // ─── SSE ───
 function applySse(name, data) {
+  if (!data || typeof data !== 'object') return;
   if (name === 'state_change') {
     const prevRi = state.dashboardState?.runtime_info;
     state.dashboardState = data;
     if (!data.runtime_info && prevRi) state.dashboardState.runtime_info = prevRi;
     if (data.new_session_threshold) state.newSessionThreshold = data.new_session_threshold;
     state.sourceUpdatedAt = data.updated_at || new Date().toISOString();
+    applyRuntimeVisibility();
     renderInfoBar(); renderState(); renderHealth(); updateRestartDot();
-    refreshTimeline();
+    if (isClaudeRuntime()) refreshTimeline();
   } else if (name === 'metric_update') {
     const mn = data.metric_name || data.name;
     if (mn) { state.metrics.set(mn, data); state.metricsUpdatedAt = new Date().toISOString(); renderMetrics(); }
@@ -1542,7 +1599,7 @@ function createActionsModal() {
           <option value="codex">Codex</option>
         </select>
       </div>
-      <div class="action-field">
+      <div class="action-field" id="action-model-field">
         <label class="action-field-label">${esc(t('actions.model'))}</label>
         <div class="action-model-wrap">
           <select id="action-model" class="action-select"></select>
@@ -1694,28 +1751,41 @@ async function openActionsModal() {
 
   try {
     const meta = await fetchJson('/api/actions/meta');
+    const isClaude = meta.runtime === 'claude';
     const runtimeSel = modal.querySelector('#action-runtime');
     runtimeSel.value = meta.runtime;
 
+    const modelField = modal.querySelector('#action-model-field');
     const modelSel = modal.querySelector('#action-model');
-    modelSel.innerHTML = '';
-    for (const m of meta.models || []) {
-      const opt = document.createElement('option');
-      opt.value = m.id;
-      opt.textContent = m.id;
-      if (m.id === meta.current_model) opt.selected = true;
-      modelSel.appendChild(opt);
-    }
-    const customOpt = document.createElement('option');
-    customOpt.value = '__custom__';
-    customOpt.textContent = t('actions.custom');
-    modelSel.appendChild(customOpt);
-    modal.querySelector('#action-model-custom').hidden = true;
-
     const effortField = modal.querySelector('#action-effort-field');
     const effortSel = modal.querySelector('#action-effort');
+
+    if (modelField) modelField.hidden = !isClaude;
+    if (effortField) effortField.hidden = !isClaude;
+
+    modelSel.innerHTML = '';
+    if (isClaude) {
+      for (const m of meta.models || []) {
+        const opt = document.createElement('option');
+        opt.value = m.id;
+        opt.textContent = m.id;
+        if (m.id === meta.current_model) opt.selected = true;
+        modelSel.appendChild(opt);
+      }
+      const customOpt = document.createElement('option');
+      customOpt.value = '__custom__';
+      customOpt.textContent = t('actions.custom');
+      modelSel.appendChild(customOpt);
+    }
+    modal.querySelector('#action-model-custom').hidden = true;
+
     const effortsByModel = meta.efforts_by_model || {};
     modal._renderEffortOptions = (modelId) => {
+      if (!isClaude) {
+        effortField.hidden = true;
+        effortSel.innerHTML = '';
+        return;
+      }
       const list = effortsByModel[modelId] || effortsByModel['*'] || [];
       if (!list.length) {
         effortField.hidden = true;
@@ -1732,7 +1802,7 @@ async function openActionsModal() {
       }
       effortSel._prevValue = effortSel.value;
     };
-    modal._renderEffortOptions(meta.current_model);
+    if (isClaude) modal._renderEffortOptions(meta.current_model);
 
     const ri = state.dashboardState?.runtime_info;
     const zylosVer = modal.querySelector('#action-zylos-ver');
@@ -1772,6 +1842,47 @@ function updateRestartDot() {
 
 const CONFIRM_ACTIONS = new Set(['interrupt', 'restart-session', 'switch-runtime', 'switch-model', 'switch-effort', 'upgrade-zylos', 'upgrade-cc']);
 
+let countdownTimer = null;
+
+function startCountdownAndReload(seconds, statusEl) {
+  if (countdownTimer) clearInterval(countdownTimer);
+  let remaining = seconds;
+
+  const btns = actionsModal?.querySelectorAll('button, select, input');
+  btns?.forEach(el => { if (!el.classList.contains('modal-close')) el.disabled = true; });
+
+  const tick = () => {
+    if (!statusEl) return;
+    statusEl.hidden = false;
+    statusEl.className = 'modal-status running';
+    statusEl.textContent = t('status.countdown', { seconds: remaining });
+  };
+  tick();
+
+  countdownTimer = setInterval(() => {
+    remaining--;
+    if (remaining <= 0) {
+      clearInterval(countdownTimer);
+      countdownTimer = null;
+      if (statusEl) statusEl.textContent = t('status.reloading');
+      pollAndReload();
+      return;
+    }
+    tick();
+  }, 1000);
+}
+
+async function pollAndReload() {
+  for (let i = 0; i < 15; i++) {
+    await new Promise(r => setTimeout(r, 2000));
+    try {
+      const r = await fetch(api('/api/health'), { cache: 'no-store' });
+      if (r.ok) { window.location.reload(); return; }
+    } catch {}
+  }
+  window.location.reload();
+}
+
 function showConfirm(text) {
   return new Promise((resolve) => {
     const box = actionsModal?.querySelector('#action-confirm');
@@ -1800,7 +1911,9 @@ async function execAction(action, body) {
     const labels = {
       'interrupt': t('confirm.interrupt'),
       'restart-session': t('confirm.restart'),
-      'switch-runtime': t('confirm.switch_runtime', { value: body?.runtime }),
+      'switch-runtime': body?.runtime === 'codex'
+        ? t('confirm.switch_runtime_codex')
+        : t('confirm.switch_runtime', { value: body?.runtime }),
       'switch-model': t('confirm.switch_model', { value: body?.model }),
       'switch-effort': t('confirm.switch_effort', { value: effortLabel(body?.effort) }),
       'upgrade-zylos': t('confirm.upgrade_zylos'),
@@ -1823,6 +1936,10 @@ async function execAction(action, body) {
       body: JSON.stringify(body || {})
     });
     const result = await r.json();
+    if (result.ok && result.detached) {
+      startCountdownAndReload(15, statusEl);
+      return true;
+    }
     if (statusEl) {
       const isInfo = !result.ok && (result.error === 'already_up_to_date' || result.error === 'already_set');
       statusEl.className = result.ok ? 'modal-status success' : isInfo ? 'modal-status success' : 'modal-status error';

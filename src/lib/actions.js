@@ -144,7 +144,15 @@ async function switchRuntime(reqId, body, config) {
   });
   child.unref();
 
-  return { ok: true, message: `Switching to ${target}. Dashboard will restart momentarily.`, detached: true };
+  setTimeout(() => {
+    log(reqId, 'self-restart: pm2 restart zylos-dashboard');
+    const restart = spawn('pm2', ['restart', 'zylos-dashboard'], {
+      detached: true, stdio: 'ignore',
+    });
+    restart.unref();
+  }, 15_000);
+
+  return { ok: true, message: `Switching to ${target}. Dashboard will restart in ~15s.`, detached: true };
 }
 
 async function switchModel(reqId, body, config, zylosDir) {
@@ -304,11 +312,7 @@ export function getActionsMeta(config, runtimeInfo) {
         { id: 'claude-opus-4-6[1m]' },
         { id: 'claude-sonnet-4-6' }
       ]
-    : [
-        { id: 'gpt-5.4', label: 'GPT-5.4' },
-        { id: 'o3', label: 'o3' },
-        { id: 'o4-mini', label: 'o4-mini' }
-      ];
+    : [];
 
   const efforts_by_model = runtime === 'claude'
     ? {
@@ -327,8 +331,8 @@ export function getActionsMeta(config, runtimeInfo) {
 
   return {
     runtime,
-    current_model: settings.model || null,
-    current_effort: runtimeInfo?.effort || settings.effortLevel || null,
+    current_model: runtime === 'claude' ? settings.model || null : null,
+    current_effort: runtime === 'claude' ? runtimeInfo?.effort || settings.effortLevel || null : null,
     models,
     efforts_by_model,
     new_session_threshold: newSessionThreshold
