@@ -598,7 +598,7 @@ async function handleStatuslineIngest(req, res) {
     try {
       store.insertMetric({
         timestamp: m.timestamp || new Date().toISOString(),
-        runtime: m.runtime || process.env.ZYLOS_RUNTIME || 'claude',
+        runtime: m.runtime || activeRuntime,
         session_id: m.session_id || null,
         metric_name: m.metric_name,
         metric_value: Number(m.metric_value),

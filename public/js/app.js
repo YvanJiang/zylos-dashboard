@@ -888,6 +888,8 @@ function renderConnection(mode) {
 
 function renderAll() {
   renderI18n();
+  _lastRuntimeApplied = null;
+  applyRuntimeVisibility();
   updateChartLabels();
   renderInfoBar();
   renderState();
@@ -980,12 +982,14 @@ function isClaudeRuntime() {
 }
 
 async function refreshAll() {
-  const fetches = [refreshState(), refreshHealth(), refreshComm()];
+  const stateResult = await Promise.allSettled([refreshState()]);
+  const fetches = [refreshHealth(), refreshComm()];
   if (isClaudeRuntime()) {
     fetches.push(refreshMetrics(), refreshTimeline(), refreshSummary());
   }
-  const results = await Promise.allSettled(fetches);
-  const ok = results.some((r) => r.status === 'fulfilled');
+  const restResults = await Promise.allSettled(fetches);
+  const all = [...stateResult, ...restResults];
+  const ok = all.some((r) => r.status === 'fulfilled');
   const sseOpen = state.eventSource?.readyState === EventSource.OPEN;
   renderConnection(ok ? (sseOpen ? 'live' : 'polling') : 'degraded');
 }
@@ -1001,7 +1005,7 @@ function applySse(name, data) {
     state.sourceUpdatedAt = data.updated_at || new Date().toISOString();
     applyRuntimeVisibility();
     renderInfoBar(); renderState(); renderHealth(); updateRestartDot();
-    refreshTimeline();
+    if (isClaudeRuntime()) refreshTimeline();
   } else if (name === 'metric_update') {
     const mn = data.metric_name || data.name;
     if (mn) { state.metrics.set(mn, data); state.metricsUpdatedAt = new Date().toISOString(); renderMetrics(); }
