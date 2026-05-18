@@ -5,7 +5,8 @@ import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-const HOOK_EVENTS = ['PreToolUse', 'PostToolUse', 'UserPromptSubmit', 'Stop', 'PermissionRequest', 'SubagentStart', 'SubagentStop'];
+const CLAUDE_HOOK_EVENTS = ['PreToolUse', 'PostToolUse', 'UserPromptSubmit', 'Stop', 'PermissionRequest', 'SubagentStart', 'SubagentStop'];
+const CODEX_HOOK_EVENTS = ['PreToolUse', 'PostToolUse', 'UserPromptSubmit', 'Stop', 'PermissionRequest'];
 
 const TOOL_EVENTS = new Set(['PreToolUse', 'PostToolUse']);
 
@@ -60,7 +61,7 @@ export class HookInstaller {
     const cmd = this._command();
     let added = 0;
 
-    for (const event of HOOK_EVENTS) {
+    for (const event of CLAUDE_HOOK_EVENTS) {
       if (!Array.isArray(settings.hooks[event])) {
         settings.hooks[event] = [];
       }
@@ -91,7 +92,7 @@ export class HookInstaller {
     }
 
     if (added > 0) this._writeClaude(settings);
-    return { runtime: 'claude', added, total: HOOK_EVENTS.length, path: this._claudePath() };
+    return { runtime: 'claude', added, total: CLAUDE_HOOK_EVENTS.length, path: this._claudePath() };
   }
 
   uninstallClaudeHooks() {
@@ -150,14 +151,18 @@ export class HookInstaller {
     fs.writeFileSync(p, JSON.stringify(config, null, 2) + '\n');
   }
 
+  _codexCommand() {
+    return `ZYLOS_RUNTIME=codex ZYLOS_DIR=${this.zylosDir} node ${this.hookScript}`;
+  }
+
   installCodexHooks() {
     const config = this._readCodex();
     if (!config.hooks) config.hooks = {};
 
-    const cmd = this._command();
+    const cmd = this._codexCommand();
     let added = 0;
 
-    for (const event of HOOK_EVENTS) {
+    for (const event of CODEX_HOOK_EVENTS) {
       if (!Array.isArray(config.hooks[event])) {
         config.hooks[event] = [];
       }
@@ -169,9 +174,11 @@ export class HookInstaller {
       if (existingGroup) {
         for (const h of existingGroup.hooks) {
           if (this._isOwn(h.command)) {
-            if (h.timeout !== 5 || h.async !== true) {
+            const needsUpdate = h.timeout !== 5 || h.async !== true || h.command !== cmd;
+            if (needsUpdate) {
               h.timeout = 5;
               h.async = true;
+              h.command = cmd;
               added++;
             }
           }
@@ -188,7 +195,7 @@ export class HookInstaller {
     }
 
     if (added > 0) this._writeCodex(config);
-    return { runtime: 'codex', added, total: HOOK_EVENTS.length, path: this._codexPath() };
+    return { runtime: 'codex', added, total: CODEX_HOOK_EVENTS.length, path: this._codexPath() };
   }
 
   uninstallCodexHooks() {
