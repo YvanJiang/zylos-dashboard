@@ -203,3 +203,40 @@ test('session cookie survives server restart (SQLite persistence)', async () => 
     await closeServer(server2);
   }
 });
+
+test('ingest endpoints reject proxied requests', async () => {
+  const { origin, server } = await makeServer();
+  try {
+    // Direct local request (no proxy header) should be accepted
+    const direct = await fetch(`${origin}/api/ingest`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ hook_event_name: 'Stop', ingest_id: 'test-1' })
+    });
+    assert.equal(direct.status, 200);
+
+    // Proxied request (with X-Forwarded-Prefix) should be rejected
+    const proxied = await fetch(`${origin}/api/ingest`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Forwarded-Prefix': '/dashboard'
+      },
+      body: JSON.stringify({ hook_event_name: 'Stop', ingest_id: 'test-2' })
+    });
+    assert.equal(proxied.status, 404, 'proxied ingest should be rejected');
+
+    // Same for statusline endpoint
+    const proxiedSl = await fetch(`${origin}/api/ingest/statusline`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Forwarded-Prefix': '/dashboard'
+      },
+      body: JSON.stringify({ metrics: [] })
+    });
+    assert.equal(proxiedSl.status, 404, 'proxied statusline ingest should be rejected');
+  } finally {
+    await closeServer(server);
+  }
+});

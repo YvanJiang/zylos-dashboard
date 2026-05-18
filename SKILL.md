@@ -16,6 +16,7 @@ lifecycle:
     post-install: hooks/post-install.js
     pre-upgrade: hooks/pre-upgrade.js
     post-upgrade: hooks/post-upgrade.js
+    pre-uninstall: hooks/pre-uninstall.js
   preserve:
     - config.json
     - dashboard.db
