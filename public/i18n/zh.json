@@ -207,5 +207,11 @@
   "result.upgrading_zylos_simple": "升级已启动，所有服务将重启。",
   "result.cc_updated": "Claude Code 已更新，重启会话后生效。",
   "result.invalid_threshold": "阈值必须在 10 到 95 之间",
-  "result.threshold_set": "新会话阈值已设为 {value}%"
+  "result.threshold_set": "新会话阈值已设为 {value}%",
+  "result.unknown_action": "未知操作",
+  "result.internal_error": "内部错误：{error}",
+  "result.interrupt_failed": "中断失败：{error}",
+  "result.restart_failed": "重启失败：{error}",
+  "result.upgrade_failed": "升级失败：{error}",
+  "result.set_failed": "设置失败：{error}"
 }

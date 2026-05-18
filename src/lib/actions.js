@@ -72,11 +72,11 @@ export async function handleAction(action, body, config) {
       case 'set-threshold': result = await setThreshold(reqId, body, config, zylosDir); break;
       case 'upgrade-zylos': result = await upgradeZylos(reqId); break;
       case 'upgrade-cc': result = await upgradeCc(reqId); break;
-      default: result = { ok: false, error: 'unknown_action' };
+      default: result = { ok: false, error: 'unknown_action', messageKey: 'result.unknown_action' };
     }
   } catch (err) {
     log(reqId, `<= unhandled error: ${err.message}`);
-    result = { ok: false, error: 'internal_error', message: err.message };
+    result = { ok: false, error: 'internal_error', message: err.message, messageKey: 'result.internal_error', messageParams: { error: err.message } };
   }
 
   log(reqId, `<= ${result.ok ? 'ok' : 'fail'}${result.error ? ' ' + result.error : ''}${result.message ? ' | ' + result.message : ''}`);
@@ -97,7 +97,7 @@ async function interrupt(reqId, zylosDir) {
     return { ok: true, message: 'Interrupt signal sent', messageKey: 'result.interrupt_ok' };
   } catch (err) {
     log(reqId, `c4-control failed: ${err.message}`);
-    return { ok: false, error: 'interrupt_failed', message: err.message };
+    return { ok: false, error: 'interrupt_failed', message: err.message, messageKey: 'result.interrupt_failed', messageParams: { error: err.message } };
   }
 }
 
@@ -115,7 +115,7 @@ async function restartSession(reqId, config) {
       return { ok: true, message: 'No active session found. Activity monitor will start a new one.', messageKey: 'result.restart_no_session' };
     }
     log(reqId, `tmux kill-session failed: ${err.message}`);
-    return { ok: false, error: 'restart_failed', message: err.message };
+    return { ok: false, error: 'restart_failed', message: err.message, messageKey: 'result.restart_failed', messageParams: { error: err.message } };
   }
 }
 
@@ -281,7 +281,7 @@ async function upgradeCc(reqId) {
   } catch (err) {
     const fallbackMsg = err.stderr || err.stdout || err.message;
     log(reqId, `claude update failed: ${(fallbackMsg || '').slice(0, 200)}`);
-    return { ok: false, error: 'upgrade_failed', message: fallbackMsg };
+    return { ok: false, error: 'upgrade_failed', message: fallbackMsg, messageKey: 'result.upgrade_failed', messageParams: { error: fallbackMsg } };
   }
 }
 
@@ -299,7 +299,7 @@ async function setThreshold(reqId, body, config, zylosDir) {
     return { ok: true, message: `New session threshold set to ${value}%`, messageKey: 'result.threshold_set', messageParams: { value } };
   } catch (err) {
     log(reqId, `set threshold failed: ${err.message}`);
-    return { ok: false, error: 'set_failed', message: err.message };
+    return { ok: false, error: 'set_failed', message: err.message, messageKey: 'result.set_failed', messageParams: { error: err.message } };
   }
 }
 
