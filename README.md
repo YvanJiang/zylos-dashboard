@@ -19,6 +19,15 @@
 
 ---
 
+<p align="center">
+  <img src="docs/images/overview.jpg" alt="Overview — live agent state, capacity, runtime gauges" width="720">
+</p>
+<p align="center">
+  <img src="docs/images/trends.jpg" alt="Trends — token usage, cost, throughput, project distribution" width="720">
+</p>
+
+---
+
 - **Real-time agent state** — idle, busy, stuck, waiting detection with tool activity feed
 - **Capacity & cost tracking** — context usage, rate limits, session/daily/weekly cost
 - **Actions modal** — runtime switch, model/effort change, threshold, zylos/CC upgrade
