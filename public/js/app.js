@@ -1084,6 +1084,8 @@ function initTabs() {
 function initLocaleToggle() {
   $('#locale-toggle').addEventListener('click', async () => {
     await initI18n(getLocale() === 'zh' ? 'en' : 'zh');
+    if (actionsModal) { actionsModal.remove(); actionsModal = null; }
+    if (settingsModal) { settingsModal.remove(); settingsModal = null; }
     renderAll();
     refreshCharts();
   });
@@ -1943,7 +1945,8 @@ async function execAction(action, body) {
     if (statusEl) {
       const isInfo = !result.ok && (result.error === 'already_up_to_date' || result.error === 'already_set');
       statusEl.className = result.ok ? 'modal-status success' : isInfo ? 'modal-status success' : 'modal-status error';
-      statusEl.textContent = result.message || (result.ok ? t('status.done') : result.error);
+      const localMsg = result.messageKey ? t(result.messageKey, result.messageParams) : null;
+      statusEl.textContent = localMsg || result.message || (result.ok ? t('status.done') : result.error);
       if (result.ok || isInfo) setTimeout(() => { statusEl.hidden = true; }, 5000);
     }
     if (result.ok && result.requires_restart) {
