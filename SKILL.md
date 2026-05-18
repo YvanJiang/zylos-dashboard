@@ -20,6 +20,7 @@ lifecycle:
   preserve:
     - config.json
     - dashboard.db
+  next-steps: "Restart agent session to activate dashboard hooks. After uninstall, restart again to remove stale hooks."
 
 http_routes:
   - path: /dashboard/*
