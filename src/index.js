@@ -649,22 +649,20 @@ export function createServer() {
     const url = new URL(req.url, `http://${req.headers.host || '127.0.0.1'}`);
     let pathname = url.pathname;
 
-    // /api/ingest must be checked before any base-path stripping or auth
-    if (pathname === '/api/ingest' && req.method === 'POST') {
-      await ingestHandler.handle(req, res);
-      return;
-    }
-
-    if (pathname === '/api/ingest/statusline' && req.method === 'POST') {
-      await handleStatuslineIngest(req, res);
-      return;
-    }
-
-
-    // Reject ingest under base-path prefix
-    const prefix = req.headers['x-forwarded-prefix'];
-    if (prefix && pathname.startsWith(prefix + '/api/ingest')) {
-      sendJson(res, 404, { error: 'not_found' });
+    // Ingest endpoints: local-only, reject proxied requests
+    if ((pathname === '/api/ingest' || pathname === '/api/ingest/statusline') && req.method === 'POST') {
+      const remote = req.socket.remoteAddress;
+      const isLoopback = remote === '127.0.0.1' || remote === '::1' || remote === '::ffff:127.0.0.1';
+      const isProxied = !!req.headers['x-forwarded-prefix'];
+      if (!isLoopback || isProxied) {
+        sendJson(res, 404, { error: 'not_found' });
+        return;
+      }
+      if (pathname === '/api/ingest') {
+        await ingestHandler.handle(req, res);
+      } else {
+        await handleStatuslineIngest(req, res);
+      }
       return;
     }
 

@@ -126,15 +126,18 @@ test('HookInstaller — Codex', async (t) => {
   const projectRoot = makeTmpDir();
   const installer = makeInstaller(projectRoot, tmpHome);
 
-  await t.test('install creates hook entries for all 7 events (nested format)', () => {
+  await t.test('install creates hook entries for all 5 Codex events (no SubagentStart/Stop)', () => {
     const result = installer.installCodexHooks();
-    assert.equal(result.added, 7);
+    assert.equal(result.added, 5);
+    assert.equal(result.total, 5);
 
     const config = JSON.parse(fs.readFileSync(installer._codexPath(), 'utf8'));
-    for (const event of ['PreToolUse', 'PostToolUse', 'UserPromptSubmit', 'Stop', 'PermissionRequest', 'SubagentStart', 'SubagentStop']) {
+    for (const event of ['PreToolUse', 'PostToolUse', 'UserPromptSubmit', 'Stop', 'PermissionRequest']) {
       assert.ok(config.hooks[event], `missing event ${event}`);
       assert.ok(config.hooks[event].length > 0);
     }
+    assert.equal(config.hooks.SubagentStart, undefined, 'SubagentStart should not be installed for Codex');
+    assert.equal(config.hooks.SubagentStop, undefined, 'SubagentStop should not be installed for Codex');
   });
 
   await t.test('idempotent — second install adds nothing', () => {
@@ -164,6 +167,14 @@ test('HookInstaller — Codex', async (t) => {
       assert.equal(hook.async, true, `${event} hook should be async`);
       assert.equal(hook.timeout, 5, `${event} hook timeout should be 5`);
     }
+  });
+
+  await t.test('Codex hook command includes explicit ZYLOS_RUNTIME and ZYLOS_DIR', () => {
+    const config = JSON.parse(fs.readFileSync(installer._codexPath(), 'utf8'));
+    const cmd = config.hooks.PreToolUse[0].hooks[0].command;
+    assert.ok(cmd.includes('ZYLOS_RUNTIME=codex'), 'command should include ZYLOS_RUNTIME=codex');
+    assert.ok(cmd.includes('ZYLOS_DIR='), 'command should include ZYLOS_DIR');
+    assert.ok(cmd.includes('hook-ingest.cjs'), 'command should include hook-ingest.cjs');
   });
 
   await t.test('preserves existing hooks', () => {
@@ -211,7 +222,7 @@ test('HookInstaller — Codex', async (t) => {
 
   await t.test('uninstall removes only own hooks', () => {
     const result = installer.uninstallCodexHooks();
-    assert.equal(result.removed, 7);
+    assert.equal(result.removed, 5);
 
     const config = JSON.parse(fs.readFileSync(installer._codexPath(), 'utf8'));
     assert.equal(config.hooks.PreToolUse.length, 1);
@@ -282,7 +293,7 @@ test('HookInstaller — Codex flat-array migration', async (t) => {
 
   await t.test('uninstall works on migrated file', () => {
     const result = installer.uninstallCodexHooks();
-    assert.equal(result.removed, 7);
+    assert.equal(result.removed, 5);
 
     const config = JSON.parse(fs.readFileSync(installer._codexPath(), 'utf8'));
     assert.equal(config.hooks.PreToolUse.length, 1);
