@@ -212,10 +212,10 @@ function applyRuntimeVisibility() {
       banner = document.createElement('div');
       banner.id = 'codex-degraded-banner';
       banner.className = 'codex-banner';
-      banner.textContent = t('banner.codex_degraded');
       const infoBar = $('#info-bar');
       if (infoBar) infoBar.after(banner);
     }
+    banner.textContent = t('banner.codex_degraded');
     banner.hidden = false;
   } else if (banner) {
     banner.hidden = true;
