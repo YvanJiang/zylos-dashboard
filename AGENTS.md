@@ -4,7 +4,7 @@ This document guides AI assistants working on the zylos-dashboard component.
 
 ## Project Conventions
 
-- **ESM only** — `import`/`export`, never `require()`. `"type": "module"` in package.json. Exception: `ecosystem.config.cjs` (PM2 requires CJS) and `lib/hook-ingest.cjs` (standalone Claude Code hook — must use only Node built-ins, no ESM setup, 500ms deadline)
+- **ESM only** — `import`/`export`, never `require()`. `"type": "module"` in package.json. Exception: `ecosystem.config.cjs` (PM2 requires CJS) and `src/lib/hook-ingest.cjs` (standalone Claude Code hook — must use only Node built-ins, no ESM setup, 500ms deadline)
 - **Node.js 20+** — Minimum runtime version
 - **Conventional commits** — `feat:`, `fix:`, `chore:`, `docs:`, `refactor:`, `test:`
 - **No `files` in package.json** — Rely on `.gitignore` to exclude

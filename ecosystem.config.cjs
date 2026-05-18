@@ -16,8 +16,10 @@ module.exports = {
       },
       out_file: path.join(dataDir, 'logs', 'out.log'),
       error_file: path.join(dataDir, 'logs', 'error.log'),
+      autorestart: true,
       max_restarts: 10,
       restart_delay: 5000,
+      log_date_format: 'YYYY-MM-DD HH:mm:ss',
       watch: [path.join(dataDir, 'config.json')],
       ignore_watch: ['node_modules', 'public', 'docs']
     }

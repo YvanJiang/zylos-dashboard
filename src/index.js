@@ -60,7 +60,13 @@ config.runtime = activeRuntime;
 
 // 1-2. Store
 const dbPath = path.join(config.dataDir, 'dashboard.db');
-const store = new Store(dbPath);
+let store;
+try {
+  store = new Store(dbPath);
+} catch (err) {
+  console.error(`[dashboard] Failed to open database: ${err.message}`);
+  process.exit(1);
+}
 
 const auth = new AuthGate(config, store);
 
@@ -748,8 +754,8 @@ if (isMain && process.argv.includes('--smoke')) {
 
   const server = createServer();
   server.on('error', (err) => {
-    console.error(`zylos-dashboard failed to start: ${err.message}`);
-    process.exitCode = 1;
+    console.error(`[dashboard] Failed to start: ${err.message}`);
+    process.exit(1);
   });
 
   // Start periodic collectors

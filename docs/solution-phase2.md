@@ -616,11 +616,11 @@ Claude Code 和 Codex 使用不同的配置文件和 schema：
 ```json
 {
   "hooks": {
-    "PreToolUse": [{ "type": "command", "command": "node ~/zylos/components/dashboard/lib/hook-ingest.js" }],
-    "PostToolUse": [{ "type": "command", "command": "node ~/zylos/components/dashboard/lib/hook-ingest.js" }],
-    "UserPromptSubmit": [{ "type": "command", "command": "node ~/zylos/components/dashboard/lib/hook-ingest.js" }],
-    "Stop": [{ "type": "command", "command": "node ~/zylos/components/dashboard/lib/hook-ingest.js" }],
-    "PermissionRequest": [{ "type": "command", "command": "node ~/zylos/components/dashboard/lib/hook-ingest.js" }]
+    "PreToolUse": [{ "type": "command", "command": "node ~/zylos/components/dashboard/src/lib/hook-ingest.js" }],
+    "PostToolUse": [{ "type": "command", "command": "node ~/zylos/components/dashboard/src/lib/hook-ingest.js" }],
+    "UserPromptSubmit": [{ "type": "command", "command": "node ~/zylos/components/dashboard/src/lib/hook-ingest.js" }],
+    "Stop": [{ "type": "command", "command": "node ~/zylos/components/dashboard/src/lib/hook-ingest.js" }],
+    "PermissionRequest": [{ "type": "command", "command": "node ~/zylos/components/dashboard/src/lib/hook-ingest.js" }]
   }
 }
 ```
@@ -629,11 +629,11 @@ Claude Code 和 Codex 使用不同的配置文件和 schema：
 
 ```json
 [
-  { "event": "PreToolUse", "command": "node ~/zylos/components/dashboard/lib/hook-ingest.js" },
-  { "event": "PostToolUse", "command": "node ~/zylos/components/dashboard/lib/hook-ingest.js" },
-  { "event": "UserPromptSubmit", "command": "node ~/zylos/components/dashboard/lib/hook-ingest.js" },
-  { "event": "Stop", "command": "node ~/zylos/components/dashboard/lib/hook-ingest.js" },
-  { "event": "PermissionRequest", "command": "node ~/zylos/components/dashboard/lib/hook-ingest.js" }
+  { "event": "PreToolUse", "command": "node ~/zylos/components/dashboard/src/lib/hook-ingest.js" },
+  { "event": "PostToolUse", "command": "node ~/zylos/components/dashboard/src/lib/hook-ingest.js" },
+  { "event": "UserPromptSubmit", "command": "node ~/zylos/components/dashboard/src/lib/hook-ingest.js" },
+  { "event": "Stop", "command": "node ~/zylos/components/dashboard/src/lib/hook-ingest.js" },
+  { "event": "PermissionRequest", "command": "node ~/zylos/components/dashboard/src/lib/hook-ingest.js" }
 ]
 ```
 
