@@ -226,7 +226,7 @@ main { padding: var(--space-md) var(--space-lg) var(--space-xl); }
   gap: var(--space-sm);
   padding: 6px var(--space-md);
   font-size: 12px;
-  color: var(--text-muted);
+  color: var(--text-dim);
   font-family: "JetBrains Mono", ui-monospace, monospace;
   letter-spacing: 0.01em;
   min-height: 28px;
@@ -236,6 +236,10 @@ main { padding: var(--space-md) var(--space-lg) var(--space-xl); }
 .info-bar:empty { display: none; }
 
 .info-bar-text { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+@media (max-width: 768px) {
+  .info-bar { flex-wrap: wrap; }
+  .info-bar-text { white-space: normal; overflow: visible; text-overflow: unset; flex-basis: 100%; }
+}
 
 .info-bar-buttons { display: flex; gap: 6px; flex-shrink: 0; align-items: center; }
 
@@ -406,8 +410,8 @@ main { padding: var(--space-md) var(--space-lg) var(--space-xl); }
 .mascot-idle .mascot-sprite { animation: mascot-breathe 3s ease-in-out infinite; }
 .mascot-offline .mascot-sprite { opacity: 0.5; filter: grayscale(0.6); }
 .mascot-waiting .mascot-sprite { animation: mascot-look 2s ease-in-out infinite; }
-.mascot-stuck .mascot-sprite { animation: mascot-shake 0.4s ease-in-out infinite; }
-.mascot-possibly-stuck .mascot-sprite { animation: mascot-worry 1.5s ease-in-out infinite; }
+.mascot-stuck .mascot-sprite { animation: mascot-pulse 2s ease-in-out infinite; }
+.mascot-possibly-stuck .mascot-sprite { animation: mascot-tilt 3s ease-in-out infinite; }
 
 @keyframes mascot-bob {
   0%, 100% { transform: translateY(0); }
@@ -425,16 +429,14 @@ main { padding: var(--space-md) var(--space-lg) var(--space-xl); }
   75% { transform: translateX(-3px); }
 }
 
-@keyframes mascot-shake {
-  0%, 100% { transform: translateX(0); }
-  25% { transform: translateX(-2px) rotate(-2deg); }
-  75% { transform: translateX(2px) rotate(2deg); }
+@keyframes mascot-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.6; }
 }
 
-@keyframes mascot-worry {
-  0%, 100% { transform: translateY(0); }
-  30% { transform: translateY(-2px); }
-  60% { transform: translateY(1px); }
+@keyframes mascot-tilt {
+  0%, 100% { transform: rotate(0deg); }
+  50% { transform: rotate(5deg); }
 }
 
 .state-label {
@@ -445,6 +447,13 @@ main { padding: var(--space-md) var(--space-lg) var(--space-xl); }
   letter-spacing: -0.01em;
   text-align: center;
 }
+
+.mascot-busy .state-label { color: var(--state-busy); }
+.mascot-idle .state-label { color: var(--state-idle); }
+.mascot-offline .state-label { color: var(--state-offline); }
+.mascot-waiting .state-label { color: var(--state-waiting); }
+.mascot-possibly-stuck .state-label { color: var(--state-possibly-stuck); }
+.mascot-stuck .state-label { color: var(--state-stuck); }
 
 .kv {
   padding: var(--space-sm) var(--space-md);

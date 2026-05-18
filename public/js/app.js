@@ -224,11 +224,11 @@ function mascotSvg(agentState) {
   const screen = '#e0f2fe';
   let eyes, mouth, extra = '';
   if (s === 'BUSY') {
-    eyes = `<rect x="5" y="5" width="2" height="2" fill="#101827"/><rect x="9" y="5" width="2" height="2" fill="#101827"/>`;
-    mouth = `<rect x="5" y="9" width="1" height="1" fill="#101827"/><rect x="6" y="10" width="4" height="1" fill="#101827"/><rect x="10" y="9" width="1" height="1" fill="#101827"/>`;
+    eyes = `<rect x="4" y="5" width="1" height="1" fill="#101827"/><rect x="5" y="6" width="1" height="1" fill="#101827"/><rect x="4" y="7" width="1" height="1" fill="#101827"/><rect x="11" y="5" width="1" height="1" fill="#101827"/><rect x="10" y="6" width="1" height="1" fill="#101827"/><rect x="11" y="7" width="1" height="1" fill="#101827"/>`;
+    mouth = `<rect x="6" y="9" width="4" height="1" fill="#101827"/>`;
   } else if (s === 'IDLE') {
     eyes = `<rect x="5" y="6" width="2" height="1" fill="#101827"/><rect x="9" y="6" width="2" height="1" fill="#101827"/>`;
-    mouth = `<rect x="6" y="9" width="4" height="1" fill="#101827"/>`;
+    mouth = `<rect x="5" y="9" width="1" height="1" fill="#101827"/><rect x="6" y="10" width="4" height="1" fill="#101827"/><rect x="10" y="9" width="1" height="1" fill="#101827"/>`;
   } else if (s === 'OFFLINE') {
     eyes = `<rect x="5" y="6" width="2" height="1" fill="#64748b"/><rect x="9" y="6" width="2" height="1" fill="#64748b"/>`;
     mouth = `<rect x="6" y="9" width="4" height="1" fill="#64748b"/>`;
@@ -237,11 +237,12 @@ function mascotSvg(agentState) {
     eyes = `<rect x="5" y="5" width="2" height="2" fill="#2563eb"/><rect x="9" y="5" width="2" height="2" fill="#2563eb"/>`;
     mouth = `<rect x="7" y="9" width="2" height="2" fill="#101827"/>`;
   } else if (s === 'POSSIBLY_STUCK') {
-    eyes = `<rect x="5" y="5" width="2" height="2" fill="#ea580c"/><rect x="10" y="5" width="1" height="2" fill="#ea580c"/><rect x="9" y="4" width="1" height="1" fill="#ea580c"/>`;
-    mouth = `<rect x="6" y="10" width="4" height="1" fill="#101827"/><rect x="5" y="9" width="1" height="1" fill="#101827"/><rect x="10" y="9" width="1" height="1" fill="#101827"/>`;
+    eyes = `<rect x="5" y="5" width="2" height="2" fill="#ea580c"/><rect x="9" y="5" width="2" height="2" fill="#ea580c"/>`;
+    mouth = `<rect x="6" y="9" width="4" height="1" fill="#101827"/>`;
+    extra = `<rect x="12" y="2" width="1" height="1" fill="#ea580c"/><rect x="13" y="1" width="1" height="1" fill="#ea580c"/>`;
   } else if (s === 'STUCK') {
     eyes = `<rect x="5" y="5" width="1" height="1" fill="#dc2626"/><rect x="7" y="6" width="1" height="1" fill="#dc2626"/><rect x="6" y="5" width="1" height="1" fill="#dc2626"/><rect x="6" y="6" width="1" height="1" fill="#dc2626"/><rect x="9" y="5" width="1" height="1" fill="#dc2626"/><rect x="11" y="6" width="1" height="1" fill="#dc2626"/><rect x="10" y="5" width="1" height="1" fill="#dc2626"/><rect x="10" y="6" width="1" height="1" fill="#dc2626"/>`;
-    mouth = `<rect x="6" y="9" width="4" height="1" fill="#dc2626"/><rect x="5" y="10" width="1" height="1" fill="#dc2626"/><rect x="10" y="10" width="1" height="1" fill="#dc2626"/>`;
+    mouth = `<rect x="7" y="9" width="2" height="2" fill="#dc2626"/>`;
   } else {
     eyes = `<rect x="6" y="5" width="1" height="2" fill="#6b7280"/><rect x="9" y="5" width="1" height="2" fill="#6b7280"/>`;
     mouth = `<rect x="6" y="9" width="4" height="1" fill="#6b7280"/>`;

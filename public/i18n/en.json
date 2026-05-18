@@ -8,7 +8,7 @@
   "state.offline": "Offline",
   "state.idle": "Idle",
   "state.busy": "Executing {tool}",
-  "state.busy_simple": "Busy",
+  "state.busy_simple": "Working",
   "state.waiting": "Waiting for user input",
   "state.possibly_stuck": "Possibly stuck: {reason}",
   "state.possibly_stuck_simple": "Possibly Stuck",
