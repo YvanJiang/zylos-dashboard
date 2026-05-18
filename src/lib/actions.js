@@ -304,11 +304,7 @@ export function getActionsMeta(config, runtimeInfo) {
         { id: 'claude-opus-4-6[1m]' },
         { id: 'claude-sonnet-4-6' }
       ]
-    : [
-        { id: 'gpt-5.4', label: 'GPT-5.4' },
-        { id: 'o3', label: 'o3' },
-        { id: 'o4-mini', label: 'o4-mini' }
-      ];
+    : [];
 
   const efforts_by_model = runtime === 'claude'
     ? {
@@ -327,8 +323,8 @@ export function getActionsMeta(config, runtimeInfo) {
 
   return {
     runtime,
-    current_model: settings.model || null,
-    current_effort: runtimeInfo?.effort || settings.effortLevel || null,
+    current_model: runtime === 'claude' ? settings.model || null : null,
+    current_effort: runtime === 'claude' ? runtimeInfo?.effort || settings.effortLevel || null : null,
     models,
     efforts_by_model,
     new_session_threshold: newSessionThreshold

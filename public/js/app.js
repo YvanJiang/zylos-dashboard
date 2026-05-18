@@ -1599,7 +1599,7 @@ function createActionsModal() {
           <option value="codex">Codex</option>
         </select>
       </div>
-      <div class="action-field">
+      <div class="action-field" id="action-model-field">
         <label class="action-field-label">${esc(t('actions.model'))}</label>
         <div class="action-model-wrap">
           <select id="action-model" class="action-select"></select>
@@ -1751,28 +1751,41 @@ async function openActionsModal() {
 
   try {
     const meta = await fetchJson('/api/actions/meta');
+    const isClaude = meta.runtime === 'claude';
     const runtimeSel = modal.querySelector('#action-runtime');
     runtimeSel.value = meta.runtime;
 
+    const modelField = modal.querySelector('#action-model-field');
     const modelSel = modal.querySelector('#action-model');
-    modelSel.innerHTML = '';
-    for (const m of meta.models || []) {
-      const opt = document.createElement('option');
-      opt.value = m.id;
-      opt.textContent = m.id;
-      if (m.id === meta.current_model) opt.selected = true;
-      modelSel.appendChild(opt);
-    }
-    const customOpt = document.createElement('option');
-    customOpt.value = '__custom__';
-    customOpt.textContent = t('actions.custom');
-    modelSel.appendChild(customOpt);
-    modal.querySelector('#action-model-custom').hidden = true;
-
     const effortField = modal.querySelector('#action-effort-field');
     const effortSel = modal.querySelector('#action-effort');
+
+    if (modelField) modelField.hidden = !isClaude;
+    if (effortField) effortField.hidden = !isClaude;
+
+    modelSel.innerHTML = '';
+    if (isClaude) {
+      for (const m of meta.models || []) {
+        const opt = document.createElement('option');
+        opt.value = m.id;
+        opt.textContent = m.id;
+        if (m.id === meta.current_model) opt.selected = true;
+        modelSel.appendChild(opt);
+      }
+      const customOpt = document.createElement('option');
+      customOpt.value = '__custom__';
+      customOpt.textContent = t('actions.custom');
+      modelSel.appendChild(customOpt);
+    }
+    modal.querySelector('#action-model-custom').hidden = true;
+
     const effortsByModel = meta.efforts_by_model || {};
     modal._renderEffortOptions = (modelId) => {
+      if (!isClaude) {
+        effortField.hidden = true;
+        effortSel.innerHTML = '';
+        return;
+      }
       const list = effortsByModel[modelId] || effortsByModel['*'] || [];
       if (!list.length) {
         effortField.hidden = true;
@@ -1789,7 +1802,7 @@ async function openActionsModal() {
       }
       effortSel._prevValue = effortSel.value;
     };
-    modal._renderEffortOptions(meta.current_model);
+    if (isClaude) modal._renderEffortOptions(meta.current_model);
 
     const ri = state.dashboardState?.runtime_info;
     const zylosVer = modal.querySelector('#action-zylos-ver');
