@@ -832,6 +832,9 @@ main { padding: var(--space-md) var(--space-lg) var(--space-xl); }
   grid-template-columns: repeat(3, 1fr);
   gap: var(--space-sm);
 }
+@media (max-width: 480px) {
+  .cost-grid { grid-template-columns: 1fr; }
+}
 
 .cost-card {
   text-align: center;
