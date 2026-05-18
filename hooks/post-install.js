@@ -37,13 +37,12 @@ if (!fs.existsSync(configPath)) {
 console.log(`dashboard data dir ready: ${dataDir}`);
 
 const installer = new HookInstaller(projectRoot, zylosDir);
-const rt = installer.detectRuntime();
-if (rt === 'claude') {
+
+const claudeDir = path.join(zylosDir, '.claude');
+if (fs.existsSync(claudeDir)) {
   const result = installer.installClaudeHooks();
   console.log(`claude hooks: ${result.added} added (${result.total} events)`);
-} else if (rt === 'codex') {
-  const result = installer.installCodexHooks();
-  console.log(`codex hooks: ${result.added} added (${result.total} events)`);
 } else {
-  console.log('unknown runtime, skipping hook installation');
+  console.log('claude hooks: skipped (~/.claude/ not found)');
 }
+// Codex hooks: not yet adapted, skip for now
