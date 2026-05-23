@@ -13,11 +13,11 @@ Zylos Dashboard 当前已经具备多运行时的基础形态：PM2、系统健�
 | Dashboard 区域 | Codex 目标状态 | 期望表现 | 主要来源 | 备注 |
 |---|---|---|---|---|
 | Agent 状态 / 当前工具 | 正常 | 显示 idle/running/waiting/stuck 与当前工具名 | Codex hook + state engine | Phase 1-2 先落地 |
-| 工具调用流 / 工具耗时 | 正常 | 展示工具名、成功/失败、耗时、来源置信度 | OTel 优先，hook fallback | 不展示完整输入/输出 |
-| Token 使用 / cache hit | 正常或部分降级 | 有 OTel 时正常；缺字段时显示 partial/degraded | Codex OTel | Phase 3 验证字段稳定性 |
-| Context 使用率 / 新会话阈值 | 部分降级到正常 | activity-monitor 已能用 Codex context usage 触发 new-session；Dashboard 需要接入可展示的状态输出 | zylos-core CodexContextMonitor + activity-monitor | 跨组件展示契约待固化，见 Phase 4 |
-| Cost / 花费趋势 | 降级 | 若无稳定价格/成本来源，只显示 token usage，不估算成本 | OTel + 后续 pricing source | 不做不透明推算 |
-| Turn 延迟 / TTFT | 正常 | 显示 turn duration、TTFT、P50/P95 | Codex OTel metrics/traces | Phase 3 |
+| 工具调用流 / 工具耗时 | 正常 | 展示工具名、成功/失败、耗时、来源置信度 | Codex hook + rollout JSONL | MVP 不展示完整输入/输出 |
+| Token 使用 / cache hit | 正常 | 显示 session/today/7d input/output/cache | Codex rollout JSONL `token_count` | 与 Claude JSONL collector 同类 |
+| Context 使用率 / 新会话阈值 | 正常 | activity-monitor 已能用 Codex context usage 触发 new-session；Dashboard 展示同一口径 | Codex rollout JSONL + `codex_new_session_threshold` | threshold 来自 zylos config，默认 75 |
+| Cost / 花费趋势 | 正常但标明估算口径 | 用 Codex token 乘 Dashboard price table，与 Claude JSONL cost 口径一致 | Codex rollout JSONL + `modelPrices` | 无官方 cost 字段时 confidence 仍可为 priced/estimated |
+| Turn 延迟 / TTFT | 正常 | 显示 turn duration、TTFT、P50/P95 | Codex rollout JSONL `task_complete` | OTel 可后续增强 |
 | Permission 请求 | 正常但中等置信度 | 显示等待人工/权限请求状态 | Codex hook | Codex 匹配键可能弱于 Claude |
 | PM2 / 系统健康 | 正常 | 与 Claude Runtime 相同 | PM2/system collectors | runtime 无关 |
 | 通信 / 调度 | 正常 | 与 Claude Runtime 相同 | C4/scheduler DB | runtime 无关 |
@@ -77,6 +77,29 @@ zylos-core 最新 `main`（本地确认 commit `106fbdf`）中的相关事实：
 - `model_context_window` 是当前有效 context window 上限，可直接作为分母；样本中没有单独出现 `context_window` 或 `effective_context_window_percent` 字段。
 - `total_token_usage.input_tokens` 是 session 累计输入 token，适合用量/成本统计，不适合用作 context fill，因为它会跨 turn 累加。
 - 因此 Codex context percentage 的直接口径是 `last_token_usage.input_tokens / model_context_window * 100`；如果 JSONL 中缺 `model_context_window`，再降级到 `~/.codex/models_cache.json` 或 zylos-core fallback 口径。
+- 同一 `token_count` 事件还带 `rate_limits.primary` / `rate_limits.secondary`，样本中分别对应 5h（`window_minutes=300`）和 weekly（`window_minutes=10080`）使用率及 `resets_at`。
+- `task_complete` 事件包含 `duration_ms` 与 `time_to_first_token_ms`，可直接支持 turn duration 与 TTFT。
+- `response_item` 事件包含 `function_call` / `function_call_output`，可用 `call_id` 关联工具调用历史；MVP 只保存工具名、call_id、时间和脱敏摘要，不保存 `arguments` / `output` 原文。
+
+## 当前结论：MVP 不强依赖 OTLP
+
+对齐当前 Claude Runtime 页面指标，Codex 第一版可以采用 **hooks + rollout JSONL + activity-monitor/config**，不必把 OTLP 放在阻塞路径：
+
+| 页面指标 / 能力 | Codex MVP 来源 | 是否需要 OTLP | 说明 |
+|---|---|---:|---|
+| Agent 状态、当前工具、等待人工、stuck | Codex hooks -> `/api/ingest` -> state-engine | 否 | 与 Claude Runtime 的 hook/state-engine 路径一致 |
+| 工具调用历史 | hooks 为主，JSONL `response_item.function_call` 可补历史 | 否 | 完整 arguments/output 不落库 |
+| 工具耗时 | hook Pre/Post 时间差；JSONL function_call/function_call_output 时间差 | 否 | OTel 后续可提供更准 histogram/span |
+| Context 使用率 | JSONL `token_count.last_token_usage.input_tokens / model_context_window` | 否 | zylos-core 已用同口径驱动 new-session |
+| New session threshold | zylos config `codex_new_session_threshold`，默认 75 | 否 | `CodexAdapter#getContextMonitor()` 已这样实现 |
+| 5h / weekly rate limit | JSONL `token_count.rate_limits.primary/secondary` | 否 | 映射到 `rate_limit` / `rate_limit_7d` |
+| Token session/today/7d | JSONL `token_count` 增量或去重后的累计差值 | 否 | 写入现有 `api_request_tokens` 聚合表即可复用 UI |
+| Cache hit | JSONL `cached_input_tokens / input_tokens` | 否 | 与现有 `cache_hit_rate` 聚合接口兼容 |
+| Cost session/today/7d | JSONL token × Dashboard `modelPrices` | 否 | 借鉴 Claude `ConversationCollector#_calculateCost()` |
+| Turn duration / TTFT | JSONL `task_complete.duration_ms/time_to_first_token_ms` | 否 | 写入 `metric_points`，可做当前值和趋势 |
+| PM2/system/communication/scheduler | 现有 collectors / C4 / scheduler | 否 | runtime 无关 |
+
+OTLP 仍然有价值，但定位为第二层增强：更标准的 tool duration histogram、trace waterfall、transport/websocket/API 细节、hook 开销，以及与外部 observability 后端对齐。它不应阻塞当前 Dashboard 指标对齐。
 
 ## 适配目标
 
@@ -84,8 +107,8 @@ zylos-core 最新 `main`（本地确认 commit `106fbdf`）中的相关事实：
 
 1. Dashboard 在 Codex Runtime 下能自动安装和卸载 Dashboard hook。
 2. Codex hook 事件能进入现有 `/api/ingest` 管道，落入 `runtime_events`，并能驱动状态机。
-3. Codex OTel 能被 Dashboard 接收、解析和聚合到统一指标模型。
-4. Codex 的 token、context、工具调用、工具耗时、turn 耗时、TTFT、permission 等核心指标能在 UI 中正常展示或明确降级。
+3. Codex rollout JSONL 能被 Dashboard 增量读取，写入现有 `metric_points` 聚合模型。
+4. Codex 的 token、context、rate limit、cost、工具调用、工具耗时、turn 耗时、TTFT、permission 等核心指标能在 UI 中正常展示或明确降级。
 5. 不采集、不落库、不展示 raw prompt、完整工具输入输出、用户邮箱等敏感字段。
 6. Claude Runtime 现有能力不回退。
 
@@ -93,6 +116,7 @@ zylos-core 最新 `main`（本地确认 commit `106fbdf`）中的相关事实：
 
 - 不在第一轮实现 Codex 模型切换和推理力度切换；`actions.js` 当前的 not implemented 可以保留，另开工作项。
 - 不依赖 raw API body 或完整工具内容。
+- 不要求第一轮接入 Codex OTLP；OTLP 作为后续增强，不阻塞 MVP。
 - 不要求 Codex 与 Claude 的每个指标完全同源，只要求统一语义和可解释的 source/confidence。
 
 ## 总体设计
@@ -105,11 +129,14 @@ Codex CLI
   │    └─ hook-ingest.cjs
   │         └─ /api/ingest
   │              └─ runtime_events + state_engine
-  ├─ OTLP logs/metrics/traces
-  │    └─ dashboard OTLP receiver / collector
-  │         └─ metric_points + activity_facts
-  └─ zylos-core/activity-monitor state files
-       └─ File/System/PM2 collectors
+  ├─ rollout JSONL
+  │    └─ CodexRolloutCollector
+  │         └─ metric_points + runtime_events
+  ├─ zylos-core/activity-monitor state files
+  │    └─ File/System/PM2 collectors
+  └─ OTLP logs/metrics/traces (enhancement)
+       └─ dashboard OTLP receiver / collector
+            └─ metric_points + activity_facts
 ```
 
 解析层按 runtime 分 codec：
@@ -191,63 +218,92 @@ Resolver 仍然只对外暴露统一指标，不让前端直接感知底层来�
 - 对缺失 PostToolUse 的场景，状态机会进入 possibly stuck，而不是永久 busy。
 - 前端 Codex degraded banner 不应隐藏已支持的工具/状态能力。
 
-### Phase 3：Codex OTel 接收与 codec
+### Phase 3：Codex rollout JSONL collector
 
 交付：
 
-- Dashboard 能接收 Codex OTLP HTTP JSON（后续再扩展 protobuf/gRPC）。
-- Codex codec 将 `codex.*` logs/metrics/traces 转为 `metric_points` 和 `activity_facts`。
-- OTel collector liveness 与 runtime progress 分开记录。
+- Dashboard 能定位 active Codex rollout JSONL，并增量读取新事件。
+- `token_count`、`task_complete`、`response_item.function_call/function_call_output` 被映射到现有 `metric_points` / `runtime_events`。
+- Codex token、cache hit、rate limit、context percentage、turn duration、TTFT、cost 可以进入当前 Overview 与趋势图。
 
 字段映射初稿：
 
 | Dashboard 指标 | Codex 来源 | 映射 |
 |---|---|---|
-| `token_usage` | `codex.sse_event` logs 或 `codex.turn.token_usage` metrics | input/output/cached/reasoning/tool token |
-| `cache_hit_rate` | `cached_token_count` + `input_token_count` | cached / (cached + input) |
-| `tool_calls` | `codex.tool_result` logs 或 `codex.tool.call` metrics | tool_name, call_id, success |
-| `tool_duration` | `codex.tool_result.duration_ms` 或 `codex.tool.call.duration_ms` | ms |
-| `llm_latency` | websocket request/event duration 或 traces | P50/P95/P99 |
-| `ttft` | `codex.turn.ttft.duration_ms` | ms |
-| `turn_duration` | `codex.turn.e2e_duration_ms` | ms |
-| `session_lifecycle` | `codex.conversation_starts` + hook SessionStart | conversation/session start |
+| `context_pct` | JSONL `token_count.info.last_token_usage.input_tokens` + `model_context_window` | percentage |
+| `rate_limit` | JSONL `token_count.rate_limits.primary` | 5h percent + reset |
+| `rate_limit_7d` | JSONL `token_count.rate_limits.secondary` | weekly percent + reset |
+| `api_request_tokens` | JSONL `token_count.info.last_token_usage` 或累计差值 | input/output/cache_read/reasoning |
+| `cache_hit_rate` | JSONL `cached_input_tokens / input_tokens` | ratio |
+| `api_request_cost` | JSONL token × Dashboard `modelPrices` | same pattern as Claude `ConversationCollector` |
+| `ttft` | JSONL `task_complete.time_to_first_token_ms` | ms |
+| `turn_duration` | JSONL `task_complete.duration_ms` | ms |
+| `tool_calls` | JSONL `response_item.function_call` + hooks | tool_name, call_id |
+| `tool_duration` | hook Pre/Post or JSONL call/output timestamp delta | ms |
 
 安全处理：
 
 - 不保存 `prompt`、`arguments`、`output` 原文。
-- `user.email`、`user.account_id` 只允许落 hash 或直接丢弃。
 - `cwd`、file path、command 等只允许进入 sanitized summary，不进入 raw metadata。
+- JSONL collector 只读取白名单 event：`token_count`、`task_complete`、`response_item` 的工具 envelope；`agent_message` / `user_message` 默认不持久化正文。
 
 验收：
 
-- 用脱敏 Codex OTLP fixture 跑 codec 单元测试。
-- `metric_points` 中有 Codex token、tool duration、TTFT、turn duration 指标。
-- 同一指标有 hook 和 telemetry 双来源时，Resolver 选择 telemetry，hook 作为 fallback/alternative。
+- 用脱敏 Codex rollout fixture 跑 collector 单元测试。
+- `metric_points` 中有 Codex `context_pct`、`rate_limit`、`rate_limit_7d`、`api_request_tokens`、`api_request_cost`、`cache_hit_rate`、`ttft`、`turn_duration`。
+- 前端现有 `/api/metrics/*` 和 `/api/metrics/aggregate` 在 Codex Runtime 下能显示 Overview 指标。
 
-### Phase 4：Context usage 与成本口径
+### Phase 4：Context usage、threshold 与成本口径
 
 交付：
 
-- Codex context usage 从 degraded/missing 变为 supported。
-- Codex token/cost 展示有明确来源和置信度。
+- Codex context usage、new-session threshold、token/cost 展示有明确来源和置信度。
 
 实现路径：
 
 - 责任边界：zylos-core/activity-monitor 已负责基于 `CodexContextMonitor` 检测 Codex context usage，并在达到阈值时触发 early memory sync / new-session handoff；Dashboard 负责把同一口径展示出来，不在 Dashboard 内重复实现 Codex rollout/SQLite 解析。
 - 当前 zylos-core 已有 `cli/lib/runtime/codex-context-monitor.js`，并能从 Codex `token_count` 事件读取 used tokens 与 context window；activity-monitor 的 Codex 轮询路径已经证明该数据可用于控制流。
-- 首选方案：在 activity-monitor 的 Codex context polling path 中持久化同一份 `{ used, ceiling, ratio, threshold }` 结果，例如写入 `activity-monitor/context-monitor-state.json` 的 multi-runtime 形态；Dashboard 新增 Codex context collector 读取该文件，写入 `metric_points(metric_name='context_pct', source='rollout', confidence='actual', runtime='codex')`。
-- Dashboard fallback：如果 activity-monitor context state 缺失，但 Codex OTel 有 token usage，则展示 token-only partial 状态；如果 token usage 和 context window 都缺失，则显示 missing，不做估算。
-- 如果 Codex OTel 能稳定提供 `model_context_window`，或 Dashboard 能从已验证 model catalog 获得窗口大小，则 TelemetryAdapter 可作为更高优先级来源。
-- 工作归属：zylos-core/activity-monitor 负责把现有 Codex context monitor 结果暴露成 Dashboard 可消费状态；zylos-dashboard 负责 FileAdapter/Resolver/UI 消费；跨组件验收需要同时覆盖两边。
+- Threshold 来源与 activity-monitor 对齐：读取 zylos config `codex_new_session_threshold`，默认 75；前端 threshold marker 不使用 Claude 默认 70。
+- 首选方案：Dashboard 直接从 Codex rollout collector 写入 `context_pct`，并从 config/API 返回 `new_session_threshold`；activity-monitor 可另行持久化 `{ used, ceiling, ratio, threshold }` 作为交叉校验。
+- 成本口径借鉴 Claude `ConversationCollector#_calculateCost()`：把 JSONL token 映射成 input/output/cacheRead/cacheCreation/reasoning 维度，再按 Dashboard `modelPrices` 计算 `api_request_cost`。无官方 billed-cost 字段时，source/confidence 应清楚标成 priced/estimated。
+- 工作归属：zylos-dashboard 负责 rollout locator/collector、price mapping、resolver/UI 接入；zylos-core/activity-monitor 继续负责 new-session 控制流，必要时仅补充状态文件作为交叉校验。
 
 验收：
 
 - Codex Runtime 下 Overview 显示 context 使用率。
 - 阈值提示、新会话倒计时、Dashboard context 卡片的口径一致。
-- 如果只有 token usage 没有 context window，UI 明确标记为 partial/degraded。
-- 如果 activity-monitor context state 不可用，Dashboard 不报错，不显示虚假的百分比。
+- Codex Runtime 下 token、cache、cost session/today/7d 正常显示。
+- 如果 price table 缺少当前 model，显示 token 但 cost 标为 missing/estimated unavailable，不瞎填美元。
 
-### Phase 5：前端产品化
+### Phase 5：Codex OTLP 增强
+
+交付：
+
+- Dashboard 能接收 Codex OTLP HTTP JSON（后续再扩展 protobuf/gRPC）。
+- Codex codec 将 `codex.*` logs/metrics/traces 转为补充指标。
+- OTel collector liveness 与 runtime progress 分开记录。
+
+增强项：
+
+| Dashboard 指标 | Codex OTel 来源 | 用途 |
+|---|---|---|
+| `tool_duration` | `codex.tool_result.duration_ms` 或 `codex.tool.call.duration_ms` | 更准确 histogram |
+| `llm_latency` | websocket request/event duration 或 traces | P50/P95/P99 |
+| `ttft` | `codex.turn.ttft.duration_ms` | 与 JSONL 交叉校验 |
+| `turn_duration` | `codex.turn.e2e_duration_ms` | 与 JSONL 交叉校验 |
+| source health | `codex.hooks.run.duration_ms`、websocket metrics | 采集链路诊断 |
+
+安全处理：
+
+- 不保存 `prompt`、`arguments`、`output` 原文。
+- `user.email`、`user.account_id` 只允许落 hash 或直接丢弃。
+
+验收：
+
+- 用脱敏 Codex OTLP fixture 跑 codec 单元测试。
+- 同一指标有 JSONL/hook 和 telemetry 双来源时，Resolver 可选择 telemetry 作为增强来源，JSONL/hook 作为 fallback/alternative。
+
+### Phase 6：前端产品化
 
 交付：
 
@@ -262,17 +318,19 @@ Resolver 仍然只对外暴露统一指标，不让前端直接感知底层来�
 
 - 切到 Codex Runtime 后，PM2/system/communication/scheduler 保持可用。
 - Codex hook 到达后，工具和状态卡从 degraded 转为 ok。
-- OTel 到达后，token/latency 指标 source 从 hook/state file 升级为 telemetry。
+- JSONL 到达后，token/context/rate/cost/TTFT 指标从 degraded 转为 ok。
+- OTel 到达后，latency/tool duration/source health 可升级为 telemetry。
 
 ## 工作拆分建议
 
-建议拆成 5 个独立 PR：
+建议拆成 6 个独立 PR：
 
 1. **docs/fixtures**：固化 Codex spike 结论、脱敏 fixture、字段契约测试。
 2. **hooks**：Codex hook install/uninstall + ingestion 验证。
 3. **state**：Codex hook canonical mapping + state-engine 支持。
-4. **otel**：Codex OTLP receiver/codec + metric resolver 映射。
-5. **ui**：Codex capability-aware 展示和 source health 面板。
+4. **jsonl**：Codex rollout locator/collector + token/context/rate/cost/TTFT 映射。
+5. **otel**：Codex OTLP receiver/codec + telemetry enhancement。
+6. **ui**：Codex capability-aware 展示和 source health 面板。
 
 这样每个 PR 都可以单独验收，不会把 hook、OTel、UI 一次性耦合。
 
@@ -284,7 +342,7 @@ Resolver 仍然只对外暴露统一指标，不让前端直接感知底层来�
 | Codex hook schema 变动 | ingestion 失败 | canonical mapper 忽略未知字段，fixture 覆盖最低字段契约 |
 | OTLP 字段高基数 | DB 膨胀、UI 噪音 | 丢弃 user/email/path/raw content，按指标白名单入库 |
 | raw prompt/tool I/O 泄漏 | 安全风险 | sanitizer 默认拒绝 raw content，只保留长度、工具名、成功状态、耗时 |
-| context usage 依赖 zylos-core | Dashboard 无法单独完成 | 明确作为跨组件依赖，Dashboard 显示 partial/degraded |
+| price table 缺少 Codex model | cost 无法计算 | token 正常显示，cost 标 missing；允许在设置中补 model prefix 价格 |
 | Claude 能力回退 | 影响现有用户 | 所有改动按 runtime 分支，Claude fixture/测试保持通过 |
 
 ## 验收清单
@@ -292,7 +350,8 @@ Resolver 仍然只对外暴露统一指标，不让前端直接感知底层来�
 - `npm test` 通过。
 - Codex hook install/uninstall 单元测试通过。
 - Codex hook fixture 能写入 `runtime_events`，并驱动 state snapshot。
-- Codex OTLP fixture 能写入 `metric_points`，Resolver 返回 token/tool/latency 指标。
+- Codex rollout fixture 能写入 `metric_points`，Resolver 返回 context/rate/token/cost/TTFT 指标。
+- Codex OTLP fixture 能写入增强指标，Resolver 可在 telemetry/source priority 下选择或展示 alternative。
 - Dashboard 在 Codex Runtime 下不展示 Claude-only 面板，但展示已支持的通用/Codex 指标。
 - Spool 机制在 Dashboard 离线时仍然工作。
 - 源码和测试 fixture 中不包含真实 prompt、完整工具输出、邮箱、账号 ID、token 或 secret。
@@ -302,5 +361,6 @@ Resolver 仍然只对外暴露统一指标，不让前端直接感知底层来�
 1. 从现有 spike 样本生成脱敏 fixtures。
 2. 给 `HookInstaller.installCodexHooks()` 和 post-install runtime 分支补测试。
 3. 将 Codex 的 5 个已验证 hook 事件接入 canonical event mapper。
-4. 新增 Codex source health：`codex_hooks` 和 `codex_otel`。
-5. 补一个最小 Codex Overview 验收：hook 到达后状态/工具卡可用，OTel 到达后 token/TTFT 可用。
+4. 新增 `CodexRolloutCollector`，先接 `context_pct`、`rate_limit`、`rate_limit_7d`、`api_request_tokens`、`api_request_cost`、`cache_hit_rate`、`ttft`、`turn_duration`。
+5. 新增 Codex source health：`codex_hooks`、`codex_rollout`，OTLP 后续再加 `codex_otel`。
+6. 补一个最小 Codex Overview 验收：hook 到达后状态/工具卡可用，JSONL 到达后 token/context/rate/cost/TTFT 可用。
