@@ -49,7 +49,7 @@ Dashboard 现有代码基础：
 - `src/lib/hook-installer.js` 已有 Codex hooks.json 读写和 `installCodexHooks()` 雏形。
 - `src/lib/hook-ingest.cjs`、`src/lib/ingest-handler.js`、`src/lib/spool-drainer.js` 已经形成通用 hook ingestion + 离线 spool 管道。
 - `src/lib/store.js` 已有 `runtime_events`、`metric_points`、`state_snapshots`、`source_health` 等通用表结构，字段中已经包含 `runtime`。
-- `docs/modules/data-sources.md` 和 `docs/modules/metric-model.md` 已定义 multi-runtime adapter/resolver 模型，优先级为 `telemetry > hook > 状态文件`。
+- `docs/modules/data-sources.md` 和 `docs/modules/metric-model.md` 已定义 multi-runtime adapter/resolver 模型，通用优先级为 `telemetry > hook > 状态文件`；本计划对 Codex MVP 收窄为 hooks + rollout JSONL，OTLP telemetry 延后到增强阶段。
 - `hooks/post-install.js` 当前明确写着 “Codex hooks: not yet adapted, skip for now”，这是要补齐的生命周期缺口。
 
 zylos-core 最新 `main`（本地确认 commit `106fbdf`）中的相关事实：
@@ -58,7 +58,7 @@ zylos-core 最新 `main`（本地确认 commit `106fbdf`）中的相关事实：
 - 该 monitor 的首选数据源是 Codex rollout JSONL 中的 `event_msg:token_count` 事件，读取 `payload.info.last_token_usage.input_tokens` 作为当前 context fill，读取 `payload.info.model_context_window` 作为窗口上限。
 - 该 monitor 已通过 `cli/lib/runtime/codex.js#getContextMonitor()` 暴露给 activity-monitor runtime context monitor，用于阈值和新会话判断。
 - activity-monitor 已经在 Codex Runtime 下通过该 monitor 的轮询结果触发 early memory sync 与 new-session handoff；这说明 context usage 的控制流能力已经存在。
-- 当前仍需要为 Dashboard 固化一个稳定、可消费、与 Claude context 展示同语义的 Codex 状态输出，或让 Dashboard 直接复用 activity-monitor 已有的 monitor/check 结果；Dashboard 不应另起一套 Codex rollout/SQLite 解析。
+- 当前仍需要为 Dashboard 固化一个稳定、可消费、与 Claude context 展示同语义的 Codex 指标输出。边界是：zylos-core/activity-monitor 继续负责 context threshold 和 new-session 控制流；Dashboard 可以读取同一 rollout JSONL 来源生成展示指标，但不另起一套会话切换判断逻辑。
 
 当前代码接入点（已核对）：
 
@@ -81,7 +81,7 @@ zylos-core 最新 `main`（本地确认 commit `106fbdf`）中的相关事实：
 - `task_complete` 事件包含 `duration_ms` 与 `time_to_first_token_ms`，可直接支持 turn duration 与 TTFT。
 - `response_item` 事件包含 `function_call` / `function_call_output`，可用 `call_id` 关联工具调用历史；MVP 只保存工具名、call_id、时间和脱敏摘要，不保存 `arguments` / `output` 原文。
 
-## 当前结论：MVP 不强依赖 OTLP
+## 当前结论：MVP 不依赖 OTLP
 
 对齐当前 Claude Runtime 页面指标，Codex 第一版可以采用 **hooks + rollout JSONL + activity-monitor/config**，不必把 OTLP 放在阻塞路径：
 
@@ -109,15 +109,16 @@ OTLP 仍然有价值，但定位为第二层增强：更标准的 tool duration 
 - `codex_new_session_threshold` 当前为 `75`，`new_session_threshold` 当前为 `70`；这与 zylos-core `CodexAdapter#getContextMonitor()` 的默认策略一致。
 - `~/.codex/config.toml` 目前主要配置 trusted projects 和 model NUX；未看到 `[otel]` 配置。
 - `~/zylos/.codex/config.toml` 已启用 `features.multi_agent = true`，并隐藏交互式 notice，符合 headless runtime 需要。
-- `~/.codex/hooks.json` 当前仍是 spike logger 配置，command 指向 `spike/codex-hook-logger.mjs`，不是 Dashboard `hook-ingest.cjs`。
-- `~/zylos/components/dashboard/spike/codex-hooks.jsonl` 最后更新时间是 2026-05-11，说明当前生产 Dashboard 采集链并没有依赖这条 spike hook 持续入库。
+- 当前 shell 环境没有 `OTEL_*`、`OTLP_*` 或 `OPENTELEMETRY_*` exporter 变量。
+- `~/.codex/hooks.json` 已清理为 `{ "hooks": {} }`；清理前的 spike logger 配置已备份到 `~/zylos/components/dashboard/backups/codex-hooks.json.pre-spike-cleanup-20260523-154935`。
+- `~/zylos/components/dashboard/spike/codex-hooks.jsonl` 和 `codex-otlp.jsonl` 是 2026-05-08 至 2026-05-11 的历史 spike 样本，不是当前 active hook 或 active OTLP collector。
 - Dashboard DB 当前只有 Codex 的 PM2/system 指标；没有 `runtime_events` 的 Codex hook 事件，也没有 Codex `context_pct`、`rate_limit`、`api_request_tokens`、`api_request_cost`、`ttft` 等指标。
 - Dashboard `/api/state` 已按 runtime 读取 zylos config 的 `codex_new_session_threshold`，但 runtime actions metadata 仍需确认统一读取同一来源，避免 UI 设置面板显示旧默认。
 - Dashboard config 当前没有 Codex/OpenAI model price 前缀；第一批实现需要补默认价格或要求用户在 settings 中配置，否则 token 可显示但 cost 应标 missing。
 
 当前建议：
 
-1. 不手工覆盖 `~/.codex/hooks.json`；通过 Dashboard implementation PR 修 `HookInstaller.installCodexHooks()`、post-install runtime 分支和测试后再由组件安装/升级流程写入。
+1. 不手工安装生产 Dashboard hook；当前 `~/.codex/hooks.json` 保持空配置，通过 Dashboard implementation PR 修 `HookInstaller.installCodexHooks()`、post-install runtime 分支和测试后再由组件安装/升级流程写入。
 2. 第一批 implementation 不启用 OTLP；先落 `CodexRolloutCollector` 和 hook ingestion，使当前页面指标可用。
 3. 将 spike logger 保留为历史证据，但不要作为生产采集路径；脱敏样本进入 `test/fixtures/codex/`。
 4. Codex cost 第一版沿用 Dashboard `modelPrices`，缺价格时明确降级，不估算未知模型。
@@ -160,10 +161,11 @@ Codex CLI
             └─ metric_points + activity_facts
 ```
 
-解析层按 runtime 分 codec：
+解析层按 runtime 分 codec。MVP 只需要 hook/rollout JSONL 映射；OTLP codec 属于 Phase 5 增强：
 
 - Claude codec：继续消费 `claude_code.*`。
-- Codex codec：新增或补齐 `codex.*` logs/metrics/traces 映射。
+- Codex hook/rollout codec：新增 Codex hook canonical event 映射和 rollout JSONL metric 映射。
+- Codex OTLP codec：后续新增或补齐 `codex.*` logs/metrics/traces 映射。
 
 Resolver 仍然只对外暴露统一指标，不让前端直接感知底层来源差异。
 
@@ -175,13 +177,13 @@ Resolver 仍然只对外暴露统一指标，不让前端直接感知底层来�
 
 - 把现有 spike 结论整理到文档和测试 fixture，避免只存在运行时数据目录。
 - 固化 Codex hook payload 的最小可用字段集。
-- 固化 Codex OTLP logs/metrics/traces 的可用事件清单和字段映射表。
+- 固化 Codex rollout JSONL `token_count`、`task_complete`、`response_item` 的最小可用字段集。
 - 明确这些字段是 Dashboard 的 defensive mapping 输入假设，不是要求 Codex CLI 保持的双向契约。
 
 实现建议：
 
-- 新增 `test/fixtures/codex/`，放脱敏后的 hook 和 OTLP 样本。
-- 新增脚本或测试复用 `spike/analyze-codex-spike.mjs` 的分析逻辑，但不要依赖 `~/zylos/components/dashboard/spike` 运行时目录。
+- 新增 `test/fixtures/codex/`，放脱敏后的 hook 和 rollout JSONL 样本。
+- OTLP 样本只作为 Phase 5 增强证据保留，第一批 fixture 不以 OTLP codec 为验收前置。
 - 明确删除或脱敏字段：`prompt`、`last_assistant_message`、`tool_input.command`、`tool_response`、`user.email`、`user.account_id`。
 - mapper 必须忽略未知字段；缺少非关键字段时返回 partial/degraded，而不是拒绝整条事件。
 - 只有 `runtime`、`event name`、`timestamp/received_at`、`session_id` 这类最小字段可作为 hard requirement；其余字段都按 best-effort 解析。
@@ -189,7 +191,7 @@ Resolver 仍然只对外暴露统一指标，不让前端直接感知底层来�
 验收：
 
 - fixture 中不含真实 prompt、邮箱、账户 ID、完整命令输出。
-- 测试能从 fixture 验证 Codex hook/OTLP 字段 shape。
+- 测试能从 fixture 验证 Codex hook/rollout JSONL 字段 shape。
 - 同一 fixture 删除可选字段后，mapper 仍能产出降级 canonical event。
 
 ### Phase 1：Codex hook 生命周期接入
@@ -282,7 +284,7 @@ Resolver 仍然只对外暴露统一指标，不让前端直接感知底层来�
 
 实现路径：
 
-- 责任边界：zylos-core/activity-monitor 已负责基于 `CodexContextMonitor` 检测 Codex context usage，并在达到阈值时触发 early memory sync / new-session handoff；Dashboard 负责把同一口径展示出来，不在 Dashboard 内重复实现 Codex rollout/SQLite 解析。
+- 责任边界：zylos-core/activity-monitor 已负责基于 `CodexContextMonitor` 检测 Codex context usage，并在达到阈值时触发 early memory sync / new-session handoff；Dashboard 负责把同一口径展示出来，不在 Dashboard 内重复实现 new-session 判断或 threshold 控制流。
 - 当前 zylos-core 已有 `cli/lib/runtime/codex-context-monitor.js`，并能从 Codex `token_count` 事件读取 used tokens 与 context window；activity-monitor 的 Codex 轮询路径已经证明该数据可用于控制流。
 - Threshold 来源与 activity-monitor 对齐：读取 zylos config `codex_new_session_threshold`，默认 75；前端 threshold marker 不使用 Claude 默认 70。
 - 首选方案：Dashboard 直接从 Codex rollout collector 写入 `context_pct`，并从 config/API 返回 `new_session_threshold`；activity-monitor 可另行持久化 `{ used, ceiling, ratio, threshold }` 作为交叉校验。
@@ -346,7 +348,7 @@ Resolver 仍然只对外暴露统一指标，不让前端直接感知底层来�
 
 建议拆成 6 个独立 PR：
 
-1. **docs/fixtures**：固化 Codex spike 结论、脱敏 fixture、字段契约测试。
+1. **docs/fixtures**：固化 Codex spike 结论、脱敏 hook/rollout fixture、字段契约测试。
 2. **hooks**：Codex hook install/uninstall + ingestion 验证。
 3. **state**：Codex hook canonical mapping + state-engine 支持。
 4. **jsonl**：Codex rollout locator/collector + token/context/rate/cost/TTFT 映射。
@@ -372,14 +374,14 @@ Resolver 仍然只对外暴露统一指标，不让前端直接感知底层来�
 - Codex hook install/uninstall 单元测试通过。
 - Codex hook fixture 能写入 `runtime_events`，并驱动 state snapshot。
 - Codex rollout fixture 能写入 `metric_points`，Resolver 返回 context/rate/token/cost/TTFT 指标。
-- Codex OTLP fixture 能写入增强指标，Resolver 可在 telemetry/source priority 下选择或展示 alternative。
+- Codex OTLP fixture 能写入增强指标，Resolver 可在 telemetry/source priority 下选择或展示 alternative。该项属于 Phase 5，不阻塞第一批 MVP 验收。
 - Dashboard 在 Codex Runtime 下不展示 Claude-only 面板，但展示已支持的通用/Codex 指标。
 - Spool 机制在 Dashboard 离线时仍然工作。
 - 源码和测试 fixture 中不包含真实 prompt、完整工具输出、邮箱、账号 ID、token 或 secret。
 
 ## 第一批落地动作
 
-1. 从现有 spike 样本生成脱敏 fixtures。
+1. 从现有 spike 与 rollout 样本生成脱敏 hook/rollout fixtures。
 2. 给 `HookInstaller.installCodexHooks()` 和 post-install runtime 分支补测试。
 3. 将 Codex 的 5 个已验证 hook 事件接入 canonical event mapper。
 4. 新增 `CodexRolloutCollector`，先接 `context_pct`、`rate_limit`、`rate_limit_7d`、`api_request_tokens`、`api_request_cost`、`cache_hit_rate`、`ttft`、`turn_duration`。
