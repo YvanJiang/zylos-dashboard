@@ -60,6 +60,15 @@ zylos-core 最新 `main`（本地确认 commit `106fbdf`）中的相关事实：
 - activity-monitor 已经在 Codex Runtime 下通过该 monitor 的轮询结果触发 early memory sync 与 new-session handoff；这说明 context usage 的控制流能力已经存在。
 - 当前仍需要为 Dashboard 固化一个稳定、可消费、与 Claude context 展示同语义的 Codex 状态输出，或让 Dashboard 直接复用 activity-monitor 已有的 monitor/check 结果；Dashboard 不应另起一套 Codex rollout/SQLite 解析。
 
+当前代码接入点（已核对）：
+
+- zylos-core `cli/lib/runtime/context-monitor-base.js` 的 `check()` 已把 `getUsage()` 结果标准化为 `{ used, ceiling, ratio }`。
+- activity-monitor `scripts/adapters/runtime-components.js` 每 30 秒调用 adapter-provided context monitor；`onExceed` 里用同一组 `{ used, ceiling, ratio }` 触发 `enqueueContextRotationHandoff()`，`onEarlyThreshold` 触发 memory sync。
+- activity-monitor `scripts/monitor.js` 的 `enqueueContextRotationHandoff()` 再调用 zylos-core `cli/lib/runtime/session-handoff.js#enqueueNewSession()`，Codex runtime 下生成 `$new-session` 控制消息。
+- Dashboard `src/index.js` 目前在非 Claude runtime 下跳过 `StatuslineCollector` 和 `ConversationCollector`，因此 Codex context usage 不会进入 Dashboard 的 `metric_points`。
+- Dashboard `src/lib/metric-resolver.js` 已有 `context_pct` resolver chain：`statusline.actual -> rollout.actual -> derived_token_estimate.estimated`，所以 Codex 最小接入路径是把 activity-monitor 的 Codex context poll result 写成 `source='rollout'` 的 `context_pct` metric，或写入状态文件后由 Dashboard collector 转成该 metric。
+- Dashboard 现有 `src/lib/collectors/statusline-collector.js` 只读取 `activity-monitor/statusline.json`，并固定写 `runtime: 'claude'`、`source: 'statusline'`；Codex 不能直接复用这个 collector，需要新增小型 Codex context collector，或抽出通用 context-state collector。
+
 ## 适配目标
 
 ### 必须达到
@@ -217,7 +226,7 @@ Resolver 仍然只对外暴露统一指标，不让前端直接感知底层来�
 
 - 责任边界：zylos-core/activity-monitor 已负责基于 `CodexContextMonitor` 检测 Codex context usage，并在达到阈值时触发 early memory sync / new-session handoff；Dashboard 负责把同一口径展示出来，不在 Dashboard 内重复实现 Codex rollout/SQLite 解析。
 - 当前 zylos-core 已有 `cli/lib/runtime/codex-context-monitor.js`，并能从 Codex `token_count` 事件读取 used tokens 与 context window；activity-monitor 的 Codex 轮询路径已经证明该数据可用于控制流。
-- 首选方案：复用 activity-monitor 已有 Codex context monitor 结果，写入或暴露一个 Dashboard 可消费的状态输出，字段至少包含 runtime、used percentage、used tokens、context window、threshold、source、updated_at。
+- 首选方案：在 activity-monitor 的 Codex context polling path 中持久化同一份 `{ used, ceiling, ratio, threshold }` 结果，例如写入 `activity-monitor/context-monitor-state.json` 的 multi-runtime 形态；Dashboard 新增 Codex context collector 读取该文件，写入 `metric_points(metric_name='context_pct', source='rollout', confidence='actual', runtime='codex')`。
 - Dashboard fallback：如果 activity-monitor context state 缺失，但 Codex OTel 有 token usage，则展示 token-only partial 状态；如果 token usage 和 context window 都缺失，则显示 missing，不做估算。
 - 如果 Codex OTel 能稳定提供 `model_context_window`，或 Dashboard 能从已验证 model catalog 获得窗口大小，则 TelemetryAdapter 可作为更高优先级来源。
 - 工作归属：zylos-core/activity-monitor 负责把现有 Codex context monitor 结果暴露成 Dashboard 可消费状态；zylos-dashboard 负责 FileAdapter/Resolver/UI 消费；跨组件验收需要同时覆盖两边。
