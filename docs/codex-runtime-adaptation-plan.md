@@ -15,7 +15,7 @@ Zylos Dashboard 当前已经具备多运行时的基础形态：PM2、系统健�
 | Agent 状态 / 当前工具 | 正常 | 显示 idle/running/waiting/stuck 与当前工具名 | Codex hook + state engine | Phase 1-2 先落地 |
 | 工具调用流 / 工具耗时 | 正常 | 展示工具名、成功/失败、耗时、来源置信度 | OTel 优先，hook fallback | 不展示完整输入/输出 |
 | Token 使用 / cache hit | 正常或部分降级 | 有 OTel 时正常；缺字段时显示 partial/degraded | Codex OTel | Phase 3 验证字段稳定性 |
-| Context 使用率 / 新会话阈值 | 部分降级到正常 | 有 zylos-core state file 时正常；否则显示 token-only 或 missing | zylos-core activity-monitor + state file | 跨组件依赖，见 Phase 4 |
+| Context 使用率 / 新会话阈值 | 部分降级到正常 | 有 zylos-core state file 时正常；否则显示 token-only 或 missing | zylos-core CodexContextMonitor + activity-monitor state file | 跨组件输出契约待固化，见 Phase 4 |
 | Cost / 花费趋势 | 降级 | 若无稳定价格/成本来源，只显示 token usage，不估算成本 | OTel + 后续 pricing source | 不做不透明推算 |
 | Turn 延迟 / TTFT | 正常 | 显示 turn duration、TTFT、P50/P95 | Codex OTel metrics/traces | Phase 3 |
 | Permission 请求 | 正常但中等置信度 | 显示等待人工/权限请求状态 | Codex hook | Codex 匹配键可能弱于 Claude |
@@ -51,6 +51,13 @@ Dashboard 现有代码基础：
 - `src/lib/store.js` 已有 `runtime_events`、`metric_points`、`state_snapshots`、`source_health` 等通用表结构，字段中已经包含 `runtime`。
 - `docs/modules/data-sources.md` 和 `docs/modules/metric-model.md` 已定义 multi-runtime adapter/resolver 模型，优先级为 `telemetry > hook > 状态文件`。
 - `hooks/post-install.js` 当前明确写着 “Codex hooks: not yet adapted, skip for now”，这是要补齐的生命周期缺口。
+
+zylos-core 最新 `main`（本地确认 commit `106fbdf`）中的相关事实：
+
+- `cli/lib/runtime/codex-context-monitor.js` 已经实现 `CodexContextMonitor`。
+- 该 monitor 的首选数据源是 Codex rollout JSONL 中的 `event_msg:token_count` 事件，读取 `payload.info.last_token_usage.input_tokens` 作为当前 context fill，读取 `payload.info.model_context_window` 作为窗口上限。
+- 该 monitor 已通过 `cli/lib/runtime/codex.js#getContextMonitor()` 暴露给 activity-monitor runtime context monitor，用于阈值和新会话判断。
+- 当前仍需要为 Dashboard 固化一个稳定、可消费、与 Claude context state 同语义的 Codex state file 输出；Dashboard 不应直接重复解析 Codex rollout/SQLite。
 
 ## 适配目标
 
@@ -207,8 +214,8 @@ Resolver 仍然只对外暴露统一指标，不让前端直接感知底层来�
 
 实现路径：
 
-- 责任边界：zylos-core/activity-monitor 负责产出 Codex context state；Dashboard 负责消费、展示和降级，不在 Dashboard 内重复实现 Codex rollout/SQLite 解析。
-- 当前 zylos-core 有 `cli/lib/runtime/codex-context-monitor.js` 和 activity-monitor 的 `usage-codex.json`/rollout reader 路径，但 Dashboard 不能假设它已经写出与 Claude 相同的 `context-monitor-state.json`。
+- 责任边界：zylos-core/activity-monitor 负责基于已存在的 `CodexContextMonitor` 产出 Codex context state；Dashboard 负责消费、展示和降级，不在 Dashboard 内重复实现 Codex rollout/SQLite 解析。
+- 当前 zylos-core 已有 `cli/lib/runtime/codex-context-monitor.js`，并能从 Codex `token_count` 事件读取 used tokens 与 context window；activity-monitor 也有 `usage-codex.json` 路径，但 Dashboard 不能假设它已经写出与 Claude 相同语义的 `context-monitor-state.json`。
 - 首选方案：由 zylos-core/activity-monitor 写入与 Claude 相同语义的 `context-monitor-state.json`，字段至少包含 runtime、used percentage、used tokens、context window、source、updated_at。
 - Dashboard fallback：如果 `context-monitor-state.json` 缺失，但 Codex OTel 有 token usage，则展示 token-only partial 状态；如果 token usage 和 context window 都缺失，则显示 missing，不做估算。
 - 如果 Codex OTel 能稳定提供 `model_context_window`，或 Dashboard 能从已验证 model catalog 获得窗口大小，则 TelemetryAdapter 可作为更高优先级来源。
