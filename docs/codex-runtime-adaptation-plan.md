@@ -72,9 +72,8 @@ zylos-core 最新 `main`（本地确认 commit `106fbdf`）中的相关事实：
 
 实测 Codex rollout JSONL 字段：
 
-- 当前 session 的 active rollout 首选通过 Codex hook payload 的 `transcript_path` 定位；该路径在样本中直接指向本 session 的 rollout JSONL，文件名也包含 `session_id`。
-- 在 hook 尚未到达或重启恢复时，可以通过文件系统扫描 `~/.codex/sessions/**/rollout-*.jsonl` 并按 `session_id`、mtime、增量 cursor 定位；`~/.codex/state_5.sqlite` 的 `threads.rollout_path` 是 zylos-core 当前 monitor 使用的精确定位手段之一，但不应成为 Dashboard MVP 的硬依赖。
-- 如果后续实现选择读取 Codex SQLite，只能作为可选 locator fallback，并必须处理只读访问、busy/lock 超时、schema 缺失和文件不可用；Dashboard 的主采集路径仍应是 rollout JSONL tail。
+- 当前 session 的 active rollout 通过 Codex hook payload 的 `transcript_path` 定位；该路径在样本中直接指向本 session 的 rollout JSONL，文件名也包含 `session_id`。
+- Dashboard 不读取 Codex SQLite 来定位 rollout。若已有 `session_id -> transcript_path` 映射但没有新 hook，collector 继续 tail 上一个 `transcript_path`；没有新增 JSONL 事件就按 freshness 变 stale/idle，这正表示当前 Codex 没有活动。只有冷启动且尚无任何 hook 映射时，Codex rollout 指标才返回 unavailable。
 - 最近一条 `event_msg` / `token_count` 事件的 `payload.info` 包含 `total_token_usage`、`last_token_usage`、`model_context_window`。
 - `last_token_usage.input_tokens` 是当前 turn 发给模型的上下文 token，可作为 context window fill，用于 context usage / new-session threshold。
 - `model_context_window` 是当前有效 context window 上限，可直接作为分母；样本中没有单独出现 `context_window` 或 `effective_context_window_percent` 字段。
@@ -251,7 +250,7 @@ Resolver 仍然只对外暴露统一指标，不让前端直接感知底层来�
 - Dashboard 能定位 active Codex rollout JSONL，并增量读取新事件。
 - `token_count`、`task_complete`、`response_item.function_call/function_call_output` 被映射到现有 `metric_points` / `runtime_events`。
 - Codex token、cache hit、rate limit、context percentage、turn duration、TTFT、cost 可以进入当前 Overview 与趋势图。
-- Locator 策略不把 Codex SQLite 作为硬依赖：优先用 hook `transcript_path` 建立 `session_id -> rollout JSONL` 映射，其次用 rollout JSONL 文件发现 + tail cursor；如需 SQLite 仅作为可选 fallback，并显式处理 lock/timeout/缺表/不可用。
+- Locator 策略只依赖 hook `transcript_path` 建立 `session_id -> rollout JSONL` 映射。Dashboard 不读取 Codex SQLite；没有新 hook 时继续监听上一条映射对应的 JSONL，并用 freshness 判断 active/stale/idle。冷启动且没有任何映射时，rollout collector 返回 unavailable，而不是扫描或推断 active session。
 
 字段映射初稿：
 
