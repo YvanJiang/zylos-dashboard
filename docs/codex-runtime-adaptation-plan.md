@@ -69,6 +69,15 @@ zylos-core 最新 `main`（本地确认 commit `106fbdf`）中的相关事实：
 - Dashboard `src/lib/metric-resolver.js` 已有 `context_pct` resolver chain：`statusline.actual -> rollout.actual -> derived_token_estimate.estimated`，所以 Codex 最小接入路径是把 activity-monitor 的 Codex context poll result 写成 `source='rollout'` 的 `context_pct` metric，或写入状态文件后由 Dashboard collector 转成该 metric。
 - Dashboard 现有 `src/lib/collectors/statusline-collector.js` 只读取 `activity-monitor/statusline.json`，并固定写 `runtime: 'claude'`、`source: 'statusline'`；Codex 不能直接复用这个 collector，需要新增小型 Codex context collector，或抽出通用 context-state collector。
 
+实测 Codex rollout JSONL 字段：
+
+- 当前 session 的 active rollout 可通过 `~/.codex/state_5.sqlite` 的 `threads.rollout_path` 定位；本地文件扫描 `~/.codex/sessions/**/rollout-*.jsonl` 可作为降级定位方式，但 SQLite 更精确。
+- 最近一条 `event_msg` / `token_count` 事件的 `payload.info` 包含 `total_token_usage`、`last_token_usage`、`model_context_window`。
+- `last_token_usage.input_tokens` 是当前 turn 发给模型的上下文 token，可作为 context window fill，用于 context usage / new-session threshold。
+- `model_context_window` 是当前有效 context window 上限，可直接作为分母；样本中没有单独出现 `context_window` 或 `effective_context_window_percent` 字段。
+- `total_token_usage.input_tokens` 是 session 累计输入 token，适合用量/成本统计，不适合用作 context fill，因为它会跨 turn 累加。
+- 因此 Codex context percentage 的直接口径是 `last_token_usage.input_tokens / model_context_window * 100`；如果 JSONL 中缺 `model_context_window`，再降级到 `~/.codex/models_cache.json` 或 zylos-core fallback 口径。
+
 ## 适配目标
 
 ### 必须达到
