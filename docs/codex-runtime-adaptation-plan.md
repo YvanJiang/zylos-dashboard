@@ -6,6 +6,24 @@ Zylos Dashboard 当前已经具备多运行时的基础形态：PM2、系统健�
 
 本计划的目标是把 Codex Runtime 从“可降级运行”推进到“可被 Dashboard 正式观测和诊断”。
 
+## 目标状态表
+
+适配完成后，Dashboard 在 Codex Runtime 下不应只有一个笼统的 degraded mode，而应按面板和指标分别呈现目标状态：
+
+| Dashboard 区域 | Codex 目标状态 | 期望表现 | 主要来源 | 备注 |
+|---|---|---|---|---|
+| Agent 状态 / 当前工具 | 正常 | 显示 idle/running/waiting/stuck 与当前工具名 | Codex hook + state engine | Phase 1-2 先落地 |
+| 工具调用流 / 工具耗时 | 正常 | 展示工具名、成功/失败、耗时、来源置信度 | OTel 优先，hook fallback | 不展示完整输入/输出 |
+| Token 使用 / cache hit | 正常或部分降级 | 有 OTel 时正常；缺字段时显示 partial/degraded | Codex OTel | Phase 3 验证字段稳定性 |
+| Context 使用率 / 新会话阈值 | 部分降级到正常 | 有 zylos-core state file 时正常；否则显示 token-only 或 missing | zylos-core activity-monitor + state file | 跨组件依赖，见 Phase 4 |
+| Cost / 花费趋势 | 降级 | 若无稳定价格/成本来源，只显示 token usage，不估算成本 | OTel + 后续 pricing source | 不做不透明推算 |
+| Turn 延迟 / TTFT | 正常 | 显示 turn duration、TTFT、P50/P95 | Codex OTel metrics/traces | Phase 3 |
+| Permission 请求 | 正常但中等置信度 | 显示等待人工/权限请求状态 | Codex hook | Codex 匹配键可能弱于 Claude |
+| PM2 / 系统健康 | 正常 | 与 Claude Runtime 相同 | PM2/system collectors | runtime 无关 |
+| 通信 / 调度 | 正常 | 与 Claude Runtime 相同 | C4/scheduler DB | runtime 无关 |
+| Claude-only 面板 | 隐藏 | 不展示 statusline、Claude-only subagent/usage 字段 | capability model | 避免误导 |
+| Runtime actions | 部分降级 | 支持 runtime switch/new-session threshold；模型/effort 切换保持 not implemented | actions API | 后续另拆 |
+
 ## 现有依据
 
 本地已有一次 Codex Runtime 数据采集试验，相关内容仍在：
@@ -82,19 +100,23 @@ Resolver 仍然只对外暴露统一指标，不让前端直接感知底层来�
 交付：
 
 - 把现有 spike 结论整理到文档和测试 fixture，避免只存在运行时数据目录。
-- 固化 Codex hook payload 的最小字段契约。
+- 固化 Codex hook payload 的最小可用字段集。
 - 固化 Codex OTLP logs/metrics/traces 的可用事件清单和字段映射表。
+- 明确这些字段是 Dashboard 的 defensive mapping 输入假设，不是要求 Codex CLI 保持的双向契约。
 
 实现建议：
 
 - 新增 `test/fixtures/codex/`，放脱敏后的 hook 和 OTLP 样本。
 - 新增脚本或测试复用 `spike/analyze-codex-spike.mjs` 的分析逻辑，但不要依赖 `~/zylos/components/dashboard/spike` 运行时目录。
 - 明确删除或脱敏字段：`prompt`、`last_assistant_message`、`tool_input.command`、`tool_response`、`user.email`、`user.account_id`。
+- mapper 必须忽略未知字段；缺少非关键字段时返回 partial/degraded，而不是拒绝整条事件。
+- 只有 `runtime`、`event name`、`timestamp/received_at`、`session_id` 这类最小字段可作为 hard requirement；其余字段都按 best-effort 解析。
 
 验收：
 
 - fixture 中不含真实 prompt、邮箱、账户 ID、完整命令输出。
 - 测试能从 fixture 验证 Codex hook/OTLP 字段 shape。
+- 同一 fixture 删除可选字段后，mapper 仍能产出降级 canonical event。
 
 ### Phase 1：Codex hook 生命周期接入
 
@@ -185,15 +207,19 @@ Resolver 仍然只对外暴露统一指标，不让前端直接感知底层来�
 
 实现路径：
 
-- 首选让 zylos-core/activity-monitor 的 `CodexContextMonitor` 写入与 Claude 相同的 `context-monitor-state.json`。
-- Dashboard 继续通过 File/System collector 读取，不在 Dashboard 内重复实现 token JSONL/SQLite 解析。
-- 如果 Codex OTel 能稳定提供 `model_context_window` 或可从 model catalog 获得窗口大小，则 TelemetryAdapter 可作为更高优先级来源。
+- 责任边界：zylos-core/activity-monitor 负责产出 Codex context state；Dashboard 负责消费、展示和降级，不在 Dashboard 内重复实现 Codex rollout/SQLite 解析。
+- 当前 zylos-core 有 `cli/lib/runtime/codex-context-monitor.js` 和 activity-monitor 的 `usage-codex.json`/rollout reader 路径，但 Dashboard 不能假设它已经写出与 Claude 相同的 `context-monitor-state.json`。
+- 首选方案：由 zylos-core/activity-monitor 写入与 Claude 相同语义的 `context-monitor-state.json`，字段至少包含 runtime、used percentage、used tokens、context window、source、updated_at。
+- Dashboard fallback：如果 `context-monitor-state.json` 缺失，但 Codex OTel 有 token usage，则展示 token-only partial 状态；如果 token usage 和 context window 都缺失，则显示 missing，不做估算。
+- 如果 Codex OTel 能稳定提供 `model_context_window`，或 Dashboard 能从已验证 model catalog 获得窗口大小，则 TelemetryAdapter 可作为更高优先级来源。
+- 工作归属：zylos-core 负责 state file producer；zylos-dashboard 负责 FileAdapter/Resolver/UI 消费；跨组件验收需要同时覆盖两边。
 
 验收：
 
 - Codex Runtime 下 Overview 显示 context 使用率。
 - 阈值提示、新会话倒计时、Dashboard context 卡片的口径一致。
 - 如果只有 token usage 没有 context window，UI 明确标记为 partial/degraded。
+- 如果 zylos-core producer 不可用，Dashboard 不报错，不显示虚假的百分比。
 
 ### Phase 5：前端产品化
 
