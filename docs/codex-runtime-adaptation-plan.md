@@ -71,7 +71,8 @@ zylos-core 最新 `main`（本地确认 commit `106fbdf`）中的相关事实：
 
 实测 Codex rollout JSONL 字段：
 
-- 当前 session 的 active rollout 可通过 `~/.codex/state_5.sqlite` 的 `threads.rollout_path` 定位；本地文件扫描 `~/.codex/sessions/**/rollout-*.jsonl` 可作为降级定位方式，但 SQLite 更精确。
+- 当前 session 的 active rollout 可以通过文件系统扫描 `~/.codex/sessions/**/rollout-*.jsonl` 并按 mtime/增量 cursor 定位；`~/.codex/state_5.sqlite` 的 `threads.rollout_path` 是 zylos-core 当前 monitor 使用的精确定位手段之一，但不应成为 Dashboard MVP 的硬依赖。
+- 如果后续实现选择读取 Codex SQLite，只能作为可选 locator fallback，并必须处理只读访问、busy/lock 超时、schema 缺失和文件不可用；Dashboard 的主采集路径仍应是 rollout JSONL tail。
 - 最近一条 `event_msg` / `token_count` 事件的 `payload.info` 包含 `total_token_usage`、`last_token_usage`、`model_context_window`。
 - `last_token_usage.input_tokens` 是当前 turn 发给模型的上下文 token，可作为 context window fill，用于 context usage / new-session threshold。
 - `model_context_window` 是当前有效 context window 上限，可直接作为分母；样本中没有单独出现 `context_window` 或 `effective_context_window_percent` 字段。
@@ -248,6 +249,7 @@ Resolver 仍然只对外暴露统一指标，不让前端直接感知底层来�
 - Dashboard 能定位 active Codex rollout JSONL，并增量读取新事件。
 - `token_count`、`task_complete`、`response_item.function_call/function_call_output` 被映射到现有 `metric_points` / `runtime_events`。
 - Codex token、cache hit、rate limit、context percentage、turn duration、TTFT、cost 可以进入当前 Overview 与趋势图。
+- Locator 策略不把 Codex SQLite 作为硬依赖：优先用 rollout JSONL 文件发现 + tail cursor；如需 SQLite 仅作为可选 fallback，并显式处理 lock/timeout/缺表/不可用。
 
 字段映射初稿：
 
