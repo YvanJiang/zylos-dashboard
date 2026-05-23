@@ -101,6 +101,27 @@ zylos-core 最新 `main`（本地确认 commit `106fbdf`）中的相关事实：
 
 OTLP 仍然有价值，但定位为第二层增强：更标准的 tool duration histogram、trace waterfall、transport/websocket/API 细节、hook 开销，以及与外部 observability 后端对齐。它不应阻塞当前 Dashboard 指标对齐。
 
+## 当前本机配置审计（2026-05-23）
+
+本地 Codex Runtime 与计划的对齐状态：
+
+- `zylos config get runtime` 当前为 `codex`。
+- `codex_new_session_threshold` 当前为 `75`，`new_session_threshold` 当前为 `70`；这与 zylos-core `CodexAdapter#getContextMonitor()` 的默认策略一致。
+- `~/.codex/config.toml` 目前主要配置 trusted projects 和 model NUX；未看到 `[otel]` 配置。
+- `~/zylos/.codex/config.toml` 已启用 `features.multi_agent = true`，并隐藏交互式 notice，符合 headless runtime 需要。
+- `~/.codex/hooks.json` 当前仍是 spike logger 配置，command 指向 `spike/codex-hook-logger.mjs`，不是 Dashboard `hook-ingest.cjs`。
+- `~/zylos/components/dashboard/spike/codex-hooks.jsonl` 最后更新时间是 2026-05-11，说明当前生产 Dashboard 采集链并没有依赖这条 spike hook 持续入库。
+- Dashboard DB 当前只有 Codex 的 PM2/system 指标；没有 `runtime_events` 的 Codex hook 事件，也没有 Codex `context_pct`、`rate_limit`、`api_request_tokens`、`api_request_cost`、`ttft` 等指标。
+- Dashboard `/api/state` 已按 runtime 读取 zylos config 的 `codex_new_session_threshold`，但 runtime actions metadata 仍需确认统一读取同一来源，避免 UI 设置面板显示旧默认。
+- Dashboard config 当前没有 Codex/OpenAI model price 前缀；第一批实现需要补默认价格或要求用户在 settings 中配置，否则 token 可显示但 cost 应标 missing。
+
+当前建议：
+
+1. 不手工覆盖 `~/.codex/hooks.json`；通过 Dashboard implementation PR 修 `HookInstaller.installCodexHooks()`、post-install runtime 分支和测试后再由组件安装/升级流程写入。
+2. 第一批 implementation 不启用 OTLP；先落 `CodexRolloutCollector` 和 hook ingestion，使当前页面指标可用。
+3. 将 spike logger 保留为历史证据，但不要作为生产采集路径；脱敏样本进入 `test/fixtures/codex/`。
+4. Codex cost 第一版沿用 Dashboard `modelPrices`，缺价格时明确降级，不估算未知模型。
+
 ## 适配目标
 
 ### 必须达到
