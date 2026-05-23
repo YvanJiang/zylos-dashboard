@@ -38,7 +38,8 @@ Zylos Dashboard 当前已经具备多运行时的基础形态：PM2、系统健�
 样本中的关键事实：
 
 - Codex hook 已捕获 `SessionStart`、`UserPromptSubmit`、`PreToolUse`、`PostToolUse`、`Stop`。
-- Hook payload 包含 `session_id`、`turn_id`、`model`、`permission_mode`、`cwd`、`tool_name`、`tool_use_id`、`tool_input`、`tool_response` 等字段。
+- Hook payload 包含 `session_id`、`turn_id`、`transcript_path`、`model`、`permission_mode`、`cwd`、`tool_name`、`tool_use_id`、`tool_input`、`tool_response` 等字段。
+- `transcript_path` 在已采集样本中直接指向对应的 Codex rollout JSONL，例如 `~/.codex/sessions/YYYY/MM/DD/rollout-...-<session_id>.jsonl`。这可以作为 Dashboard 定位当前 session JSONL 的首选信号。
 - Codex OTLP resource 标识为 `service.name=codex_cli_rs`，样本版本为 `service.version=0.128.0`。
 - Codex OTLP logs 中已有 `codex.conversation_starts`、`codex.user_prompt`、`codex.websocket_*`、`codex.sse_event`、`codex.tool_decision`、`codex.tool_result` 等事件。
 - Codex OTLP metrics 中已有 `codex.turn.ttft.duration_ms`、`codex.turn.e2e_duration_ms`、`codex.tool.call.duration_ms`、`codex.turn.token_usage`、`codex.conversation.turn.count` 等指标。
@@ -71,7 +72,8 @@ zylos-core 最新 `main`（本地确认 commit `106fbdf`）中的相关事实：
 
 实测 Codex rollout JSONL 字段：
 
-- 当前 session 的 active rollout 可以通过文件系统扫描 `~/.codex/sessions/**/rollout-*.jsonl` 并按 mtime/增量 cursor 定位；`~/.codex/state_5.sqlite` 的 `threads.rollout_path` 是 zylos-core 当前 monitor 使用的精确定位手段之一，但不应成为 Dashboard MVP 的硬依赖。
+- 当前 session 的 active rollout 首选通过 Codex hook payload 的 `transcript_path` 定位；该路径在样本中直接指向本 session 的 rollout JSONL，文件名也包含 `session_id`。
+- 在 hook 尚未到达或重启恢复时，可以通过文件系统扫描 `~/.codex/sessions/**/rollout-*.jsonl` 并按 `session_id`、mtime、增量 cursor 定位；`~/.codex/state_5.sqlite` 的 `threads.rollout_path` 是 zylos-core 当前 monitor 使用的精确定位手段之一，但不应成为 Dashboard MVP 的硬依赖。
 - 如果后续实现选择读取 Codex SQLite，只能作为可选 locator fallback，并必须处理只读访问、busy/lock 超时、schema 缺失和文件不可用；Dashboard 的主采集路径仍应是 rollout JSONL tail。
 - 最近一条 `event_msg` / `token_count` 事件的 `payload.info` 包含 `total_token_usage`、`last_token_usage`、`model_context_window`。
 - `last_token_usage.input_tokens` 是当前 turn 发给模型的上下文 token，可作为 context window fill，用于 context usage / new-session threshold。
@@ -249,7 +251,7 @@ Resolver 仍然只对外暴露统一指标，不让前端直接感知底层来�
 - Dashboard 能定位 active Codex rollout JSONL，并增量读取新事件。
 - `token_count`、`task_complete`、`response_item.function_call/function_call_output` 被映射到现有 `metric_points` / `runtime_events`。
 - Codex token、cache hit、rate limit、context percentage、turn duration、TTFT、cost 可以进入当前 Overview 与趋势图。
-- Locator 策略不把 Codex SQLite 作为硬依赖：优先用 rollout JSONL 文件发现 + tail cursor；如需 SQLite 仅作为可选 fallback，并显式处理 lock/timeout/缺表/不可用。
+- Locator 策略不把 Codex SQLite 作为硬依赖：优先用 hook `transcript_path` 建立 `session_id -> rollout JSONL` 映射，其次用 rollout JSONL 文件发现 + tail cursor；如需 SQLite 仅作为可选 fallback，并显式处理 lock/timeout/缺表/不可用。
 
 字段映射初稿：
 
