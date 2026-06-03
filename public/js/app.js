@@ -832,11 +832,12 @@ function timelineDotType(eventType) {
   if (eventType === 'session_start' || eventType === 'session_end') return 'session';
   if (eventType === 'turn_complete') return 'turn';
   if (eventType === 'user_prompt_submit') return 'prompt';
-  if (eventType === 'stop' || eventType === 'assistant_message') return 'assistant';
+  if (eventType === 'assistant_message') return 'assistant';
+  if (eventType === 'stop') return 'turn';
   if (eventType === 'permission_request') return 'permission';
   if (eventType === 'post_compact') return 'compact';
   if (eventType?.startsWith('subagent_')) return 'subagent';
-  if (eventType === 'tool_call' || eventType === 'tool_result') return 'tool';
+  if (eventType === 'tool_call' || eventType === 'tool_result' || eventType === 'post_tool_use') return 'tool';
   return '';
 }
 
@@ -854,7 +855,8 @@ function timelineKind(event) {
   if (type === 'user_prompt_submit') return t('timeline.kind.prompt');
   if (type === 'post_compact') return t('timeline.kind.compact');
   if (type === 'permission_request') return t('timeline.kind.permission');
-  if (type === 'tool_call') return t('timeline.kind.tool');
+  if (type === 'stop') return t('timeline.kind.turn');
+  if (type === 'tool_call' || type === 'post_tool_use') return t('timeline.kind.tool');
   if (type === 'tool_result') return t('timeline.kind.done');
   if (type === 'subagent_start') return t('timeline.kind.subagent');
   if (type === 'subagent_update') return t('timeline.kind.subagent');
@@ -867,7 +869,7 @@ function timelineItemClass(event) {
   const classes = ['timeline-item'];
   const dot = timelineDotType(type);
   if (dot) classes.push(`timeline-item-${dot}`);
-  if (type === 'turn_complete' || type === 'session_start' || type === 'session_end') {
+  if (type === 'turn_complete' || type === 'stop' || type === 'session_start' || type === 'session_end') {
     classes.push('timeline-boundary');
   }
   return classes.join(' ');
@@ -1033,7 +1035,6 @@ async function refreshTimeline() {
   if (!data || typeof data !== 'object') return;
   state.timeline = (data.events || []).filter((e) => (
     e.event_type !== 'pre_tool_use' &&
-    e.event_type !== 'stop' &&
     e.event_type !== 'tool_result'
   ));
   state.timelineUpdatedAt = new Date().toISOString();
