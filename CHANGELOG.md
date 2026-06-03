@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0] - 2026-06-03
+
+### Added
+- Codex runtime observability MVP — full dashboard support for Codex runtime with latency metrics (TTFT, turn duration), Codex-specific collectors, and runtime-aware panel visibility (#131)
+- Codex runtime adaptation plan documentation (#129)
+
+### Fixed
+- Map Claude runtime timeline events to proper labels — `post_tool_use` → "Tool", `stop` → "Turn" (#135)
+- Hide latency section on Claude runtime — TTFT and turn duration are Codex-only metrics (#136)
+- Latency card CSS specificity — `.latency-section { display: flex }` overrode `[hidden]` attribute (#138)
+
 ## [0.1.1] - 2026-05-18
 
 ### Fixed
