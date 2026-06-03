@@ -152,6 +152,28 @@ export class Store {
       }
       this.db.prepare('INSERT OR IGNORE INTO schema_migrations (version) VALUES (?)').run(7);
     }
+    if (currentVersion < 8) {
+      this.db.exec(`
+        CREATE TABLE IF NOT EXISTS codex_rollout_paths (
+          runtime TEXT NOT NULL,
+          session_id TEXT NOT NULL,
+          transcript_path TEXT NOT NULL,
+          last_event_at TEXT,
+          updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+          PRIMARY KEY (runtime, session_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_codex_rollout_paths_updated
+        ON codex_rollout_paths (runtime, updated_at DESC);
+
+        CREATE TABLE IF NOT EXISTS codex_rollout_cursors (
+          transcript_path TEXT PRIMARY KEY,
+          byte_offset INTEGER NOT NULL DEFAULT 0,
+          session_id TEXT,
+          updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+      `);
+      this.db.prepare('INSERT OR IGNORE INTO schema_migrations (version) VALUES (?)').run(8);
+    }
   }
 
   _prepareStatements() {
@@ -207,6 +229,15 @@ export class Store {
     this._insertMetric = this.db.prepare(`
       INSERT INTO metric_points (timestamp, runtime, session_id, metric_name, metric_value, dimensions, source, confidence)
       VALUES (@timestamp, @runtime, @session_id, @metric_name, @metric_value, @dimensions, @source, @confidence)
+    `);
+
+    this._metricExistsByEventId = this.db.prepare(`
+      SELECT 1 FROM metric_points
+      WHERE metric_name = @metric_name
+        AND COALESCE(session_id, '') = COALESCE(@session_id, '')
+        AND source = @source
+        AND json_extract(dimensions, '$.event_id') = @event_id
+      LIMIT 1
     `);
 
     this._queryMetrics = this.db.prepare(`
@@ -276,6 +307,35 @@ export class Store {
     this._cleanupSessions = this.db.prepare(
       'DELETE FROM auth_sessions WHERE created_at < ? OR last_activity_at < ?'
     );
+
+    this._upsertCodexRolloutPath = this.db.prepare(`
+      INSERT INTO codex_rollout_paths (runtime, session_id, transcript_path, last_event_at, updated_at)
+      VALUES (@runtime, @session_id, @transcript_path, @last_event_at, datetime('now'))
+      ON CONFLICT(runtime, session_id) DO UPDATE SET
+        transcript_path = @transcript_path,
+        last_event_at = @last_event_at,
+        updated_at = datetime('now')
+    `);
+
+    this._latestCodexRolloutPath = this.db.prepare(`
+      SELECT * FROM codex_rollout_paths
+      WHERE runtime = @runtime
+      ORDER BY updated_at DESC
+      LIMIT 1
+    `);
+
+    this._getCodexRolloutCursor = this.db.prepare(`
+      SELECT * FROM codex_rollout_cursors WHERE transcript_path = ?
+    `);
+
+    this._upsertCodexRolloutCursor = this.db.prepare(`
+      INSERT INTO codex_rollout_cursors (transcript_path, byte_offset, session_id, updated_at)
+      VALUES (@transcript_path, @byte_offset, @session_id, datetime('now'))
+      ON CONFLICT(transcript_path) DO UPDATE SET
+        byte_offset = @byte_offset,
+        session_id = @session_id,
+        updated_at = datetime('now')
+    `);
   }
 
   insertEvent(event) {
@@ -343,6 +403,16 @@ export class Store {
       dimensions: point.dimensions ? JSON.stringify(point.dimensions) : null,
       source: point.source,
       confidence: point.confidence || 'actual'
+    });
+  }
+
+  hasMetricEventId({ metricName, sessionId, source, eventId }) {
+    if (!metricName || !source || !eventId) return false;
+    return !!this._metricExistsByEventId.get({
+      metric_name: metricName,
+      session_id: sessionId || null,
+      source,
+      event_id: eventId
     });
   }
 
@@ -460,6 +530,50 @@ export class Store {
     return this._cleanupSessions.run(absoluteCutoff, idleCutoff);
   }
 
+  upsertCodexRolloutPath({ runtime = 'codex', sessionId, transcriptPath, lastEventAt }) {
+    if (!sessionId || !transcriptPath || typeof transcriptPath !== 'string') return { changes: 0 };
+    if (!transcriptPath.endsWith('.jsonl')) return { changes: 0 };
+    const info = this._upsertCodexRolloutPath.run({
+      runtime,
+      session_id: sessionId,
+      transcript_path: transcriptPath,
+      last_event_at: lastEventAt || null
+    });
+    return { changes: info.changes };
+  }
+
+  latestCodexRolloutPath(runtime = 'codex') {
+    const row = this._latestCodexRolloutPath.get({ runtime });
+    return row ? {
+      runtime: row.runtime,
+      session_id: row.session_id,
+      transcript_path: row.transcript_path,
+      last_event_at: row.last_event_at,
+      updated_at: row.updated_at
+    } : null;
+  }
+
+  getCodexRolloutCursor(transcriptPath) {
+    if (!transcriptPath) return null;
+    const row = this._getCodexRolloutCursor.get(transcriptPath);
+    return row ? {
+      transcript_path: row.transcript_path,
+      byte_offset: row.byte_offset,
+      session_id: row.session_id,
+      updated_at: row.updated_at
+    } : null;
+  }
+
+  upsertCodexRolloutCursor({ transcriptPath, byteOffset, sessionId }) {
+    if (!transcriptPath || !Number.isFinite(byteOffset) || byteOffset < 0) return { changes: 0 };
+    const info = this._upsertCodexRolloutCursor.run({
+      transcript_path: transcriptPath,
+      byte_offset: Math.floor(byteOffset),
+      session_id: sessionId || null
+    });
+    return { changes: info.changes };
+  }
+
   aggregateCost({ since, until, sessionId } = {}) {
     let sql = `SELECT SUM(metric_value) AS total, COUNT(*) AS cnt FROM metric_points WHERE metric_name = 'api_request_cost'`;
     const params = {};
@@ -501,7 +615,7 @@ export class Store {
     const row = this.db.prepare(sql).get(params);
     if (!row || row.cnt === 0) return null;
     return {
-      input: row.input + row.cache_creation + row.cache_read,
+      input: row.total_input,
       output: row.output,
       cache_read: row.cache_read,
       cache_rate: row.total_input > 0 ? row.cache_read / row.total_input : 0
@@ -511,9 +625,7 @@ export class Store {
   aggregateTokenSeries({ since, until, bucketSeconds = 3600 } = {}) {
     const sql = `
       SELECT (CAST(CAST(strftime('%s', timestamp) AS INTEGER) / @bucket AS INTEGER) * @bucket) AS bucket_start,
-             COALESCE(SUM(json_extract(dimensions, '$.input')), 0) +
-             COALESCE(SUM(json_extract(dimensions, '$.cache_read')), 0) +
-             COALESCE(SUM(json_extract(dimensions, '$.cache_creation')), 0) AS input_sum,
+             COALESCE(SUM(metric_value), 0) AS input_sum,
              COALESCE(SUM(json_extract(dimensions, '$.output')), 0) AS output_sum,
              COALESCE(SUM(json_extract(dimensions, '$.cache_read')), 0) AS cache_read_sum,
              COALESCE(SUM(metric_value), 0) AS total_input_sum
@@ -559,7 +671,7 @@ export class Store {
 
     // Get rows with project attribution from JSONL-ingested metrics
     const rows = this.db.prepare(`
-      SELECT dimensions FROM metric_points
+      SELECT metric_value, dimensions FROM metric_points
       WHERE metric_name = 'api_request_tokens'
         AND timestamp >= @since AND timestamp <= @until
     `).all({ since: s, until: u });
@@ -572,8 +684,8 @@ export class Store {
       let dims;
       try { dims = JSON.parse(row.dimensions); } catch { continue; }
       const output = dims.output || 0;
-      const input = (dims.input || 0) + (dims.cache_read || 0) + (dims.cache_creation || 0) + output;
-      totalTokens += input;
+      const totalInput = Number(row.metric_value) || dims.total_input || 0;
+      totalTokens += totalInput + output;
       totalOutput += output;
 
       const projects = dims.projects;
@@ -595,14 +707,18 @@ export class Store {
     if (unattributedOutput > 0) {
       const events = this.db.prepare(`
         SELECT summary FROM runtime_events
-        WHERE event_type = 'post_tool_use' AND timestamp >= @since AND timestamp <= @until
+        WHERE event_type IN ('post_tool_use', 'tool_call', 'tool_result')
+          AND timestamp >= @since AND timestamp <= @until
       `).all({ since: s, until: u });
 
       const hookCounts = {};
       for (const e of events) {
-        const fp = this._extractFilePath(e.summary);
-        const project = this._extractProject(fp);
-        if (project) hookCounts[project] = (hookCounts[project] || 0) + 1;
+        for (const project of this._extractProjectsFromSummary(e.summary)) {
+          hookCounts[project] = (hookCounts[project] || 0) + 1;
+        }
+      }
+      for (const [project, count] of Object.entries(this._projectWeightsFromCodexRollouts({ since: s, until: u }))) {
+        hookCounts[project] = (hookCounts[project] || 0) + count;
       }
       const totalHookCalls = Object.values(hookCounts).reduce((a, b) => a + b, 0) || 1;
       for (const [p, count] of Object.entries(hookCounts)) {
@@ -634,10 +750,89 @@ export class Store {
     return { items, totalTokens, totalOutput, totalCost };
   }
 
-  _extractFilePath(summary) {
-    if (!summary) return null;
-    const m = summary.match(/^(?:Read|Edit|Write):\s+(\S+)/);
-    return m ? m[1] : null;
+  _extractProjectsFromSummary(summary) {
+    const projects = new Set();
+    for (const filePath of this._extractFilePaths(summary)) {
+      const project = this._extractProject(filePath);
+      if (project) projects.add(project);
+    }
+    return [...projects];
+  }
+
+  _extractFilePaths(summary) {
+    if (!summary) return [];
+    const paths = new Set();
+    const pathPattern = /(?:~\/|\/)?(?:Users\/[^/\s]+\/zylos\/|zylos\/)?(?:workspace|\.claude\/skills|skills)\/[^\s,'")]+/g;
+    for (const match of summary.matchAll(pathPattern)) {
+      paths.add(match[0]);
+    }
+    return [...paths];
+  }
+
+  _projectWeightsFromCodexRollouts({ since, until } = {}) {
+    const rows = this.db.prepare(`
+      SELECT transcript_path FROM codex_rollout_paths
+      WHERE runtime = 'codex'
+        AND last_event_at >= @since AND last_event_at <= @until
+    `).all({ since, until });
+
+    const weights = {};
+    for (const row of rows) {
+      const transcriptPath = row.transcript_path;
+      if (!transcriptPath || !fs.existsSync(transcriptPath)) continue;
+      let content;
+      try {
+        content = fs.readFileSync(transcriptPath, 'utf8');
+      } catch {
+        continue;
+      }
+      for (const line of content.split('\n')) {
+        if (!line.trim()) continue;
+        let event;
+        try { event = JSON.parse(line); } catch { continue; }
+        const payload = event.type === 'session_meta'
+          ? { ...(event.payload || {}), type: 'session_meta' }
+          : event.payload || {};
+        for (const project of this._extractProjectsFromRolloutPayload(payload)) {
+          weights[project] = (weights[project] || 0) + 1;
+        }
+      }
+    }
+    return weights;
+  }
+
+  _extractProjectsFromRolloutPayload(payload) {
+    const projects = new Set();
+    const addFromValue = (value) => {
+      if (!value) return;
+      if (typeof value === 'string') {
+        for (const filePath of this._extractFilePaths(value)) {
+          const project = this._extractProject(filePath);
+          if (project) projects.add(project);
+        }
+        const directProject = this._extractProject(value);
+        if (directProject) projects.add(directProject);
+      } else if (Array.isArray(value)) {
+        for (const item of value) addFromValue(item);
+      } else if (typeof value === 'object') {
+        for (const item of Object.values(value)) addFromValue(item);
+      }
+    };
+
+    if (payload.type === 'session_meta') addFromValue(payload.cwd);
+    if (payload.type !== 'function_call' && payload.type !== 'custom_tool_call') return [...projects];
+
+    addFromValue(payload.name);
+    addFromValue(payload.input);
+    if (payload.arguments) {
+      try {
+        addFromValue(JSON.parse(payload.arguments));
+      } catch {
+        addFromValue(payload.arguments);
+      }
+    }
+
+    return [...projects];
   }
 
   _extractProject(filePath) {

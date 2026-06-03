@@ -26,7 +26,8 @@ const METRIC_CHAINS = {
     { source: 'rollout', confidence: 'actual' }
   ],
   rate_limit_7d: [
-    { source: 'statusline', confidence: 'actual' }
+    { source: 'statusline', confidence: 'actual' },
+    { source: 'rollout', confidence: 'actual' }
   ],
   effort_level: [
     { source: 'statusline', confidence: 'actual' }
@@ -44,6 +45,12 @@ const METRIC_CHAINS = {
   cache_hit_rate: [
     { source: 'statusline_current_usage', confidence: 'actual' },
     { source: 'jsonl_usage', confidence: 'actual' }
+  ],
+  ttft: [
+    { source: 'rollout', confidence: 'actual' }
+  ],
+  turn_duration: [
+    { source: 'rollout', confidence: 'actual' }
   ],
   tool_duration: [
     { source: 'hook_postToolUse', confidence: 'actual' }
@@ -137,10 +144,14 @@ export class MetricResolver {
 
     if (!selectedSource && alternatives.length > 0) {
       const best = alternatives[0];
+      const latest = this._getLatestMetric(metricName, best.source);
       selectedSource = best.source;
       selectedValue = best.value;
       selectedFreshness = best.age_s;
       selectedConfidence = best.confidence;
+      selectedDimensions = latest?.dimensions
+        ? (typeof latest.dimensions === 'string' ? JSON.parse(latest.dimensions) : latest.dimensions)
+        : null;
       fallbackReason = `All sources stale, using most recent: ${best.source} (${best.age_s}s old)`;
     }
 

@@ -6,7 +6,15 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { AuthGate } from './lib/auth.js';
 import { browserBaseFromRequest } from './lib/browser-base.js';
-import { ensureDataDirs, loadConfig, publicDir } from './lib/config.js';
+import {
+  DEFAULT_RUNTIME_SERVICE_TIER_MODEL_PRICES,
+  DEFAULT_RUNTIME_MODEL_PRICES,
+  ensureDataDirs,
+  fastModeMultiplierForRuntime,
+  loadConfig,
+  modelPricesForRuntime,
+  publicDir
+} from './lib/config.js';
 import { readJsonBody, sendHtml, sendJson, sendText, serveStatic } from './lib/http.js';
 import { Store } from './lib/store.js';
 import { Sanitizer } from './lib/sanitizer.js';
@@ -16,18 +24,22 @@ import { PM2Collector } from './lib/collectors/pm2-collector.js';
 import { SystemCollector } from './lib/collectors/system-collector.js';
 import { StatuslineCollector } from './lib/collectors/statusline-collector.js';
 import { ConversationCollector } from './lib/collectors/conversation-collector.js';
+import { CodexRolloutCollector } from './lib/collectors/codex-rollout-collector.js';
 import { StateEngine } from './lib/state-engine.js';
 import { MetricResolver } from './lib/metric-resolver.js';
+import { resolveAggregateValue } from './lib/metric-aggregate.js';
 import { SseHub } from './lib/sse.js';
 import { C4Reader } from './lib/c4-reader.js';
-import { handleAction, getActionsMeta } from './lib/actions.js';
+import { consumeZylosUpgradeMarker, handleAction, getActionsMeta, readCodexModels, readCodexRootString } from './lib/actions.js';
 import { VersionChecker } from './lib/version-checker.js';
+import { isNewerVersion } from './lib/version-utils.js';
 import Database from 'better-sqlite3';
 
 const startedAt = new Date();
 
 let zylosVersion = null;
 let ccInstalledVersion = null;
+let codexInstalledVersion = null;
 try {
   zylosVersion = execFileSync('zylos', ['--version'], { timeout: 5000 }).toString().trim();
 } catch { /* zylos CLI not available */ }
@@ -35,6 +47,10 @@ try {
   const raw = execFileSync('claude', ['--version'], { timeout: 5000 }).toString().trim();
   ccInstalledVersion = raw.replace(/\s.*$/, '');
 } catch { /* claude CLI not available */ }
+try {
+  const raw = execFileSync('codex', ['--version'], { timeout: 5000 }).toString().trim();
+  codexInstalledVersion = raw.replace(/^codex-cli\s+/, '').replace(/\s.*$/, '');
+} catch { /* codex CLI not available */ }
 
 function refreshInstalledVersions() {
   try {
@@ -43,6 +59,10 @@ function refreshInstalledVersions() {
   try {
     const raw = execFileSync('claude', ['--version'], { timeout: 5000 }).toString().trim();
     ccInstalledVersion = raw.replace(/\s.*$/, '');
+  } catch { /* ignore */ }
+  try {
+    const raw = execFileSync('codex', ['--version'], { timeout: 5000 }).toString().trim();
+    codexInstalledVersion = raw.replace(/^codex-cli\s+/, '').replace(/\s.*$/, '');
   } catch { /* ignore */ }
   const st = stateEngine?.getState();
   if (st) {
@@ -53,6 +73,7 @@ function refreshInstalledVersions() {
 
 const config = loadConfig();
 ensureDataDirs(config);
+let zylosUpgradeResult = consumeZylosUpgradeMarker(config.zylosDir, zylosVersion);
 
 const activeRuntime = loadZylosConfig(config.zylosDir).runtime || process.env.ZYLOS_RUNTIME || 'claude';
 const isClaudeRuntime = activeRuntime === 'claude';
@@ -85,10 +106,12 @@ const pm2Collector = new PM2Collector(store, config);
 const systemCollector = new SystemCollector(store, config);
 const statuslineCollector = isClaudeRuntime ? new StatuslineCollector(store, config) : null;
 const conversationCollector = isClaudeRuntime ? new ConversationCollector(store, config) : null;
+const codexRolloutCollector = activeRuntime === 'codex' ? new CodexRolloutCollector(store, config) : null;
 
 const collectors = { pm2: pm2Collector, system: systemCollector };
 if (statuslineCollector) collectors.statusline = statuslineCollector;
 if (conversationCollector) collectors.conversation = conversationCollector;
+if (codexRolloutCollector) collectors.codexRollout = codexRolloutCollector;
 if (!isClaudeRuntime) process.stderr.write(`[startup] Runtime "${activeRuntime}" — Claude-only collectors skipped\n`);
 
 // SSE hub
@@ -118,6 +141,11 @@ function buildRuntimeInfo() {
   const ccRunning = slInfo?.cc_version || null;
 
   const settings = isClaudeRuntime ? readClaudeSettings() : {};
+  const codexModels = activeRuntime === 'codex' ? readCodexModels() : [];
+  const codexRuntimeInfo = codexRolloutCollector?.getRuntimeInfo?.() || null;
+  const codexModel = activeRuntime === 'codex' ? codexRuntimeInfo?.model_id || readCodexRootString('model', config.zylosDir) : null;
+  const codexModelInfo = codexModels.find(m => m.id === codexModel) || codexModels[0] || null;
+  const codexEffort = activeRuntime === 'codex' ? readCodexRootString('model_reasoning_effort', config.zylosDir) : null;
   const needsRestart = isClaudeRuntime &&
     ((settings.model && slInfo?.model_id && settings.model !== slInfo.model_id) ||
     (settings.effortLevel && slInfo?.effort && settings.effortLevel !== slInfo.effort) ||
@@ -126,11 +154,16 @@ function buildRuntimeInfo() {
   const info = {
     zylos_version: zylosVersion,
     runtime: activeRuntime,
-    model: slInfo?.model || null,
-    effort: slInfo?.effort || null,
+    model: activeRuntime === 'codex' ? codexModelInfo?.display_name || codexRuntimeInfo?.model || codexModelInfo?.id || codexModel : slInfo?.model || null,
+    model_id: activeRuntime === 'codex' ? codexModel || null : slInfo?.model_id || null,
+    effort: activeRuntime === 'codex' ? codexEffort || codexModelInfo?.default_effort || null : slInfo?.effort || null,
+    service_tier: activeRuntime === 'codex' ? codexRuntimeInfo?.service_tier || null : null,
     cc_version: ccRunning,
     cc_installed: ccInstalledVersion || null,
+    codex_version: codexInstalledVersion || null,
+    codex_installed: codexInstalledVersion || null,
     pending_restart: !!needsRestart,
+    zylos_upgrade_result: zylosUpgradeResult,
   };
   // info bar: running != installed → show restart hint
   if (ccInstalledVersion && ccRunning && ccInstalledVersion !== ccRunning) {
@@ -138,11 +171,11 @@ function buildRuntimeInfo() {
   }
   // upgrade button: installed != GitHub latest → show upgrade dot
   const ccEffective = ccInstalledVersion || ccRunning;
-  if (latest.cc && ccEffective && latest.cc !== ccEffective) {
+  if (latest.cc && ccEffective && isNewerVersion(latest.cc, ccEffective)) {
     info.cc_update = latest.cc;
   }
   // same pattern for zylos
-  if (latest.zylos && zylosVersion && latest.zylos !== zylosVersion) {
+  if (latest.zylos && zylosVersion && isNewerVersion(latest.zylos, zylosVersion)) {
     info.zylos_update = latest.zylos;
   }
   return info;
@@ -162,6 +195,24 @@ systemCollector._onUpdate = (data) => stateEngine.onSystemUpdate(data);
 if (conversationCollector) {
   conversationCollector._stateEngine = stateEngine;
   conversationCollector._onEvent = (event) => stateEngine.onEvent(event);
+}
+if (codexRolloutCollector) {
+  codexRolloutCollector._onEvent = (event) => stateEngine.onEvent(event);
+  codexRolloutCollector._onRuntimeInfo = () => {
+    const st = stateEngine.getState();
+    st.runtime_info = buildRuntimeInfo();
+    sse.broadcast('state_change', st);
+  };
+  codexRolloutCollector._onMetric = (metric) => {
+    sse.broadcast('metric_update', {
+      metric_name: metric.metric_name,
+      value: Number(metric.metric_value),
+      dimensions: metric.dimensions || null,
+      source: metric.source || 'rollout',
+      confidence: metric.confidence || 'actual',
+      timestamp: metric.timestamp || new Date().toISOString()
+    });
+  };
 }
 
 // 8. Metric resolver
@@ -189,6 +240,11 @@ async function startupSequence() {
   if (conversationCollector) {
     try { conversationCollector.collect(); } catch (err) {
       process.stderr.write(`[startup] Conversation collector initial run failed: ${err.message}\n`);
+    }
+  }
+  if (codexRolloutCollector) {
+    try { codexRolloutCollector.collect(); } catch (err) {
+      process.stderr.write(`[startup] Codex rollout collector initial run failed: ${err.message}\n`);
     }
   }
 
@@ -368,16 +424,15 @@ function handleApi(req, res, pathname, url) {
       sendJson(res, 400, { error: 'metric must be "cost", "cache", or "tokens"' });
       return true;
     }
-    const bounds = periodBounds(period, tz, stateEngine);
+    let bounds = periodBounds(period, tz, stateEngine);
     if (bounds === undefined) { sendJson(res, 400, { error: `invalid period: ${period}` }); return true; }
+    const resolved = resolveAggregateValue(store, metric, bounds, { runtime: activeRuntime, period });
+    const value = resolved.value;
+    bounds = resolved.bounds;
     if (bounds === null) {
       sendJson(res, 200, { metric, period, value: null, since: null, until: null, sessionId: null });
       return true;
     }
-    let value;
-    if (metric === 'cost') value = store.aggregateCost(bounds);
-    else if (metric === 'cache') value = store.aggregateCacheRate(bounds);
-    else value = store.aggregateTokens(bounds);
     sendJson(res, 200, { metric, period, value, since: bounds.since, until: bounds.until, sessionId: bounds.sessionId || null });
     return true;
   }
@@ -473,10 +528,15 @@ function handleApi(req, res, pathname, url) {
   if (pathname === '/api/actions/meta') {
     const zylosConfig = loadZylosConfig(config.zylosDir);
     zylosConfig.zylosDir = config.zylosDir;
-    const slMeta = statuslineCollector?.getRuntimeInfo();
-    const meta = getActionsMeta(zylosConfig, slMeta);
+    const runtimeMeta = activeRuntime === 'codex'
+      ? buildRuntimeInfo()
+      : statuslineCollector?.getRuntimeInfo();
+    const meta = getActionsMeta(zylosConfig, runtimeMeta);
     meta.zylos_version = zylosVersion;
-    meta.cc_version = ccInstalledVersion || slMeta?.cc_version || null;
+    meta.runtime_cli = activeRuntime === 'codex' ? 'codex' : 'claude';
+    meta.cc_version = activeRuntime === 'codex'
+      ? codexInstalledVersion || null
+      : ccInstalledVersion || runtimeMeta?.cc_version || null;
     sendJson(res, 200, meta);
     return true;
   }
@@ -490,7 +550,66 @@ function handleApi(req, res, pathname, url) {
 }
 
 
-const BUILT_IN_MODELS = ['claude-opus-4', 'claude-sonnet-4', 'claude-haiku-4'];
+function builtInModelsForRuntime(runtime) {
+  return Object.keys(DEFAULT_RUNTIME_MODEL_PRICES[runtime === 'codex' ? 'codex' : 'claude'] || {});
+}
+
+function builtInServiceTierModelsForRuntime(runtime, serviceTier) {
+  const rt = runtime === 'codex' ? 'codex' : 'claude';
+  return Object.keys(DEFAULT_RUNTIME_SERVICE_TIER_MODEL_PRICES[rt]?.[serviceTier] || {});
+}
+
+function supportsFastMode(runtime) {
+  return runtime === 'claude' || runtime === 'codex';
+}
+
+function settingsPayload(runtime) {
+  const priceRuntime = runtime === 'codex' ? 'codex' : 'claude';
+  const fastModeAvailable = supportsFastMode(priceRuntime);
+  const fastModeMultiplier = priceRuntime === 'claude' ? fastModeMultiplierForRuntime(config, priceRuntime) : null;
+  return {
+    runtime: priceRuntime,
+    builtInModels: builtInModelsForRuntime(priceRuntime),
+    builtInPriorityModels: builtInServiceTierModelsForRuntime(priceRuntime, 'priority'),
+    modelPrices: modelPricesForRuntime(config, priceRuntime),
+    priorityModelPrices: priceRuntime === 'codex' ? modelPricesForRuntime(config, priceRuntime, 'priority') : null,
+    runtimeModelPrices: config.runtimeModelPrices,
+    runtimeServiceTierModelPrices: config.runtimeServiceTierModelPrices,
+    fastMode: {
+      available: fastModeAvailable,
+      mode: priceRuntime === 'codex' ? 'service_tier' : 'multiplier',
+      serviceTier: priceRuntime === 'codex' ? 'priority' : null,
+      multiplier: fastModeMultiplier
+    },
+    fastModeMultiplier
+  };
+}
+
+function validateModelPrices(modelPrices, runtime, requiredModels = builtInModelsForRuntime(runtime)) {
+  const errors = [];
+  if (typeof modelPrices !== 'object' || modelPrices === null || Array.isArray(modelPrices)) {
+    errors.push('modelPrices must be an object');
+    return errors;
+  }
+  for (const builtIn of requiredModels) {
+    if (!(builtIn in modelPrices)) {
+      errors.push(`Cannot remove built-in model: ${builtIn}`);
+    }
+  }
+  for (const [prefix, prices] of Object.entries(modelPrices)) {
+    if (!prefix || typeof prefix !== 'string') {
+      errors.push('Model prefix must be a non-empty string');
+      continue;
+    }
+    for (const field of ['input', 'output', 'cacheRead', 'cacheCreation']) {
+      const v = prices?.[field];
+      if (v == null || typeof v !== 'number' || !Number.isFinite(v) || v < 0) {
+        errors.push(`${prefix}.${field} must be a finite number >= 0`);
+      }
+    }
+  }
+  return errors;
+}
 
 async function handleSettingsUpdate(req, res) {
   let body;
@@ -507,43 +626,31 @@ async function handleSettingsUpdate(req, res) {
   }
 
   const errors = [];
+  const priceRuntime = activeRuntime === 'codex' ? 'codex' : 'claude';
 
   if (body.modelPrices !== undefined) {
-    if (typeof body.modelPrices !== 'object' || body.modelPrices === null || Array.isArray(body.modelPrices)) {
-      errors.push('modelPrices must be an object');
+    errors.push(...validateModelPrices(body.modelPrices, priceRuntime));
+  }
+
+  if (body.priorityModelPrices !== undefined) {
+    if (priceRuntime !== 'codex') {
+      errors.push(`priorityModelPrices is not supported for ${priceRuntime} runtime`);
     } else {
-      for (const builtIn of BUILT_IN_MODELS) {
-        if (!(builtIn in body.modelPrices)) {
-          errors.push(`Cannot remove built-in model: ${builtIn}`);
-        }
-      }
-      const prefixes = Object.keys(body.modelPrices);
-      if (new Set(prefixes).size !== prefixes.length) {
-        errors.push('Duplicate model prefixes');
-      }
-      for (const [prefix, prices] of Object.entries(body.modelPrices)) {
-        if (!prefix || typeof prefix !== 'string') {
-          errors.push('Model prefix must be a non-empty string');
-          continue;
-        }
-        for (const field of ['input', 'output', 'cacheRead', 'cacheCreation']) {
-          const v = prices?.[field];
-          if (v == null || typeof v !== 'number' || !Number.isFinite(v) || v < 0) {
-            errors.push(`${prefix}.${field} must be a finite number >= 0`);
-          }
-        }
-      }
+      const priorityBuiltIns = builtInServiceTierModelsForRuntime(priceRuntime, 'priority');
+      errors.push(...validateModelPrices(body.priorityModelPrices, priceRuntime, priorityBuiltIns));
     }
   }
 
   if (body.fastModeMultiplier !== undefined) {
     const fm = body.fastModeMultiplier;
-    if (typeof fm !== 'number' || !Number.isFinite(fm) || fm <= 0) {
+    if (priceRuntime !== 'claude') {
+      errors.push(`fastModeMultiplier is not supported for ${priceRuntime} runtime`);
+    } else if (typeof fm !== 'number' || !Number.isFinite(fm) || fm <= 0) {
       errors.push('fastModeMultiplier must be a finite number > 0');
     }
   }
 
-  const allowedKeys = ['modelPrices', 'fastModeMultiplier'];
+  const allowedKeys = ['modelPrices', 'priorityModelPrices', 'fastModeMultiplier'];
   const unknownKeys = Object.keys(body).filter(k => !allowedKeys.includes(k));
   if (unknownKeys.length > 0) {
     errors.push(`Unknown keys not allowed: ${unknownKeys.join(', ')}`);
@@ -562,20 +669,61 @@ async function handleSettingsUpdate(req, res) {
       }
     } catch { /* start fresh if corrupt */ }
 
-    if (body.modelPrices !== undefined) existing.modelPrices = body.modelPrices;
-    if (body.fastModeMultiplier !== undefined) existing.fastModeMultiplier = body.fastModeMultiplier;
+    if (body.modelPrices !== undefined) {
+      existing.runtimeModelPrices = {
+        ...(existing.runtimeModelPrices || {}),
+        [priceRuntime]: body.modelPrices
+      };
+      if (priceRuntime === 'claude') existing.modelPrices = body.modelPrices;
+    }
+    if (body.fastModeMultiplier !== undefined) {
+      existing.runtimeFastModeMultipliers = {
+        ...(existing.runtimeFastModeMultipliers || {}),
+        [priceRuntime]: body.fastModeMultiplier
+      };
+      if (priceRuntime === 'claude') existing.fastModeMultiplier = body.fastModeMultiplier;
+    }
+    if (body.priorityModelPrices !== undefined) {
+      existing.runtimeServiceTierModelPrices = {
+        ...(existing.runtimeServiceTierModelPrices || {}),
+        codex: {
+          ...(existing.runtimeServiceTierModelPrices?.codex || {}),
+          priority: body.priorityModelPrices
+        }
+      };
+    }
 
     const tmpPath = config.configPath + '.tmp';
     fs.writeFileSync(tmpPath, JSON.stringify(existing, null, 2) + '\n', { mode: 0o600 });
     fs.renameSync(tmpPath, config.configPath);
 
-    if (body.modelPrices !== undefined) config.modelPrices = body.modelPrices;
-    if (body.fastModeMultiplier !== undefined) config.fastModeMultiplier = body.fastModeMultiplier;
+    if (body.modelPrices !== undefined) {
+      config.runtimeModelPrices = {
+        ...(config.runtimeModelPrices || {}),
+        [priceRuntime]: body.modelPrices
+      };
+      config.modelPrices = config.runtimeModelPrices.claude;
+    }
+    if (body.fastModeMultiplier !== undefined) {
+      config.runtimeFastModeMultipliers = {
+        ...(config.runtimeFastModeMultipliers || {}),
+        [priceRuntime]: body.fastModeMultiplier
+      };
+      config.fastModeMultiplier = config.runtimeFastModeMultipliers.claude;
+    }
+    if (body.priorityModelPrices !== undefined) {
+      config.runtimeServiceTierModelPrices = {
+        ...(config.runtimeServiceTierModelPrices || {}),
+        codex: {
+          ...(config.runtimeServiceTierModelPrices?.codex || {}),
+          priority: body.priorityModelPrices
+        }
+      };
+    }
 
     sendJson(res, 200, {
       ok: true,
-      modelPrices: config.modelPrices,
-      fastModeMultiplier: config.fastModeMultiplier
+      ...settingsPayload(priceRuntime)
     });
   } catch (err) {
     sendJson(res, 500, { error: `Failed to save settings: ${err.message}` });
@@ -621,7 +769,11 @@ async function handleStatuslineIngest(req, res) {
   if (written > 0) {
     const now = new Date().toISOString();
     store.upsertSourceHealth('statusline', 'collector_liveness', 'healthy', { last_success: now });
-    store.upsertSourceHealth('statusline', 'runtime_progress', 'healthy', { last_success: now, metrics_written: written });
+    store.upsertSourceHealth('statusline', 'runtime_progress', 'healthy', {
+      last_success: now,
+      metrics_written: written,
+      runtime: 'claude'
+    });
 
     for (const m of metrics) {
       if (m.metric_name && m.metric_value != null) {
@@ -698,10 +850,8 @@ export function createServer() {
     }
 
     if (pathname === '/api/settings' && req.method === 'GET') {
-      sendJson(res, 200, {
-        modelPrices: config.modelPrices,
-        fastModeMultiplier: config.fastModeMultiplier
-      });
+      const priceRuntime = activeRuntime === 'codex' ? 'codex' : 'claude';
+      sendJson(res, 200, settingsPayload(priceRuntime));
       return;
     }
 
@@ -763,6 +913,7 @@ if (isMain && process.argv.includes('--smoke')) {
   systemCollector.start(30_000);
   if (statuslineCollector) statuslineCollector.start();
   if (conversationCollector) conversationCollector.start(5_000);
+  if (codexRolloutCollector) codexRolloutCollector.start(5_000);
 
   // Start snapshot timer
   stateEngine.startSnapshotTimer();

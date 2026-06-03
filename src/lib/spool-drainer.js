@@ -3,11 +3,13 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 
 const ALLOWED_EVENTS = new Set([
+  'SessionStart',
   'PreToolUse', 'PostToolUse', 'UserPromptSubmit', 'Stop', 'PermissionRequest',
   'SubagentStart', 'SubagentStop'
 ]);
 
 const EVENT_TYPE_MAP = {
+  SessionStart: { event_type: 'session_start', category: 'session' },
   PreToolUse: { event_type: 'pre_tool_use', category: 'tool' },
   PostToolUse: { event_type: 'post_tool_use', category: 'tool' },
   UserPromptSubmit: { event_type: 'user_prompt_submit', category: 'turn' },
@@ -67,6 +69,7 @@ export class SpoolDrainer {
     }
 
     const failedLines = [];
+    let lastProcessedRuntime = null;
 
     for (const line of lines) {
       try {
@@ -96,8 +99,18 @@ export class SpoolDrainer {
 
         const { inserted } = this.store.insertEvent(event);
 
+        if (event.runtime === 'codex' && sanitized.metadata?.transcript_path && sanitized.session_id) {
+          this.store.upsertCodexRolloutPath?.({
+            runtime: event.runtime,
+            sessionId: sanitized.session_id,
+            transcriptPath: sanitized.metadata.transcript_path,
+            lastEventAt: event.timestamp
+          });
+        }
+
         if (inserted) {
           result.processed++;
+          lastProcessedRuntime = event.runtime;
           if (stateEngine) {
             stateEngine.onEvent(event);
           }
@@ -132,7 +145,10 @@ export class SpoolDrainer {
     if (result.processed > 0) {
       const now = new Date().toISOString();
       this.store.upsertSourceHealth('hook_handler', 'collector_liveness', 'healthy', { last_success: now });
-      this.store.upsertSourceHealth('hook_events', 'runtime_progress', 'healthy', { last_success: now });
+      this.store.upsertSourceHealth('hook_events', 'runtime_progress', 'healthy', {
+        last_success: now,
+        runtime: lastProcessedRuntime || this.config.runtime || process.env.ZYLOS_RUNTIME || 'claude'
+      });
     }
 
     return result;

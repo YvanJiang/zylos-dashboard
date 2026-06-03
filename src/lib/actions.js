@@ -5,6 +5,8 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import { DEFAULT_CODEX_MODEL_PRICES } from './config.js';
+import { compareVersions, isNewerVersion } from './version-utils.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -12,8 +14,65 @@ function settingsPath(zylosDir) {
   return path.join(zylosDir, '.claude', 'settings.json');
 }
 
+function codexHome() {
+  return process.env.CODEX_HOME || path.join(os.homedir(), '.codex');
+}
+
+function codexConfigPath() {
+  return path.join(codexHome(), 'config.toml');
+}
+
+function codexProjectConfigPath(zylosDir) {
+  return path.join(zylosDir || path.join(os.homedir(), 'zylos'), '.codex', 'config.toml');
+}
+
+function codexModelsCachePath() {
+  return path.join(codexHome(), 'models_cache.json');
+}
+
 function c4ControlPath(zylosDir) {
   return path.join(zylosDir, '.claude', 'skills', 'comm-bridge', 'scripts', 'c4-control.js');
+}
+
+function dashboardDataDir(zylosDir) {
+  return path.join(zylosDir, 'components', 'dashboard');
+}
+
+function zylosUpgradeMarkerPath(zylosDir) {
+  return path.join(dashboardDataDir(zylosDir), 'upgrade-zylos-pending.json');
+}
+
+export function consumeZylosUpgradeMarker(zylosDir, currentVersion) {
+  const markerPath = zylosUpgradeMarkerPath(zylosDir);
+  let marker;
+  try {
+    marker = JSON.parse(fs.readFileSync(markerPath, 'utf8'));
+  } catch {
+    return null;
+  }
+
+  try { fs.rmSync(markerPath, { force: true }); } catch { /* best effort */ }
+
+  const targetVersion = marker.targetVersion || null;
+  const fromVersion = marker.fromVersion || null;
+  const current = currentVersion || null;
+  let status = 'warning';
+
+  if (current && targetVersion) {
+    const cmp = compareVersions(current, targetVersion);
+    if (cmp !== null && cmp >= 0) status = 'success';
+  } else if (current && fromVersion) {
+    const cmp = compareVersions(current, fromVersion);
+    if (cmp !== null && cmp > 0) status = 'success';
+  }
+
+  return {
+    status,
+    fromVersion,
+    targetVersion,
+    currentVersion: current,
+    startedAt: marker.startedAt || null
+  };
 }
 
 const DEDUP_WINDOW_MS = 2000;
@@ -29,6 +88,55 @@ function readSettings(zylosDir) {
 
 function writeSettings(zylosDir, settings) {
   fs.writeFileSync(settingsPath(zylosDir), JSON.stringify(settings, null, 2) + '\n');
+}
+
+export function readCodexRootString(key, zylosDir) {
+  try {
+    const text = fs.readFileSync(codexProjectConfigPath(zylosDir), 'utf8');
+    const match = text.match(new RegExp(`^\\s*${key}\\s*=\\s*"([^"]*)"\\s*$`, 'm'));
+    return match?.[1] || null;
+  } catch { /* fall through */ }
+  return null;
+}
+
+function writeCodexRootString(key, value, zylosDir) {
+  const configPath = codexProjectConfigPath(zylosDir);
+  fs.mkdirSync(path.dirname(configPath), { recursive: true });
+  let text = '';
+  try { text = fs.readFileSync(configPath, 'utf8'); } catch { /* create below */ }
+  if (!text) {
+    text = '# Zylos project-level Codex config.\n';
+  }
+  const line = `${key} = ${JSON.stringify(value)}`;
+  const pattern = new RegExp(`^\\s*${key}\\s*=\\s*"[^"]*"\\s*$`, 'm');
+  text = pattern.test(text)
+    ? text.replace(pattern, line)
+    : `${line}\n${text}`;
+  fs.writeFileSync(configPath, text.endsWith('\n') ? text : text + '\n', { mode: 0o600 });
+}
+
+export function readCodexModels() {
+  try {
+    const data = JSON.parse(fs.readFileSync(codexModelsCachePath(), 'utf8'));
+    if (Array.isArray(data.models)) {
+      return data.models
+        .filter(m => m?.visibility !== 'hide' && typeof m.slug === 'string' && m.slug)
+        .map(m => ({
+          id: m.slug,
+          display_name: m.display_name || m.slug,
+          default_effort: m.default_reasoning_level || null,
+          efforts: Array.isArray(m.supported_reasoning_levels)
+            ? m.supported_reasoning_levels.map(e => e?.effort).filter(Boolean)
+            : []
+        }));
+    }
+  } catch { /* fall back below */ }
+  return Object.keys(DEFAULT_CODEX_MODEL_PRICES).map(id => ({
+    id,
+    display_name: id,
+    default_effort: 'medium',
+    efforts: ['low', 'medium', 'high', 'xhigh']
+  }));
 }
 
 function log(reqId, msg) {
@@ -70,8 +178,8 @@ export async function handleAction(action, body, config) {
       case 'switch-model': result = await switchModel(reqId, body, config, zylosDir); break;
       case 'switch-effort': result = await switchEffort(reqId, body, config, zylosDir); break;
       case 'set-threshold': result = await setThreshold(reqId, body, config, zylosDir); break;
-      case 'upgrade-zylos': result = await upgradeZylos(reqId); break;
-      case 'upgrade-cc': result = await upgradeCc(reqId); break;
+      case 'upgrade-zylos': result = await upgradeZylos(reqId, zylosDir); break;
+      case 'upgrade-cc': result = await upgradeRuntimeCli(reqId, config); break;
       default: result = { ok: false, error: 'unknown_action', messageKey: 'result.unknown_action' };
     }
   } catch (err) {
@@ -177,7 +285,14 @@ async function switchModel(reqId, body, config, zylosDir) {
     return { ok: true, message: `Model changed to ${model}.`, previous: prev, requires_restart: true, messageKey: 'result.model_changed', messageParams: { value: model } };
   }
 
-  return { ok: false, error: 'not_implemented', message: 'Model switch for Codex runtime not yet implemented', messageKey: 'result.not_implemented_model' };
+  const prev = readCodexRootString('model', zylosDir);
+  if (prev === model) {
+    log(reqId, `no-op: codex model already "${model}"`);
+    return { ok: false, error: 'already_set', message: `Model already set to ${model}`, messageKey: 'result.already_set_model', messageParams: { value: model } };
+  }
+  writeCodexRootString('model', model, zylosDir);
+  log(reqId, `write ${codexProjectConfigPath(zylosDir)}: model "${prev ?? '(unset)'}" → "${model}"`);
+  return { ok: true, message: `Model changed to ${model}.`, previous: prev, requires_restart: true, messageKey: 'result.model_changed', messageParams: { value: model } };
 }
 
 function effortsForModel(model) {
@@ -210,7 +325,22 @@ async function switchEffort(reqId, body, config, zylosDir) {
     return { ok: true, message: `Effort changed to ${effort}.`, previous: prev, requires_restart: true, messageKey: 'result.effort_changed', messageParams: { value: effort } };
   }
 
-  return { ok: false, error: 'not_implemented', message: 'Effort switch for Codex runtime not yet implemented', messageKey: 'result.not_implemented_effort' };
+  const codexModels = readCodexModels();
+  const currentModel = readCodexRootString('model', zylosDir) || codexModels[0]?.id || '';
+  const match = codexModels.find(m => m.id === currentModel);
+  const valid = match?.efforts?.length ? match.efforts : ['low', 'medium', 'high', 'xhigh'];
+  if (!effort || !valid.includes(effort)) {
+    return { ok: false, error: 'invalid_effort', message: `effort must be one of: ${valid.join(', ')}`, messageKey: 'result.invalid_effort', messageParams: { values: valid.join(', ') } };
+  }
+
+  const prev = readCodexRootString('model_reasoning_effort', zylosDir);
+  if (prev === effort) {
+    log(reqId, `no-op: codex model_reasoning_effort already "${effort}"`);
+    return { ok: false, error: 'already_set', message: `Effort already set to ${effort}`, messageKey: 'result.already_set_effort', messageParams: { value: effort } };
+  }
+  writeCodexRootString('model_reasoning_effort', effort, zylosDir);
+  log(reqId, `write ${codexProjectConfigPath(zylosDir)}: model_reasoning_effort "${prev ?? '(unset)'}" → "${effort}"`);
+  return { ok: true, message: `Effort changed to ${effort}.`, previous: prev, requires_restart: true, messageKey: 'result.effort_changed', messageParams: { value: effort } };
 }
 
 function fetchLatestGitHubTag(repo) {
@@ -235,7 +365,7 @@ function fetchLatestGitHubTag(repo) {
   });
 }
 
-async function upgradeZylos(reqId) {
+async function upgradeZylos(reqId, zylosDir) {
   let currentVersion;
   try {
     const { stdout } = await execFileAsync('zylos', ['--version'], { timeout: 5000 });
@@ -251,7 +381,7 @@ async function upgradeZylos(reqId) {
     log(reqId, `version check failed: ${err.message}, proceeding with upgrade`);
   }
 
-  if (currentVersion && latestVersion && currentVersion === latestVersion) {
+  if (currentVersion && latestVersion && !isNewerVersion(latestVersion, currentVersion)) {
     log(reqId, `already up to date: v${currentVersion}`);
     return { ok: false, error: 'already_up_to_date', message: `Already on the latest version (v${currentVersion}).`, messageKey: 'result.already_up_to_date', messageParams: { version: currentVersion } };
   }
@@ -262,8 +392,27 @@ async function upgradeZylos(reqId) {
   const upgradeMsgKey = latestVersion && currentVersion ? 'result.upgrading_zylos' : 'result.upgrading_zylos_simple';
   const upgradeMsgParams = latestVersion && currentVersion ? { from: currentVersion, to: latestVersion } : undefined;
 
-  log(reqId, `spawn detached: zylos upgrade --self -y (${currentVersion || '?'} → ${latestVersion || '?'})`);
-  const child = spawn('zylos', ['upgrade', '--self', '-y'], {
+  const markerPath = zylosUpgradeMarkerPath(zylosDir);
+  fs.mkdirSync(path.dirname(markerPath), { recursive: true });
+  fs.writeFileSync(markerPath, JSON.stringify({
+    action: 'upgrade-zylos',
+    fromVersion: currentVersion,
+    targetVersion: latestVersion,
+    startedAt: new Date().toISOString()
+  }, null, 2) + '\n');
+
+  const script = `
+    const { spawn } = require('node:child_process');
+    const child = spawn('zylos', ['upgrade', '--self', '-y'], {
+      detached: true,
+      stdio: 'ignore',
+      env: process.env
+    });
+    child.unref();
+  `;
+
+  log(reqId, `spawn double-fork detached: zylos upgrade --self -y (${currentVersion || '?'} → ${latestVersion || '?'})`);
+  const child = spawn(process.execPath, ['-e', script], {
     detached: true, stdio: 'ignore', env: { ...process.env }
   });
   child.unref();
@@ -271,7 +420,22 @@ async function upgradeZylos(reqId) {
   return { ok: true, message: upgradeMsg, detached: true, messageKey: upgradeMsgKey, messageParams: upgradeMsgParams };
 }
 
-async function upgradeCc(reqId) {
+async function upgradeRuntimeCli(reqId, config) {
+  const runtime = config.runtime || process.env.ZYLOS_RUNTIME || 'claude';
+  if (runtime === 'codex') {
+    log(reqId, `exec: codex update`);
+    try {
+      const { stdout, stderr } = await execFileAsync('codex', ['update'], { timeout: 60000 });
+      const output = (stdout || '') + (stderr || '');
+      log(reqId, `codex update done (${output.trim().slice(0, 200)})`);
+      return { ok: true, message: 'Codex CLI updated. Restart session to apply.', output: output.trim(), requires_restart: true, messageKey: 'result.codex_updated' };
+    } catch (err) {
+      const fallbackMsg = err.stderr || err.stdout || err.message;
+      log(reqId, `codex update failed: ${(fallbackMsg || '').slice(0, 200)}`);
+      return { ok: false, error: 'upgrade_failed', message: fallbackMsg, messageKey: 'result.upgrade_failed', messageParams: { error: fallbackMsg } };
+    }
+  }
+
   log(reqId, `exec: claude update`);
   try {
     const { stdout, stderr } = await execFileAsync('claude', ['update'], { timeout: 60000 });
@@ -305,6 +469,7 @@ async function setThreshold(reqId, body, config, zylosDir) {
 
 export function getActionsMeta(config, runtimeInfo) {
   const runtime = config.runtime || process.env.ZYLOS_RUNTIME || 'claude';
+  const codexModels = runtime === 'codex' ? readCodexModels() : [];
 
   const models = runtime === 'claude'
     ? [
@@ -314,7 +479,7 @@ export function getActionsMeta(config, runtimeInfo) {
         { id: 'claude-opus-4-6[1m]' },
         { id: 'claude-sonnet-4-6' }
       ]
-    : [];
+    : codexModels.map(m => ({ id: m.id }));
 
   const efforts_by_model = runtime === 'claude'
     ? {
@@ -322,10 +487,18 @@ export function getActionsMeta(config, runtimeInfo) {
         'claude-opus-4-7[1m]': effortsForModel('claude-opus-4-7[1m]'),
         '*': ['low', 'medium', 'high']
       }
-    : {};
+    : Object.fromEntries(codexModels.map(m => [m.id, m.efforts.length ? m.efforts : ['low', 'medium', 'high', 'xhigh']]));
 
   const zylosDir = config.zylosDir || path.join(os.homedir(), 'zylos');
   const settings = runtime === 'claude' ? readSettings(zylosDir) : {};
+  const codexModel = runtime === 'codex' ? readCodexRootString('model', zylosDir) : null;
+  const codexEffort = runtime === 'codex' ? readCodexRootString('model_reasoning_effort', zylosDir) : null;
+  const currentCodexModel = runtime === 'codex'
+    ? codexModel || runtimeInfo?.model_id || models[0]?.id || null
+    : null;
+  const currentCodexModelInfo = runtime === 'codex'
+    ? codexModels.find(m => m.id === currentCodexModel) || codexModels[0] || null
+    : null;
 
   const thresholdKey = runtime === 'codex' ? 'codex_new_session_threshold' : 'new_session_threshold';
   const defaultThreshold = runtime === 'codex' ? 75 : 70;
@@ -333,8 +506,10 @@ export function getActionsMeta(config, runtimeInfo) {
 
   return {
     runtime,
-    current_model: runtime === 'claude' ? settings.model || null : null,
-    current_effort: runtime === 'claude' ? runtimeInfo?.effort || settings.effortLevel || null : null,
+    current_model: runtime === 'claude' ? settings.model || null : currentCodexModel,
+    current_effort: runtime === 'claude'
+      ? runtimeInfo?.effort || settings.effortLevel || null
+      : codexEffort || runtimeInfo?.effort || currentCodexModelInfo?.default_effort || null,
     models,
     efforts_by_model,
     new_session_threshold: newSessionThreshold

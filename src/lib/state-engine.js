@@ -182,18 +182,35 @@ export class StateEngine {
   }
 
   onEvent(event) {
+    if (this._isForeignRuntimeEvent(event)) {
+      this._resetRuntimeForegroundState();
+      this._broadcastStateChange();
+      this._maybeSnapshot();
+      return;
+    }
+
     const now = new Date(this._now());
 
     switch (event.event_type) {
       case 'pre_tool_use':
         if (event.metadata?.tool_use_id) {
+          const agentId = this._agentIdForEvent(event);
           this._state.runningTools.set(event.metadata.tool_use_id, {
             tool_name: event.metadata.tool_name,
             tool_detail: event.metadata.tool_detail || null,
             started_at: event.timestamp,
             session_id: event.session_id,
-            agent_id: event.metadata.agent_id || null
+            agent_id: agentId
           });
+          if (agentId) {
+            const toolActivity = event.summary ||
+              (event.metadata.tool_detail
+                ? `${event.metadata.tool_name || 'Tool'}: ${event.metadata.tool_detail}`
+                : event.metadata.tool_name || 'Tool started');
+            this._updateSubagentActivity(agentId, event.timestamp, {
+              last_activity: toolActivity
+            });
+          }
         }
         this._state.lastProgressAt = now;
         this._clearPossiblyStuck();
@@ -211,7 +228,32 @@ export class StateEngine {
         }
         break;
 
+      case 'session_start':
+        if (this._isSubagentSession(event.session_id)) {
+          this._updateSubagentActivity(event.session_id, event.timestamp, {
+            last_activity: event.summary || 'Subagent session started'
+          });
+          this._state.lastProgressAt = now;
+          this._clearPossiblyStuck();
+          break;
+        }
+        if (this._isNewMainSessionBoundary(event.session_id)) {
+          this._resetRuntimeForegroundState();
+        }
+        if (event.session_id) this._state.mainSessionId = event.session_id;
+        this._state.lastProgressAt = now;
+        this._clearPossiblyStuck();
+        break;
+
       case 'user_prompt_submit':
+        if (this._isSubagentSession(event.session_id)) {
+          this._updateSubagentActivity(event.session_id, event.timestamp, {
+            last_activity: event.summary || 'Prompt received'
+          });
+          this._state.lastProgressAt = now;
+          this._clearPossiblyStuck();
+          break;
+        }
         this._state.openTurn = { started_at: event.timestamp, session_id: event.session_id };
         if (event.session_id) this._state.mainSessionId = event.session_id;
         this._state.lastProgressAt = now;
@@ -225,6 +267,21 @@ export class StateEngine {
         break;
 
       case 'stop':
+        if (this._isSubagentSession(event.session_id)) {
+          for (const [id, tool] of this._state.runningTools) {
+            if (tool.agent_id === event.session_id || tool.session_id === event.session_id) {
+              this._state.runningTools.delete(id);
+            }
+          }
+          this._updateSubagentActivity(event.session_id, event.timestamp, {
+            status: 'completed',
+            last_activity: event.summary || 'Subagent completed'
+          });
+          this._cleanupStaleTools();
+          this._state.lastProgressAt = now;
+          this._clearPossiblyStuck();
+          break;
+        }
         if (event.session_id) {
           for (const [id, tool] of this._state.runningTools) {
             if (tool.session_id === event.session_id && !tool.agent_id) {
@@ -250,6 +307,13 @@ export class StateEngine {
         break;
 
       case 'assistant_message':
+        if (this._isSubagentSession(event.session_id)) {
+          this._updateSubagentActivity(event.session_id, event.timestamp, {
+            last_activity: event.summary || 'Subagent message'
+          });
+          this._state.lastProgressAt = now;
+          break;
+        }
         this._state.lastAssistantMessage = {
           text: event.summary,
           timestamp: event.timestamp
@@ -269,20 +333,63 @@ export class StateEngine {
       case 'subagent_start':
         if (event.session_id) this._state.mainSessionId = event.session_id;
         if (event.metadata?.agent_id) {
-          let description = null;
-          for (const [, tool] of this._state.runningTools) {
-            if ((tool.tool_name === 'Agent' || tool.tool_name === 'Task')
-                && !tool.agent_id && tool.tool_detail && !tool._descriptionConsumed) {
-              description = tool.tool_detail;
-              tool._descriptionConsumed = true;
-              break;
+          let description = event.metadata.description || null;
+          if (!description) {
+            for (const [, tool] of this._state.runningTools) {
+              if ((tool.tool_name === 'Agent' || tool.tool_name === 'Task')
+                  && !tool.agent_id && tool.tool_detail && !tool._descriptionConsumed) {
+                description = tool.tool_detail;
+                tool._descriptionConsumed = true;
+                break;
+              }
             }
           }
           this._state.activeSubagents.set(event.metadata.agent_id, {
             agent_type: event.metadata.agent_type || 'general-purpose',
+            nickname: event.metadata.nickname || null,
+            status: event.metadata.status || 'running',
             description,
             started_at: event.timestamp,
+            updated_at: event.timestamp,
+            last_activity: event.summary || 'Subagent started',
+            session_id: event.session_id,
+            recent_activity: subagentActivityHistory(null, event.timestamp, event.summary || 'Subagent started', event.metadata?.status || 'running')
+          });
+        }
+        this._state.lastProgressAt = now;
+        break;
+
+      case 'subagent_update':
+        if (event.session_id) this._state.mainSessionId = event.session_id;
+        if (event.metadata?.agent_id) {
+          const existing = this._state.activeSubagents.get(event.metadata.agent_id) || {
+            agent_type: event.metadata.agent_type || 'general-purpose',
+            nickname: null,
+            status: 'running',
+            description: null,
+            started_at: event.timestamp,
             session_id: event.session_id
+          };
+          this._state.activeSubagents.set(event.metadata.agent_id, {
+            ...existing,
+            agent_type: event.metadata.agent_type || existing.agent_type,
+            nickname: event.metadata.nickname || existing.nickname || null,
+            status: event.metadata.status || existing.status || 'running',
+            description: event.metadata.description || existing.description || null,
+            updated_at: event.timestamp,
+            last_activity: event.summary || event.metadata.last_activity || existing.last_activity || null,
+            session_id: event.session_id || existing.session_id,
+            wait_started_at: event.metadata.wait_started_at || (event.metadata.status === 'waiting' ? existing.wait_started_at : null),
+            wait_timeout_ms: event.metadata.wait_timeout_ms ?? existing.wait_timeout_ms ?? null,
+            wait_latency_ms: event.metadata.wait_latency_ms ?? existing.wait_latency_ms ?? null,
+            wait_timed_out: event.metadata.wait_timed_out || existing.wait_timed_out || false,
+            failure_reason: event.metadata.failure_reason || existing.failure_reason || null,
+            recent_activity: subagentActivityHistory(
+              existing.recent_activity,
+              event.timestamp,
+              event.summary || event.metadata.last_activity || existing.last_activity || 'Subagent updated',
+              event.metadata.status || existing.status || 'running'
+            )
           });
         }
         this._state.lastProgressAt = now;
@@ -344,9 +451,19 @@ export class StateEngine {
       activeSubagents.push({
         agent_id: id,
         agent_type: agent.agent_type,
+        nickname: agent.nickname || null,
+        status: agent.status || 'running',
         description: agent.description || null,
         started_at: agent.started_at,
+        updated_at: agent.updated_at || agent.started_at,
+        last_activity: agent.last_activity || null,
         duration_s: Math.floor((this._now() - new Date(agent.started_at).getTime()) / 1000),
+        wait_duration_s: agent.wait_started_at ? Math.floor((this._now() - new Date(agent.wait_started_at).getTime()) / 1000) : null,
+        wait_timeout_ms: agent.wait_timeout_ms ?? null,
+        wait_latency_ms: agent.wait_latency_ms ?? null,
+        wait_timed_out: agent.wait_timed_out || false,
+        failure_reason: agent.failure_reason || null,
+        recent_activity: agent.recent_activity || [],
         running_tools: subagentToolsMap.get(id) || []
       });
     }
@@ -546,6 +663,62 @@ export class StateEngine {
     this._state.possiblyStuckSince = null;
   }
 
+  _agentIdForEvent(event) {
+    if (event.metadata?.agent_id) return event.metadata.agent_id;
+    return this._isSubagentSession(event.session_id) ? event.session_id : null;
+  }
+
+  _isSubagentSession(sessionId) {
+    return !!sessionId && this._state.activeSubagents.has(sessionId);
+  }
+
+  _updateSubagentActivity(agentId, timestamp, patch = {}) {
+    const existing = this._state.activeSubagents.get(agentId);
+    if (!existing) return;
+    const activity = patch.last_activity || existing.last_activity || null;
+    this._state.activeSubagents.set(agentId, {
+      ...existing,
+      status: patch.status || existing.status || 'running',
+      updated_at: timestamp || existing.updated_at || existing.started_at,
+      last_activity: activity,
+      recent_activity: activity
+        ? subagentActivityHistory(existing.recent_activity, timestamp, activity, patch.status || existing.status || 'running')
+        : existing.recent_activity || []
+    });
+  }
+
+  _isForeignRuntimeEvent(event) {
+    const currentRuntime = this._config.runtime || 'claude';
+    return Boolean(event?.runtime && event.runtime !== currentRuntime);
+  }
+
+  _isNewMainSessionBoundary(sessionId) {
+    if (!sessionId) return false;
+    if (this._state.mainSessionId) return sessionId !== this._state.mainSessionId;
+
+    const foregroundSessionIds = new Set();
+    if (this._state.openTurn?.session_id) foregroundSessionIds.add(this._state.openTurn.session_id);
+    if (this._state.pendingPermission?.session_id) foregroundSessionIds.add(this._state.pendingPermission.session_id);
+    for (const [, tool] of this._state.runningTools) {
+      if (!tool.agent_id && tool.session_id) foregroundSessionIds.add(tool.session_id);
+    }
+    for (const [, agent] of this._state.activeSubagents) {
+      if (agent.session_id) foregroundSessionIds.add(agent.session_id);
+    }
+
+    return foregroundSessionIds.size > 0 && !foregroundSessionIds.has(sessionId);
+  }
+
+  _resetRuntimeForegroundState() {
+    this._state.runningTools.clear();
+    this._state.openTurn = null;
+    this._state.pendingPermission = null;
+    this._state.possiblyStuckSince = null;
+    this._state.mainSessionId = null;
+    this._state.activeSubagents.clear();
+    this._state.lastPrompt = null;
+  }
+
   _isCollectorLivenessFresh() {
     try {
       const health = this.store.getCollectorLiveness();
@@ -703,34 +876,78 @@ export class StateEngine {
       const allHealth = this.store.getSourceHealth();
       const now = this._now();
 
-      const formatEntry = (name) => {
-        const h = allHealth.find(s => s.name === name);
-        if (!h) return { fresh: false, age_s: null, status: 'unknown' };
+      const currentRuntime = this._config.runtime || 'claude';
+      const formatEntry = (name, { runtimeScoped = false, expectedRuntime = currentRuntime, signalType = null, capability = 'supported' } = {}) => {
+        if (capability === 'unsupported') {
+          return {
+            fresh: false,
+            age_s: null,
+            status: 'unsupported',
+            capability: 'unsupported',
+            reason: 'unsupported',
+            detail: 'Not supported for this runtime'
+          };
+        }
+
+        const h = allHealth.find(s => s.name === name && (!signalType || s.signal_type === signalType));
+        if (!h) {
+          return {
+            fresh: false,
+            age_s: null,
+            status: 'unknown',
+            capability,
+            reason: 'no_signal',
+            detail: 'No source signal has been recorded yet'
+          };
+        }
+        if (runtimeScoped && h.extra?.runtime && h.extra.runtime !== expectedRuntime) {
+          return {
+            fresh: false,
+            age_s: null,
+            status: 'unknown',
+            capability,
+            reason: 'runtime_mismatch',
+            detail: `Last signal belongs to ${h.extra.runtime}, not ${expectedRuntime}`
+          };
+        }
         const lastSuccess = h.extra?.last_success;
         const ageS = lastSuccess ? Math.floor((now - new Date(lastSuccess).getTime()) / 1000) : null;
+        const fresh = ageS !== null && ageS < 30;
+        const reason = h.extra?.reason
+          || (h.status === 'unavailable' ? 'unavailable'
+            : h.status === 'stale' ? 'stale'
+              : fresh ? 'fresh' : 'stale_or_not_successful');
         return {
-          fresh: ageS !== null && ageS < 30,
+          fresh,
           age_s: ageS,
-          status: h.status
+          status: h.status,
+          capability,
+          reason,
+          detail: sourceHealthDetail(h, reason, fresh),
+          updated_at: h.updated_at || null
         };
       };
 
       return {
         runtime_progress: {
-          hook_events: formatEntry('hook_events'),
-          jsonl_usage: formatEntry('jsonl_usage'),
-          statusline: formatEntry('statusline')
+          hook_events: formatEntry('hook_events', { runtimeScoped: true, signalType: 'runtime_progress' }),
+          jsonl_usage: currentRuntime === 'codex'
+            ? formatEntry('codex_rollout', { signalType: 'collector_liveness' })
+            : formatEntry('jsonl_usage', { signalType: 'collector_liveness' }),
+          statusline: currentRuntime === 'claude'
+            ? formatEntry('statusline', { runtimeScoped: true, expectedRuntime: 'claude', signalType: 'runtime_progress' })
+            : formatEntry('statusline', { capability: 'unsupported' })
         },
         collector_liveness: {
-          pm2_reader: formatEntry('pm2_reader'),
-          system_sampler: formatEntry('system_sampler'),
-          hook_handler: formatEntry('hook_handler'),
-          conversation_reader: formatEntry('conversation_reader'),
-          am_heartbeat: formatEntry('am_heartbeat')
+          pm2_reader: formatEntry('pm2_reader', { signalType: 'collector_liveness' }),
+          system_sampler: formatEntry('system_sampler', { signalType: 'collector_liveness' }),
+          hook_handler: formatEntry('hook_handler', { signalType: 'collector_liveness' }),
+          conversation_reader: formatEntry('conversation_reader', { signalType: 'collector_liveness' }),
+          am_heartbeat: formatEntry('am_heartbeat', { signalType: 'collector_liveness' })
         },
         platform: {
-          statusline: formatEntry('statusline'),
-          c4: formatEntry('c4')
+          statusline: formatEntry('statusline', { signalType: 'collector_liveness' }),
+          c4: formatEntry('c4', { signalType: 'collector_liveness' })
         }
       };
     } catch {
@@ -741,4 +958,32 @@ export class StateEngine {
       };
     }
   }
+}
+
+function sourceHealthDetail(row, reason, fresh) {
+  const extra = row.extra || {};
+  if (reason === 'no_hook_transcript_path') return 'Waiting for a Codex hook to provide a rollout transcript path';
+  if (reason === 'rollout_unreadable') return extra.error ? `Rollout transcript is unreadable: ${extra.error}` : 'Rollout transcript is unreadable';
+  if (reason === 'partial_line') return 'Rollout transcript ended with an incomplete line';
+  if (reason === 'missing_model_price') return `Missing price table entry for ${extra.model || 'model'}`;
+  if (reason === 'unavailable') return 'Source is unavailable';
+  if (reason === 'stale') return 'No new source data since the last check';
+  if (fresh) return 'Fresh source signal';
+  return 'Source signal is stale or has not reported a successful sample';
+}
+
+function subagentActivityHistory(existing, timestamp, summary, status) {
+  const items = Array.isArray(existing) ? existing : [];
+  const text = typeof summary === 'string' ? summary.trim() : '';
+  if (!text) return items.slice(-4);
+  const entry = {
+    timestamp,
+    status: status || 'running',
+    summary: text
+  };
+  const last = items[items.length - 1];
+  if (last?.summary === entry.summary && last?.status === entry.status) {
+    return [...items.slice(0, -1), entry].slice(-4);
+  }
+  return [...items, entry].slice(-4);
 }

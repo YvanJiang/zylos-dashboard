@@ -19,8 +19,8 @@ function makeEngine(opts = {}) {
   let clock = opts.startTime || 1000000;
   const now = () => clock;
   const advance = (ms) => { clock += ms; };
-  const store = makeMockStore();
-  const config = { zylosDir: '/tmp/zylos-test', runtime: 'claude' };
+  const store = opts.store || makeMockStore();
+  const config = { zylosDir: '/tmp/zylos-test', runtime: opts.runtime || 'claude' };
   const engine = new StateEngine(store, {}, config, { now });
   engine._state.amHeartbeat = { state: 'idle', health: 'ok', lastCheck: clock / 1000, lastActivity: clock / 1000 };
   return { engine, now, advance };
@@ -183,6 +183,58 @@ test('subagent tools are separated from main session tools via agent_id', () => 
   assert.equal(state.active_subagents[0].running_tools[0].tool_name, 'Bash');
 });
 
+test('subagent child session tools attach to active subagent row', () => {
+  const { engine } = makeEngine();
+
+  engine.onEvent({
+    event_type: 'subagent_start',
+    timestamp: new Date(1000000).toISOString(),
+    session_id: 'main-sess',
+    metadata: { agent_id: 'agent-1', agent_type: 'default', nickname: 'Ada' }
+  });
+
+  engine.onEvent({
+    event_type: 'user_prompt_submit',
+    timestamp: new Date(1000100).toISOString(),
+    session_id: 'agent-1',
+    summary: 'Prompt received'
+  });
+
+  engine.onEvent({
+    event_type: 'assistant_message',
+    timestamp: new Date(1000150).toISOString(),
+    session_id: 'agent-1',
+    summary: 'I will run a read-only check.'
+  });
+
+  engine.onEvent({
+    event_type: 'pre_tool_use',
+    timestamp: new Date(1000200).toISOString(),
+    session_id: 'agent-1',
+    metadata: { tool_use_id: 'tool-child', tool_name: 'Bash', tool_detail: 'sleep 45' }
+  });
+
+  let state = engine.getState();
+  assert.equal(state.running_tools.length, 0, 'child session tool should not appear in main feed');
+  assert.equal(state.subagent_tools.length, 1, 'child session tool should appear in subagent feed');
+  assert.equal(state.active_subagents[0].running_tools.length, 1, 'active subagent row should show child tool');
+  assert.equal(state.active_subagents[0].running_tools[0].tool_name, 'Bash');
+  assert.equal(state.active_subagents[0].last_activity, 'Bash: sleep 45');
+  assert.equal(state.last_message, null, 'child assistant message should not replace main assistant message');
+
+  engine.onEvent({
+    event_type: 'stop',
+    timestamp: new Date(1000300).toISOString(),
+    session_id: 'agent-1',
+    summary: 'child complete'
+  });
+
+  state = engine.getState();
+  assert.equal(state.active_subagents.length, 1, 'child stop should not remove parent-tracked subagent');
+  assert.equal(state.active_subagents[0].status, 'completed');
+  assert.equal(state.active_subagents[0].running_tools.length, 0);
+});
+
 test('background subagent: main and subagent tools separated by agent_id', () => {
   const { engine } = makeEngine();
 
@@ -293,6 +345,293 @@ test('subagent description fallback when no preceding Agent tool', () => {
   const state = engine.getState();
   assert.equal(state.active_subagents[0].description, null);
   assert.equal(state.active_subagents[0].agent_type, 'claude-code-guide');
+});
+
+test('subagent description can come from canonical event metadata', () => {
+  const { engine } = makeEngine();
+
+  engine.onEvent({
+    event_type: 'subagent_start',
+    timestamp: new Date(1000000).toISOString(),
+    session_id: 'main-sess',
+    metadata: {
+      agent_id: 'agent-1',
+      agent_type: 'worker',
+      description: 'Investigate rollout lifecycle'
+    }
+  });
+
+  const state = engine.getState();
+  assert.equal(state.active_subagents[0].description, 'Investigate rollout lifecycle');
+  assert.equal(state.active_subagents[0].agent_type, 'worker');
+});
+
+test('subagent update tracks status, nickname, and last activity', () => {
+  const { engine, advance } = makeEngine({ runtime: 'codex' });
+
+  engine.onEvent({
+    runtime: 'codex',
+    event_type: 'subagent_start',
+    timestamp: new Date(1000000).toISOString(),
+    session_id: 'main-sess',
+    metadata: {
+      agent_id: 'agent-1',
+      agent_type: 'worker',
+      nickname: 'Ada',
+      description: 'Inspect runtime events'
+    }
+  });
+
+  engine.onEvent({
+    runtime: 'codex',
+    event_type: 'subagent_update',
+    timestamp: new Date(1001000).toISOString(),
+    session_id: 'main-sess',
+    summary: 'Waiting for subagent',
+    metadata: {
+      agent_id: 'agent-1',
+      status: 'waiting',
+      last_activity: 'Waiting for completion',
+      wait_started_at: new Date(1001000).toISOString(),
+      wait_timeout_ms: 3000
+    }
+  });
+  advance(2000);
+
+  const state = engine.getState();
+  assert.equal(state.active_subagents.length, 1);
+  assert.equal(state.active_subagents[0].nickname, 'Ada');
+  assert.equal(state.active_subagents[0].status, 'waiting');
+  assert.equal(state.active_subagents[0].last_activity, 'Waiting for subagent');
+  assert.equal(state.active_subagents[0].description, 'Inspect runtime events');
+  assert.equal(state.active_subagents[0].wait_duration_s, 1);
+  assert.equal(state.active_subagents[0].wait_timeout_ms, 3000);
+  assert.equal(state.active_subagents[0].recent_activity.at(-1).summary, 'Waiting for subagent');
+  assert.equal(state.active_subagents[0].recent_activity.at(-1).status, 'waiting');
+});
+
+test('Codex runtime source health ignores Claude-only runtime progress', () => {
+  const store = {
+    ...makeMockStore(),
+    getSourceHealth() {
+      return [
+        {
+          name: 'hook_events',
+          signal_type: 'runtime_progress',
+          status: 'healthy',
+          extra: { last_success: new Date(990000).toISOString(), runtime: 'claude' }
+        },
+        {
+          name: 'statusline',
+          signal_type: 'runtime_progress',
+          status: 'healthy',
+          extra: { last_success: new Date(990000).toISOString(), runtime: 'claude' }
+        },
+        {
+          name: 'codex_rollout',
+          signal_type: 'collector_liveness',
+          status: 'healthy',
+          extra: { last_success: new Date(990000).toISOString(), runtime: 'codex' }
+        }
+      ];
+    }
+  };
+  const { engine } = makeEngine({ store, runtime: 'codex' });
+
+  const source = engine.getSourceHealth();
+  assert.equal(source.runtime_progress.hook_events.status, 'unknown');
+  assert.equal(source.runtime_progress.hook_events.fresh, false);
+  assert.equal(source.runtime_progress.hook_events.reason, 'runtime_mismatch');
+  assert.equal(source.runtime_progress.statusline.status, 'unsupported');
+  assert.equal(source.runtime_progress.statusline.capability, 'unsupported');
+  assert.equal(source.runtime_progress.statusline.reason, 'unsupported');
+  assert.equal(source.runtime_progress.jsonl_usage.status, 'healthy');
+  assert.equal(source.runtime_progress.jsonl_usage.reason, 'fresh');
+});
+
+test('runtime boundary event resets foreground runtime state', () => {
+  const { engine } = makeEngine({ runtime: 'codex' });
+
+  engine.onEvent({
+    runtime: 'codex',
+    event_type: 'user_prompt_submit',
+    timestamp: new Date(1000000).toISOString(),
+    session_id: 'codex-session'
+  });
+  engine.onEvent({
+    runtime: 'codex',
+    event_type: 'pre_tool_use',
+    timestamp: new Date(1000000).toISOString(),
+    session_id: 'codex-session',
+    metadata: { tool_use_id: 'tool-1', tool_name: 'Bash' }
+  });
+  engine.onEvent({
+    runtime: 'codex',
+    event_type: 'permission_request',
+    timestamp: new Date(1000000).toISOString(),
+    session_id: 'codex-session',
+    metadata: { tool_name: 'Bash' }
+  });
+  engine.onEvent({
+    runtime: 'codex',
+    event_type: 'subagent_start',
+    timestamp: new Date(1000000).toISOString(),
+    session_id: 'codex-session',
+    metadata: { agent_id: 'agent-1', agent_type: 'worker' }
+  });
+
+  let state = engine.getState();
+  assert.equal(state.running_tools.length, 1);
+  assert.equal(state.active_subagents.length, 1);
+  assert.equal(engine.getCurrentSessionId(), 'codex-session');
+
+  engine.onEvent({
+    runtime: 'claude',
+    event_type: 'user_prompt_submit',
+    timestamp: new Date(1001000).toISOString(),
+    session_id: 'claude-session'
+  });
+
+  state = engine.getState();
+  assert.equal(state.running_tools.length, 0);
+  assert.equal(state.active_subagents.length, 0);
+  assert.equal(state.last_prompt, null);
+  assert.equal(engine.getCurrentSessionId(), null);
+  assert.equal(state.state, 'IDLE');
+});
+
+test('session_start for a new session resets stale foreground runtime state', () => {
+  const { engine } = makeEngine({ runtime: 'codex' });
+
+  engine.onEvent({
+    runtime: 'codex',
+    event_type: 'user_prompt_submit',
+    timestamp: new Date(1000000).toISOString(),
+    session_id: 'codex-old'
+  });
+  engine.onEvent({
+    runtime: 'codex',
+    event_type: 'pre_tool_use',
+    timestamp: new Date(1000100).toISOString(),
+    session_id: 'codex-old',
+    metadata: { tool_use_id: 'tool-old', tool_name: 'Bash' }
+  });
+  engine.onEvent({
+    runtime: 'codex',
+    event_type: 'subagent_start',
+    timestamp: new Date(1000200).toISOString(),
+    session_id: 'codex-old',
+    metadata: { agent_id: 'agent-old', agent_type: 'worker' }
+  });
+
+  engine.onEvent({
+    runtime: 'codex',
+    event_type: 'session_start',
+    timestamp: new Date(1001000).toISOString(),
+    session_id: 'codex-new'
+  });
+
+  const state = engine.getState();
+  assert.equal(state.running_tools.length, 0, 'old session tool should be cleared');
+  assert.equal(state.active_subagents.length, 0, 'old session subagent should be cleared');
+  assert.equal(state.last_prompt, null, 'old prompt should be cleared');
+  assert.equal(engine.getCurrentSessionId(), 'codex-new');
+  assert.equal(state.state, 'IDLE');
+});
+
+test('duplicate session_start for current session preserves foreground runtime state', () => {
+  const { engine } = makeEngine({ runtime: 'codex' });
+
+  engine.onEvent({
+    runtime: 'codex',
+    event_type: 'user_prompt_submit',
+    timestamp: new Date(1000000).toISOString(),
+    session_id: 'codex-current'
+  });
+  engine.onEvent({
+    runtime: 'codex',
+    event_type: 'pre_tool_use',
+    timestamp: new Date(1000100).toISOString(),
+    session_id: 'codex-current',
+    metadata: { tool_use_id: 'tool-current', tool_name: 'Bash' }
+  });
+  engine.onEvent({
+    runtime: 'codex',
+    event_type: 'subagent_start',
+    timestamp: new Date(1000200).toISOString(),
+    session_id: 'codex-current',
+    metadata: { agent_id: 'agent-current', agent_type: 'worker' }
+  });
+
+  engine.onEvent({
+    runtime: 'codex',
+    event_type: 'session_start',
+    timestamp: new Date(1000300).toISOString(),
+    session_id: 'codex-current'
+  });
+
+  const state = engine.getState();
+  assert.equal(state.running_tools.length, 1, 'current session tool should be preserved');
+  assert.equal(state.active_subagents.length, 1, 'current session subagent should be preserved');
+  assert.equal(engine.getCurrentSessionId(), 'codex-current');
+  assert.equal(state.state, 'BUSY');
+});
+
+test('Claude runtime source health keeps Claude runtime progress', () => {
+  const store = {
+    ...makeMockStore(),
+    getSourceHealth() {
+      return [
+        {
+          name: 'hook_events',
+          signal_type: 'runtime_progress',
+          status: 'healthy',
+          extra: { last_success: new Date(990000).toISOString(), runtime: 'claude' }
+        },
+        {
+          name: 'statusline',
+          signal_type: 'runtime_progress',
+          status: 'healthy',
+          extra: { last_success: new Date(990000).toISOString(), runtime: 'claude' }
+        },
+        {
+          name: 'jsonl_usage',
+          signal_type: 'collector_liveness',
+          status: 'healthy',
+          extra: { last_success: new Date(990000).toISOString() }
+        }
+      ];
+    }
+  };
+  const { engine } = makeEngine({ store, runtime: 'claude' });
+
+  const source = engine.getSourceHealth();
+  assert.equal(source.runtime_progress.hook_events.status, 'healthy');
+  assert.equal(source.runtime_progress.statusline.status, 'healthy');
+  assert.equal(source.runtime_progress.jsonl_usage.status, 'healthy');
+});
+
+test('source health explains missing Codex rollout mapping', () => {
+  const store = {
+    ...makeMockStore(),
+    getSourceHealth() {
+      return [
+        {
+          name: 'codex_rollout',
+          signal_type: 'collector_liveness',
+          status: 'unavailable',
+          extra: { reason: 'no_hook_transcript_path', last_checked: new Date(990000).toISOString() }
+        }
+      ];
+    }
+  };
+  const { engine } = makeEngine({ store, runtime: 'codex' });
+
+  const source = engine.getSourceHealth();
+  assert.equal(source.runtime_progress.jsonl_usage.status, 'unavailable');
+  assert.equal(source.runtime_progress.jsonl_usage.capability, 'supported');
+  assert.equal(source.runtime_progress.jsonl_usage.reason, 'no_hook_transcript_path');
+  assert.match(source.runtime_progress.jsonl_usage.detail, /rollout transcript path/);
 });
 
 test('completed Agent tool does not leak description to next subagent', () => {

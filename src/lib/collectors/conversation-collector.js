@@ -1,8 +1,11 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
+import { fastModeMultiplierForRuntime, modelPricesForRuntime } from '../config.js';
+import { Sanitizer } from '../sanitizer.js';
 
 const PER_MTOK = 1_000_000;
+const ASSISTANT_MESSAGE_SUMMARY_LIMIT = 500;
 
 export class ConversationCollector {
   constructor(store, config, { stateEngine } = {}) {
@@ -14,6 +17,7 @@ export class ConversationCollector {
     this._currentFile = null;
     this._seenUuids = new Set();
     this._onEvent = null;
+    this._sanitizer = config.sanitizer || new Sanitizer(config.zylosDir || path.join(process.env.HOME, 'zylos'));
     this._restoreOffset();
   }
 
@@ -68,7 +72,7 @@ export class ConversationCollector {
 
   _resolveModelPrice(model) {
     if (!model) return null;
-    const prices = this.config.modelPrices || {};
+    const prices = modelPricesForRuntime(this.config, 'claude');
     for (const [prefix, price] of Object.entries(prices)) {
       if (model.startsWith(prefix)) return price;
     }
@@ -77,7 +81,7 @@ export class ConversationCollector {
 
   _calculateCost(usage, price, speed) {
     if (!price) return null;
-    const multiplier = speed === 'fast' ? (this.config.fastModeMultiplier || 6) : 1;
+    const multiplier = speed === 'fast' ? (fastModeMultiplierForRuntime(this.config, 'claude') || 6) : 1;
     const input = (usage.input_tokens || 0) * price.input * multiplier / PER_MTOK;
     const output = (usage.output_tokens || 0) * price.output * multiplier / PER_MTOK;
     const cacheRead = (usage.cache_read_input_tokens || 0) * price.cacheRead * multiplier / PER_MTOK;
@@ -156,6 +160,8 @@ export class ConversationCollector {
       const eventId = crypto.randomUUID();
 
       try {
+        const summary = this._sanitizer.safeAssistantSummary(text, ASSISTANT_MESSAGE_SUMMARY_LIMIT);
+        if (!summary) continue;
         const event = {
           id: eventId,
           ingest_id: ingestId,
@@ -164,7 +170,7 @@ export class ConversationCollector {
           session_id: sessionId,
           event_type: 'assistant_message',
           category: 'assistant',
-          summary: text.length > 500 ? text.slice(0, 497) + '...' : text,
+          summary,
           duration_ms: null,
           metadata: JSON.stringify({
             uuid,
@@ -213,7 +219,18 @@ export class ConversationCollector {
 
     if (this._hasUsageForUuid(uuid)) return 0;
 
-    const dims = { input: inputTokens, output: outputTokens, cache_read: cacheRead, cache_creation: cacheCreation, model, speed, uuid };
+    const dims = {
+      input: inputTokens,
+      total_input: totalInput,
+      uncached_input: inputTokens,
+      output: outputTokens,
+      cache_read: cacheRead,
+      cache_creation: cacheCreation,
+      runtime_semantics: 'claude_split_cache',
+      model,
+      speed,
+      uuid
+    };
     if (projects.length > 0) dims.projects = projects;
 
     let written = 0;

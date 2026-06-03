@@ -5,9 +5,10 @@ const BASE_PATH = document.documentElement.dataset.basePath || '';
 const ASSET_ROOT = `${BASE_PATH}/_assets`;
 setAssetRoot(ASSET_ROOT);
 
-const METRICS = ['context_pct', 'rate_limit', 'rate_limit_7d', 'session_cost'];
+const METRICS = ['context_pct', 'rate_limit', 'rate_limit_7d', 'session_cost', 'ttft', 'turn_duration'];
 const THEMES = ['light'];
 const THEME_KEY = 'zylos-dashboard-theme';
+const PROMPT_TRANSIENT_SECONDS = 5;
 function effortLabel(level) { return t(`effort.${level}`) || level?.charAt(0).toUpperCase() + level?.slice(1) || ''; }
 
 const state = {
@@ -74,6 +75,7 @@ function tok(v) {
 }
 
 function usd(v) {
+  if (v == null) return '--';
   const n = Number(v);
   if (!Number.isFinite(n)) return '--';
   return new Intl.NumberFormat('en-US', {
@@ -188,39 +190,18 @@ function applyRuntimeVisibility() {
   const rt = state.dashboardState?.runtime_info?.runtime || 'claude';
   if (rt === _lastRuntimeApplied) return;
   _lastRuntimeApplied = rt;
-  const isClaude = rt === 'claude';
-
   const runtimeCard = $('.runtime-card');
   const capacityCard = $('[aria-labelledby="capacity-title"]');
   const timelineCard = $('.timeline-card');
   const trendsTab = $('[data-tab="trends"]');
   const trendsPanel = $('#tab-trends');
 
-  if (runtimeCard) runtimeCard.hidden = !isClaude;
-  if (capacityCard) capacityCard.hidden = !isClaude;
-  if (timelineCard) timelineCard.hidden = !isClaude;
-  if (trendsTab) trendsTab.hidden = !isClaude;
-  if (trendsPanel && !isClaude) trendsPanel.hidden = true;
+  if (runtimeCard) runtimeCard.hidden = false;
+  if (capacityCard) capacityCard.hidden = false;
+  if (timelineCard) timelineCard.hidden = false;
+  if (trendsTab) trendsTab.hidden = false;
 
-  let banner = $('#codex-degraded-banner');
-  if (!isClaude) {
-    if (!banner) {
-      banner = document.createElement('div');
-      banner.id = 'codex-degraded-banner';
-      banner.className = 'codex-banner';
-      const infoBar = $('#info-bar');
-      if (infoBar) infoBar.after(banner);
-    }
-    banner.textContent = t('banner.codex_degraded');
-    banner.hidden = false;
-  } else if (banner) {
-    banner.hidden = true;
-  }
-
-  if (!isClaude && $('[data-tab="trends"].active')) {
-    const overviewTab = $('[data-tab="overview"]');
-    if (overviewTab) overviewTab.click();
-  }
+  if (trendsPanel && trendsTab?.classList.contains('active')) trendsPanel.hidden = false;
 }
 
 // ─── Render: Info Bar ───
@@ -242,7 +223,10 @@ function renderInfoBar() {
     parts.push(esc(short));
   }
   if (ri.effort) parts.push(esc(effortLabel(ri.effort)));
-  if (ri.cc_version) {
+  if (ri.runtime === 'codex') {
+    const codexVersion = ri.codex_version || ri.codex_installed;
+    if (codexVersion) parts.push(`Codex v${esc(codexVersion)}`);
+  } else if (ri.cc_version) {
     let cv = `CC v${esc(ri.cc_version)}`;
     if (ri.cc_restart) cv += ` <span class="info-bar-update" title="${esc(t('info.restart_available', { version: ri.cc_restart }))}">↑${esc(ri.cc_restart)}</span>`;
     else if (ri.cc_update) cv += ` <span class="info-bar-update" title="${esc(t('info.update_available', { version: ri.cc_update }))}">↑${esc(ri.cc_update)}</span>`;
@@ -346,7 +330,7 @@ function renderToolFeed(tools, p) {
       existingPrompt.remove();
     }
     const current = isNewPrompt ? null : existingPrompt;
-    if (promptAge < 30) {
+    if (promptAge < PROMPT_TRANSIENT_SECONDS) {
       if (!current) {
         const el = document.createElement('div');
         el.className = 'tool-feed-item prompt-source';
@@ -474,6 +458,38 @@ function renderAssistantMessage(p) {
 // ─── Render: Subagents ───
 const prevSubagentIds = new Set();
 
+function subagentDiagnosticParts(agent) {
+  const parts = [];
+  if (agent.wait_timed_out || agent.failure_reason) {
+    parts.push(t(`subagent.reason.${agent.failure_reason}`) || agent.failure_reason || t('subagent.wait_timed_out'));
+  }
+  if (agent.status === 'waiting' && agent.wait_duration_s != null) {
+    parts.push(`${t('subagent.waiting_for')} ${dur(agent.wait_duration_s)}`);
+  }
+  if (agent.wait_timeout_ms != null) {
+    parts.push(`${t('subagent.timeout')} ${fmtDuration(agent.wait_timeout_ms)}`);
+  }
+  if (agent.wait_latency_ms != null) {
+    parts.push(`${t('subagent.wait_latency')} ${fmtDuration(agent.wait_latency_ms)}`);
+  }
+  return parts;
+}
+
+function subagentActivityHtml(agent) {
+  const items = (agent.recent_activity || []).slice(-3);
+  if (items.length === 0) return '';
+  return `<div class="subagent-activity">${items.map((item) => {
+    const age = item.timestamp ? fmtAge(item.timestamp) : '';
+    return `<div class="subagent-activity-item"><span>${esc(item.summary || '')}</span><span>${esc(age)}</span></div>`;
+  }).join('')}</div>`;
+}
+
+function compactSubagentText(value, limit = 80) {
+  const text = String(value || '').replace(/\s+/g, ' ').trim();
+  if (text.length <= limit) return text;
+  return `${text.slice(0, Math.max(0, limit - 1)).trimEnd()}…`;
+}
+
 function renderSubagents(p) {
   const agents = p?.active_subagents || [];
   const section = $('#subagent-section');
@@ -514,24 +530,38 @@ function renderSubagents(p) {
 
   for (const agent of agents) {
     let grp = list.querySelector(`[data-agent-id="${agent.agent_id}"]`);
-    const label = agent.description || agent.agent_type || t('activity.subagent');
+    const label = compactSubagentText(agent.nickname || agent.description || agent.agent_type || t('activity.subagent'), 32);
     const shortId = agent.agent_id.slice(0, 7);
-    const subtitle = agent.description ? agent.agent_type : null;
+    const subtitleParts = [];
+    if (agent.nickname && agent.description) subtitleParts.push(compactSubagentText(agent.description, 64));
+    if (agent.agent_type && (agent.nickname || agent.description)) subtitleParts.push(agent.agent_type);
+    if (agent.status && agent.status !== 'running') subtitleParts.push(agent.status);
+    if (agent.last_activity && agent.last_activity !== 'Subagent started') subtitleParts.push(compactSubagentText(agent.last_activity, 48));
+    const subtitle = compactSubagentText(subtitleParts.length ? subtitleParts.join(' · ') : shortId, 96);
+    const labelHtml = `<span class="subagent-label-main">${esc(label)}</span><span class="subagent-label-sub">${esc(subtitle)}</span>`;
+    const diagnostics = subagentDiagnosticParts(agent);
+    const diagnosticsHtml = diagnostics.length
+      ? `<div class="subagent-diagnostics">${diagnostics.map((part) => `<span>${esc(part)}</span>`).join('')}</div>`
+      : '';
 
     if (!grp) {
       grp = document.createElement('div');
       grp.className = 'subagent-group';
       grp.dataset.agentId = agent.agent_id;
-      const subtitleHtml = subtitle ? ` <span style="opacity:0.5">${esc(subtitle)}</span>` : ` <span style="opacity:0.5">${esc(shortId)}</span>`;
       grp.innerHTML =
         `<div class="subagent-group-head">` +
-          `<span class="subagent-group-label">${esc(label)}${subtitleHtml}</span>` +
+          `<span class="subagent-group-label">${labelHtml}</span>` +
           `<span class="subagent-group-time">${dur(agent.duration_s || 0)}</span>` +
         `</div>` +
+        `<div class="subagent-diagnostics-slot">${diagnosticsHtml}</div>` +
+        `<div class="subagent-activity-slot">${subagentActivityHtml(agent)}</div>` +
         `<div class="tool-feed"></div>`;
       list.appendChild(grp);
     } else if (!grp.classList.contains('done')) {
+      grp.querySelector('.subagent-group-label').innerHTML = labelHtml;
       grp.querySelector('.subagent-group-time').textContent = dur(agent.duration_s || 0);
+      grp.querySelector('.subagent-diagnostics-slot').innerHTML = diagnosticsHtml;
+      grp.querySelector('.subagent-activity-slot').innerHTML = subagentActivityHtml(agent);
     }
 
     if (!grp.classList.contains('done')) {
@@ -630,12 +660,14 @@ function renderMetrics() {
   $('#metric-cost-7d').textContent = agg['cost_7d'] != null ? usd(agg['cost_7d']) : '--';
 
   const costSessionLabel = $('#metric-cost-session-label');
-  if (costSessionLabel) costSessionLabel.textContent = hasCostSession ? t('cost.session') : t('cost.lifetime');
+  if (costSessionLabel) costSessionLabel.textContent = t('cost.session');
 
   // Tokens — stacked bar + cache ring
   const ts = agg.tokens_session;
   const tt = agg.tokens_today;
   const t7 = agg['tokens_7d'];
+  const ttft = state.metrics.get('ttft');
+  const turnDuration = state.metrics.get('turn_duration');
 
   // Session input/output stacked bar
   $('#metric-tokens-input').textContent = ts ? tok(ts.input) : '--';
@@ -659,6 +691,11 @@ function renderMetrics() {
   $('#metric-tokens-7d').textContent = tokLine(t7);
   setTokenBar('tokens-bar-today', tt);
   setTokenBar('tokens-bar-7d', t7);
+
+  const ttftEl = $('#metric-ttft');
+  if (ttftEl) ttftEl.textContent = metVal(ttft) == null ? '--' : fmtDuration(metVal(ttft));
+  const turnEl = $('#metric-turn-duration');
+  if (turnEl) turnEl.textContent = metVal(turnDuration) == null ? '--' : fmtDuration(metVal(turnDuration));
 
   $('#metrics-updated').textContent = fmtAge(state.metricsUpdatedAt);
 }
@@ -793,16 +830,47 @@ function fmtTime(ts) {
 
 function timelineDotType(eventType) {
   if (eventType === 'session_start' || eventType === 'session_end') return 'session';
+  if (eventType === 'turn_complete') return 'turn';
+  if (eventType === 'user_prompt_submit') return 'prompt';
   if (eventType === 'stop' || eventType === 'assistant_message') return 'assistant';
   if (eventType === 'permission_request') return 'permission';
   if (eventType === 'post_compact') return 'compact';
+  if (eventType?.startsWith('subagent_')) return 'subagent';
+  if (eventType === 'tool_call' || eventType === 'tool_result') return 'tool';
   return '';
 }
 
 function fmtDuration(ms) {
-  if (!ms) return '';
+  if (ms == null || !Number.isFinite(Number(ms))) return '';
   if (ms < 1000) return `${ms}ms`;
   return `${(ms / 1000).toFixed(1)}s`;
+}
+
+function timelineKind(event) {
+  const type = event?.event_type || '';
+  if (type === 'turn_complete') return t('timeline.kind.turn');
+  if (type === 'session_start' || type === 'session_end') return t('timeline.kind.session');
+  if (type === 'assistant_message') return t('timeline.kind.reply');
+  if (type === 'user_prompt_submit') return t('timeline.kind.prompt');
+  if (type === 'post_compact') return t('timeline.kind.compact');
+  if (type === 'permission_request') return t('timeline.kind.permission');
+  if (type === 'tool_call') return t('timeline.kind.tool');
+  if (type === 'tool_result') return t('timeline.kind.done');
+  if (type === 'subagent_start') return t('timeline.kind.subagent');
+  if (type === 'subagent_update') return t('timeline.kind.subagent');
+  if (type === 'subagent_stop') return t('timeline.kind.subagent');
+  return type ? type.replace(/_/g, ' ') : '';
+}
+
+function timelineItemClass(event) {
+  const type = event?.event_type || '';
+  const classes = ['timeline-item'];
+  const dot = timelineDotType(type);
+  if (dot) classes.push(`timeline-item-${dot}`);
+  if (type === 'turn_complete' || type === 'session_start' || type === 'session_end') {
+    classes.push('timeline-boundary');
+  }
+  return classes.join(' ');
 }
 
 function renderTimeline() {
@@ -814,11 +882,13 @@ function renderTimeline() {
   }
   container.replaceChildren(...events.slice(0, 50).map((e) => {
     const el = document.createElement('div');
-    el.className = 'timeline-item';
+    el.className = timelineItemClass(e);
     const durStr = fmtDuration(e.duration_ms);
+    const kind = timelineKind(e);
     el.innerHTML =
       `<span class="timeline-time">${fmtTime(e.timestamp)}</span>` +
       `<span class="timeline-dot" data-type="${timelineDotType(e.event_type)}"></span>` +
+      `<span class="timeline-kind">${esc(kind)}</span>` +
       `<span class="timeline-summary">${esc(e.summary || e.event_type)}</span>` +
       `<span class="timeline-duration">${esc(durStr)}</span>`;
     return el;
@@ -961,7 +1031,11 @@ async function refreshTimeline() {
   const since = new Date(Date.now() - 30 * 60_000).toISOString();
   const data = await fetchJson(`/api/timeline?since=${since}&limit=200&order=desc`);
   if (!data || typeof data !== 'object') return;
-  state.timeline = (data.events || []).filter((e) => e.event_type !== 'pre_tool_use' && e.event_type !== 'stop');
+  state.timeline = (data.events || []).filter((e) => (
+    e.event_type !== 'pre_tool_use' &&
+    e.event_type !== 'stop' &&
+    e.event_type !== 'tool_result'
+  ));
   state.timelineUpdatedAt = new Date().toISOString();
   renderTimeline();
 }
@@ -977,16 +1051,9 @@ async function refreshComm() {
   renderComm();
 }
 
-function isClaudeRuntime() {
-  return (state.dashboardState?.runtime_info?.runtime || 'claude') === 'claude';
-}
-
 async function refreshAll() {
   const stateResult = await Promise.allSettled([refreshState()]);
-  const fetches = [refreshHealth(), refreshComm()];
-  if (isClaudeRuntime()) {
-    fetches.push(refreshMetrics(), refreshTimeline(), refreshSummary());
-  }
+  const fetches = [refreshHealth(), refreshComm(), refreshMetrics(), refreshTimeline(), refreshSummary()];
   const restResults = await Promise.allSettled(fetches);
   const all = [...stateResult, ...restResults];
   const ok = all.some((r) => r.status === 'fulfilled');
@@ -1005,10 +1072,16 @@ function applySse(name, data) {
     state.sourceUpdatedAt = data.updated_at || new Date().toISOString();
     applyRuntimeVisibility();
     renderInfoBar(); renderState(); renderHealth(); updateRestartDot();
-    if (isClaudeRuntime()) refreshTimeline();
+    refreshTimeline();
   } else if (name === 'metric_update') {
     const mn = data.metric_name || data.name;
-    if (mn) { state.metrics.set(mn, data); state.metricsUpdatedAt = new Date().toISOString(); renderMetrics(); }
+    if (mn) {
+      const previous = state.metrics.get(mn);
+      const next = data.dimensions ? data : { ...data, dimensions: previous?.dimensions ?? null };
+      state.metrics.set(mn, next);
+      state.metricsUpdatedAt = new Date().toISOString();
+      renderMetrics();
+    }
   } else if (name === 'system_update') {
     state.system = data; state.healthUpdatedAt = new Date().toISOString(); renderHealth();
   } else if (name === 'health_update') {
@@ -1106,7 +1179,8 @@ function initTips() {
     ['#cost-tip', '#cost-popover'],
     ['#cost-trend-tip', '#cost-trend-popover'],
     ['#projects-tip', '#projects-popover'],
-    ['#context-tip', '#context-popover']
+    ['#context-tip', '#context-popover'],
+    ['#latency-tip', '#latency-popover']
   ];
   const allPops = [];
 
@@ -1414,8 +1488,9 @@ function initTrendControls() {
 }
 
 // ─── Settings Modal ───
-const BUILT_IN_MODELS = ['claude-opus-4', 'claude-sonnet-4', 'claude-haiku-4'];
 let settingsModal = null;
+let settingsBuiltInModels = new Set();
+let settingsBuiltInPriorityModels = new Set();
 
 function createSettingsModal() {
   if (settingsModal) return settingsModal;
@@ -1430,8 +1505,8 @@ function createSettingsModal() {
     <button class="modal-close" type="button" aria-label="Close">&times;</button>
   </div>
   <div class="modal-body">
-    <div class="action-group">
-      <span class="action-group-label">${esc(t('settings.model_pricing'))}
+    <div class="action-group" id="settings-model-pricing-group">
+      <span class="action-group-label" id="settings-pricing-label">${esc(t('settings.model_pricing'))}
         <button class="tip-btn tip-btn-inline" id="pricing-tip" type="button" aria-label="Pricing info">
           <svg width="14" height="14" viewBox="0 0 16 16" fill="none"><circle cx="8" cy="8" r="7" stroke="currentColor" stroke-width="1.5"/><path d="M8 7v4M8 5.5v0" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
         </button>
@@ -1449,7 +1524,19 @@ function createSettingsModal() {
       </div>
       <button class="action-btn action-btn-sm" id="settings-add-model" type="button">${esc(t('btn.add_model'))}</button>
     </div>
-    <div class="action-group">
+    <div class="action-group" id="settings-priority-pricing-group" hidden>
+      <span class="action-group-label">${esc(t('settings.priority_model_pricing'))}</span>
+      <div class="settings-table-scroll">
+      <table class="settings-price-table" id="settings-priority-price-table">
+        <thead>
+          <tr><th>${esc(t('settings.col_prefix'))}</th><th>${esc(t('settings.col_input'))}</th><th>${esc(t('settings.col_output'))}</th><th>${esc(t('settings.col_cache_read'))}</th><th>${esc(t('settings.col_cache_write'))}</th><th></th></tr>
+        </thead>
+        <tbody id="settings-priority-price-rows"></tbody>
+      </table>
+      </div>
+      <button class="action-btn action-btn-sm" id="settings-add-priority-model" type="button">${esc(t('btn.add_model'))}</button>
+    </div>
+    <div class="action-group" id="settings-fast-mode-group">
       <span class="action-group-label">${esc(t('settings.fast_mode'))}</span>
       <div class="action-field">
         <label class="action-field-label">${esc(t('settings.price_multiplier'))}</label>
@@ -1474,6 +1561,7 @@ function createSettingsModal() {
   overlay.querySelector('#settings-cancel').addEventListener('click', closeSettingsModal);
   overlay.querySelector('#settings-save').addEventListener('click', saveSettings);
   overlay.querySelector('#settings-add-model').addEventListener('click', () => addPriceRow('', { input: 0, output: 0, cacheRead: 0, cacheCreation: 0 }, false));
+  overlay.querySelector('#settings-add-priority-model').addEventListener('click', () => addPriceRow('', { input: 0, output: 0, cacheRead: 0, cacheCreation: 0 }, false, 'settings-priority-price-rows'));
 
   const pricingTip = overlay.querySelector('#pricing-tip');
   const pricingPop = overlay.querySelector('#pricing-popover');
@@ -1485,8 +1573,8 @@ function createSettingsModal() {
   return overlay;
 }
 
-function addPriceRow(prefix, prices, builtIn) {
-  const tbody = document.getElementById('settings-price-rows');
+function addPriceRow(prefix, prices, builtIn, rowsId = 'settings-price-rows') {
+  const tbody = document.getElementById(rowsId);
   const tr = document.createElement('tr');
   tr.innerHTML = `
     <td><input class="settings-input settings-prefix" type="text" value="${esc(prefix)}" ${builtIn ? 'readonly' : ''} /></td>
@@ -1510,14 +1598,34 @@ async function openSettingsModal() {
     const resp = await fetch(api('/api/settings'));
     if (!resp.ok) throw new Error('Failed to load settings');
     const data = await resp.json();
+    const runtimeLabel = data.runtime === 'codex' ? 'Codex' : 'Claude';
+    settingsBuiltInModels = new Set(data.builtInModels || []);
+    settingsBuiltInPriorityModels = new Set(data.builtInPriorityModels || []);
+    const pricingLabel = document.getElementById('settings-pricing-label');
+    if (pricingLabel) {
+      pricingLabel.firstChild.textContent = t('settings.model_pricing_runtime', { runtime: runtimeLabel });
+    }
 
     const tbody = document.getElementById('settings-price-rows');
     tbody.innerHTML = '';
     for (const [prefix, prices] of Object.entries(data.modelPrices || {})) {
-      addPriceRow(prefix, prices, BUILT_IN_MODELS.includes(prefix));
+      addPriceRow(prefix, prices, settingsBuiltInModels.has(prefix));
     }
 
-    document.getElementById('settings-fast-multiplier').value = data.fastModeMultiplier ?? 6;
+    const priorityGroup = document.getElementById('settings-priority-pricing-group');
+    if (priorityGroup) priorityGroup.hidden = data.runtime !== 'codex';
+    const priorityTbody = document.getElementById('settings-priority-price-rows');
+    if (priorityTbody) {
+      priorityTbody.innerHTML = '';
+      for (const [prefix, prices] of Object.entries(data.priorityModelPrices || {})) {
+        addPriceRow(prefix, prices, settingsBuiltInPriorityModels.has(prefix), 'settings-priority-price-rows');
+      }
+    }
+
+    const fastModeGroup = document.getElementById('settings-fast-mode-group');
+    if (fastModeGroup) fastModeGroup.hidden = data.fastMode?.mode !== 'multiplier';
+    const fastInput = document.getElementById('settings-fast-multiplier');
+    if (fastInput) fastInput.value = data.fastMode?.multiplier ?? data.fastModeMultiplier ?? 6;
   } catch (err) {
     status.textContent = err.message;
     status.hidden = false;
@@ -1548,13 +1656,34 @@ async function saveSettings() {
     };
   }
 
-  const fastModeMultiplier = Number(document.getElementById('settings-fast-multiplier').value);
+  const fastModeGroup = document.getElementById('settings-fast-mode-group');
+  const body = { modelPrices };
+  const priorityGroup = document.getElementById('settings-priority-pricing-group');
+  if (priorityGroup && !priorityGroup.hidden) {
+    const priorityModelPrices = {};
+    const priorityRows = document.querySelectorAll('#settings-priority-price-rows tr');
+    for (const row of priorityRows) {
+      const inputs = row.querySelectorAll('input');
+      const prefix = inputs[0].value.trim();
+      if (!prefix) continue;
+      priorityModelPrices[prefix] = {
+        input: Number(inputs[1].value),
+        output: Number(inputs[2].value),
+        cacheRead: Number(inputs[3].value),
+        cacheCreation: Number(inputs[4].value)
+      };
+    }
+    body.priorityModelPrices = priorityModelPrices;
+  }
+  if (!fastModeGroup?.hidden) {
+    body.fastModeMultiplier = Number(document.getElementById('settings-fast-multiplier').value);
+  }
 
   try {
     const resp = await fetch(api('/api/settings'), {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ modelPrices, fastModeMultiplier })
+      body: JSON.stringify(body)
     });
     const data = await resp.json();
     if (!resp.ok) throw new Error(data.error || t('settings.save_failed'));
@@ -1634,7 +1763,7 @@ function createActionsModal() {
           ${esc(t('actions.upgrade_zylos'))}<span class="action-ver" id="action-zylos-ver"></span>
         </button>
         <button class="action-btn" data-action="upgrade-cc" type="button">
-          ${esc(t('actions.upgrade_cc'))}<span class="action-ver" id="action-cc-ver"></span>
+          <span id="action-cli-label">${esc(t('actions.upgrade_cc'))}</span><span class="action-ver" id="action-cc-ver"></span>
         </button>
       </div>
     </div>
@@ -1750,10 +1879,18 @@ async function openActionsModal() {
   const statusEl = modal.querySelector('#action-status');
   statusEl.hidden = true;
   updateRestartDot();
+  const upgradeResult = state.dashboardState?.runtime_info?.zylos_upgrade_result;
+  if (upgradeResult && statusEl) {
+    statusEl.hidden = false;
+    statusEl.className = upgradeResult.status === 'success' ? 'modal-status success' : 'modal-status error';
+    const key = upgradeResult.status === 'success' ? 'result.zylos_upgrade_succeeded' : 'result.zylos_upgrade_unverified';
+    statusEl.textContent = t(key, {
+      version: upgradeResult.currentVersion || upgradeResult.targetVersion || ''
+    });
+  }
 
   try {
     const meta = await fetchJson('/api/actions/meta');
-    const isClaude = meta.runtime === 'claude';
     const runtimeSel = modal.querySelector('#action-runtime');
     runtimeSel.value = meta.runtime;
 
@@ -1762,32 +1899,25 @@ async function openActionsModal() {
     const effortField = modal.querySelector('#action-effort-field');
     const effortSel = modal.querySelector('#action-effort');
 
-    if (modelField) modelField.hidden = !isClaude;
-    if (effortField) effortField.hidden = !isClaude;
+    if (modelField) modelField.hidden = false;
+    if (effortField) effortField.hidden = false;
 
     modelSel.innerHTML = '';
-    if (isClaude) {
-      for (const m of meta.models || []) {
-        const opt = document.createElement('option');
-        opt.value = m.id;
-        opt.textContent = m.id;
-        if (m.id === meta.current_model) opt.selected = true;
-        modelSel.appendChild(opt);
-      }
-      const customOpt = document.createElement('option');
-      customOpt.value = '__custom__';
-      customOpt.textContent = t('actions.custom');
-      modelSel.appendChild(customOpt);
+    for (const m of meta.models || []) {
+      const opt = document.createElement('option');
+      opt.value = m.id;
+      opt.textContent = m.id;
+      if (m.id === meta.current_model) opt.selected = true;
+      modelSel.appendChild(opt);
     }
+    const customOpt = document.createElement('option');
+    customOpt.value = '__custom__';
+    customOpt.textContent = t('actions.custom');
+    modelSel.appendChild(customOpt);
     modal.querySelector('#action-model-custom').hidden = true;
 
     const effortsByModel = meta.efforts_by_model || {};
     modal._renderEffortOptions = (modelId) => {
-      if (!isClaude) {
-        effortField.hidden = true;
-        effortSel.innerHTML = '';
-        return;
-      }
       const list = effortsByModel[modelId] || effortsByModel['*'] || [];
       if (!list.length) {
         effortField.hidden = true;
@@ -1804,17 +1934,19 @@ async function openActionsModal() {
       }
       effortSel._prevValue = effortSel.value;
     };
-    if (isClaude) modal._renderEffortOptions(meta.current_model);
+    modal._renderEffortOptions(modelSel.value === '__custom__' ? meta.current_model : modelSel.value);
 
     const ri = state.dashboardState?.runtime_info;
     const zylosVer = modal.querySelector('#action-zylos-ver');
     const ccVer = modal.querySelector('#action-cc-ver');
+    const cliLabel = modal.querySelector('#action-cli-label');
     zylosVer.textContent = meta.zylos_version ? ` v${meta.zylos_version}` : '';
     zylosVer.classList.toggle('action-ver-dot', !!ri?.zylos_update);
     zylosVer.title = ri?.zylos_update ? t('info.version_available', { version: ri.zylos_update }) : '';
+    if (cliLabel) cliLabel.textContent = meta.runtime_cli === 'codex' ? t('actions.upgrade_codex') : t('actions.upgrade_cc');
     ccVer.textContent = meta.cc_version ? ` v${meta.cc_version}` : '';
-    ccVer.classList.toggle('action-ver-dot', !!ri?.cc_update);
-    ccVer.title = ri?.cc_update ? t('info.version_available', { version: ri.cc_update }) : '';
+    ccVer.classList.toggle('action-ver-dot', meta.runtime_cli !== 'codex' && !!ri?.cc_update);
+    ccVer.title = meta.runtime_cli !== 'codex' && ri?.cc_update ? t('info.version_available', { version: ri.cc_update }) : '';
 
     runtimeSel._prevValue = runtimeSel.value;
     modelSel._prevValue = modelSel.value;
@@ -1933,7 +2065,9 @@ async function execAction(action, body) {
       'switch-model': t('confirm.switch_model', { value: body?.model }),
       'switch-effort': t('confirm.switch_effort', { value: effortLabel(body?.effort) }),
       'upgrade-zylos': t('confirm.upgrade_zylos'),
-      'upgrade-cc': t('confirm.upgrade_cc')
+      'upgrade-cc': state.dashboardState?.runtime_info?.runtime === 'codex'
+        ? t('confirm.upgrade_codex')
+        : t('confirm.upgrade_cc')
     };
     if (!(await showConfirm(labels[action] || t('confirm.fallback', { action })))) return false;
   }

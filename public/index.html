@@ -11,7 +11,7 @@
 <link rel="stylesheet" href="__ASSET_ROOT__/themes/light.css?v=2">
 <script src="__ASSET_ROOT__/vendor/chart.umd.js"></script>
 <script src="__ASSET_ROOT__/js/chartjs-adapter-date-fns.bundle.min.js"></script>
-<script type="module" src="__ASSET_ROOT__/js/app.js?v=12"></script>
+<script type="module" src="__ASSET_ROOT__/js/app.js?v=13"></script>
 </head>
 <body>
 <header class="app-header">
@@ -225,6 +225,27 @@
                 <circle class="ring-fill" id="disk-ring" cx="40" cy="40" r="34"/>
               </svg>
               <strong class="ring-value" id="system-disk">--</strong>
+            </div>
+          </article>
+          <article class="gauge gauge-wide latency-section latency-card">
+            <div class="latency-head">
+              <span class="metric-label" data-i18n="metric.latency">Latency</span>
+              <button class="tip-btn tip-btn-inline" id="latency-tip" type="button" aria-label="Latency info">
+                <svg width="14" height="14" viewBox="0 0 16 16" fill="none"><circle cx="8" cy="8" r="7" stroke="currentColor" stroke-width="1.5"/><path d="M8 7v4M8 5.5v0" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+              </button>
+              <div class="tip-popover" id="latency-popover" hidden>
+                <p data-i18n="tip.latency">Latest completed turn latency. First token is time until the assistant starts responding; Full turn is total turn duration including tools, tests, and deploys.</p>
+              </div>
+            </div>
+            <div class="latency-grid">
+              <div class="latency-item">
+                <small data-i18n="metric.ttft">First token</small>
+                <strong class="latency-value" id="metric-ttft">--</strong>
+              </div>
+              <div class="latency-item">
+                <small data-i18n="metric.turn_duration">Full turn</small>
+                <strong class="latency-value" id="metric-turn-duration">--</strong>
+              </div>
             </div>
           </article>
           <article class="gauge gauge-wide scheduler-card">
