@@ -201,6 +201,9 @@ function applyRuntimeVisibility() {
   if (timelineCard) timelineCard.hidden = false;
   if (trendsTab) trendsTab.hidden = false;
 
+  const latencyCard = $('.latency-card');
+  if (latencyCard) latencyCard.hidden = rt !== 'codex';
+
   if (trendsPanel && trendsTab?.classList.contains('active')) trendsPanel.hidden = false;
 }
 
