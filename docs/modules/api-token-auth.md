@@ -46,6 +46,7 @@ CREATE TABLE api_keys (
   id TEXT PRIMARY KEY,           -- uuid
   name TEXT NOT NULL UNIQUE,     -- 人类可读名称，如 "agent-beta"
   key_hash TEXT NOT NULL,        -- scrypt hash of zylos_ak_*
+  scope TEXT NOT NULL DEFAULT 'read',  -- 'read' 或 'admin'
   created_at INTEGER NOT NULL,
   last_used_at INTEGER,
   revoked_at INTEGER             -- 非空表示已撤销
@@ -78,15 +79,21 @@ const raw = `zylos_ak_${crypto.randomBytes(24).toString('base64url')}`;
 
 CLI 交互：
 ```bash
-zylos configure dashboard --generate-api-key agent-beta
-# → API Key: zylos_ak_f8a3kQ...  (只显示一次，请妥善保存)
+zylos configure dashboard --generate-api-key agent-beta --scope read
+# → API Key: zylos_ak_f8a3kQ...  (scope: read, 只显示一次，请妥善保存)
+
+zylos configure dashboard --generate-api-key ops-admin --scope admin
+# → API Key: zylos_ak_j9b2xR...  (scope: admin, 只显示一次，请妥善保存)
 
 zylos configure dashboard --revoke-api-key agent-beta
 # → Revoked API key "agent-beta"
 
 zylos configure dashboard --list-api-keys
-# → agent-beta  created: 2026-06-04  last_used: 2026-06-04  status: active
+# → agent-beta  scope: read   created: 2026-06-04  last_used: 2026-06-04  status: active
+# → ops-admin   scope: admin  created: 2026-06-04  last_used: never       status: active
 ```
+
+不指定 `--scope` 时默认为 `read`。
 
 ### Step 2: Token 交换端点
 
@@ -104,7 +111,7 @@ Authorization: Bearer zylos_ak_<key>
 3. 验证通过 → 更新 last_used_at
 4. 生成 session token: zylos_st_<random>
 5. 存入 api_sessions（hash, api_key_id, created_at, expires_at）
-6. 返回 { token, expires_at, ttl_seconds: 86400 }
+6. 返回 { token, expires_at, ttl_seconds: 86400, scope: "read"|"admin" }
 
 失败 → 401 + rate limit（复用现有 failedAttempts 机制）
 ```
@@ -127,8 +134,10 @@ API session token 验证：
 2. scrypt hash 后查 api_sessions 表
 3. 检查 expires_at > now（TTL 失效）
 4. 检查关联的 api_key 未被 revoked（撤销立即生效，不等 TTL）
-5. 更新 last_used_at
-6. 通过 → 放行请求（仅只读端点，排除 ingest/actions）
+5. 读取关联 api_key 的 scope
+6. 更新 last_used_at
+7. 检查 scope 是否覆盖目标端点（见下方权限矩阵）
+8. 通过 → 放行请求
 ```
 
 ### Step 4: SSE 流支持
@@ -152,37 +161,42 @@ SSE 特殊处理：
 DELETE FROM api_sessions WHERE expires_at < ?
 ```
 
-## 端点访问矩阵
+## 权限模型
 
-### API Token 可访问（只读）
+### Scope 定义
 
-| 端点 | 方法 | 说明 |
-|------|------|------|
-| `/api/state` | GET | 当前 agent 状态 |
-| `/api/metrics/{name}` | GET | 单指标查询 |
-| `/api/stream` | GET | SSE 事件流 |
-| `/api/health` | GET | 服务健康（已公开） |
-| `/api/timeline` | GET | 运行时事件时间线 |
-| `/api/communication` | GET | 通信渠道统计 |
-| `/api/metrics/aggregate` | GET | 聚合指标查询 |
+| Scope | 覆盖范围 | 典型用途 |
+|-------|---------|---------|
+| `read` | 只读数据端点 + SSE 流 | 外部 Agent 接入、监控面板聚合 |
+| `admin` | read 的全部 + actions 写操作 | 远程运维（切 runtime、改 model、重启 session、升级） |
 
-### API Token 不可访问（显式排除）
+### 端点访问矩阵
 
-| 端点 | 方法 | 说明 |
-|------|------|------|
-| `/api/ingest` | POST | 本地 hook 写入通道（loopback only, reject proxied） |
-| `/api/ingest/statusline` | POST | 本地 statusline 写入通道 |
-| `/api/actions/*` | POST | 写操作（runtime switch, model change 等），仅浏览器 session |
-| `/login` | POST | 密码登录 |
-| `/api/auth/token` | POST | Token 交换（使用 API Key，不是 session token） |
+| 端点 | 方法 | read | admin | cookie (UI) | 说明 |
+|------|------|------|-------|-------------|------|
+| `/api/state` | GET | ✓ | ✓ | ✓ | 当前 agent 状态 |
+| `/api/metrics/{name}` | GET | ✓ | ✓ | ✓ | 单指标查询 |
+| `/api/stream` | GET | ✓ | ✓ | ✓ | SSE 事件流 |
+| `/api/health` | GET | ✓ | ✓ | ✓ | 服务健康（已公开） |
+| `/api/timeline` | GET | ✓ | ✓ | ✓ | 运行时事件时间线 |
+| `/api/communication` | GET | ✓ | ✓ | ✓ | 通信渠道统计 |
+| `/api/metrics/aggregate` | GET | ✓ | ✓ | ✓ | 聚合指标查询 |
+| `/api/actions/*` | POST | ✗ | ✓ | ✓ | 写操作（runtime switch 等） |
+| `/api/ingest` | POST | ✗ | ✗ | ✗ | 本地 hook 写入（loopback only） |
+| `/api/ingest/statusline` | POST | ✗ | ✗ | ✗ | 本地 statusline 写入 |
+| `/login` | POST | — | — | ✓ | 密码登录 |
+| `/api/auth/token` | POST | — | — | — | Token 交换（API Key） |
+
+`/api/ingest*` 是本地写入通道，任何认证方式都不能从外部访问（loopback + reject proxied）。
 
 ## 安全考量
 
 1. **API Key 哈希存储** — 和密码一样用 scrypt，DB 泄露不暴露明文
 2. **Rate limiting** — token 交换端点复用现有限流机制
-3. **只读权限** — API token 只能访问 GET 端点，不能执行 actions
+3. **Scope 隔离** — read scope 的 token 不能访问 actions 端点，403 拒绝；admin scope 可以
 4. **Token 前缀** — `zylos_ak_` / `zylos_st_` 前缀区分类型，防止混用
 5. **撤销传播** — 撤销 API Key 后，该 key 签发的 session token 在验证时也会被拒绝（检查关联 key 的 revoked_at）
+6. **最小权限原则** — 默认 scope 为 read，admin 需显式指定
 
 ## 测试计划
 
