@@ -250,6 +250,11 @@ export class Store {
       DELETE FROM metric_points WHERE timestamp < datetime('now', '-' || ? || ' days')
     `);
 
+    this._deleteOldMetricsBySource = this.db.prepare(`
+      DELETE FROM metric_points
+      WHERE source = ? AND timestamp < datetime('now', '-' || ? || ' days')
+    `);
+
     this._insertFact = this.db.prepare(`
       INSERT INTO activity_facts (timestamp, fact_type, runtime, session_id, project, data)
       VALUES (@timestamp, @fact_type, @runtime, @session_id, @project, @data)
@@ -427,6 +432,10 @@ export class Store {
 
   deleteMetricsOlderThan(days) {
     return this._deleteOldMetrics.run(days);
+  }
+
+  deleteMetricsOlderThanBySource(source, days) {
+    return this._deleteOldMetricsBySource.run(source, days);
   }
 
   insertFact(fact) {

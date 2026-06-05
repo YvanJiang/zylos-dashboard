@@ -12,6 +12,10 @@ function makeTempStore() {
   return { store, cleanup: () => fs.rmSync(dir, { recursive: true, force: true }) };
 }
 
+function daysAgo(days) {
+  return new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
+}
+
 test('Store saveSnapshot/latestSnapshot round-trip includes last_progress_at', () => {
   const { store, cleanup } = makeTempStore();
   try {
@@ -57,6 +61,44 @@ test('Store saveSnapshot works with null last_progress_at', () => {
     const snapshot = store.latestSnapshot('claude', null);
     assert.ok(snapshot, 'snapshot should exist');
     assert.equal(snapshot.last_progress_at, null);
+  } finally {
+    cleanup();
+  }
+});
+
+test('Store applies shorter retention to high-volume PM2 and system metrics by source', () => {
+  const { store, cleanup } = makeTempStore();
+  try {
+    const points = [
+      { metric_name: 'pm2_cpu', source: 'pm2', timestamp: daysAgo(10) },
+      { metric_name: 'pm2_cpu', source: 'pm2', timestamp: daysAgo(2) },
+      { metric_name: 'cpu_pct', source: 'system', timestamp: daysAgo(20) },
+      { metric_name: 'cpu_pct', source: 'system', timestamp: daysAgo(10) },
+      { metric_name: 'api_request_tokens', source: 'jsonl_usage', timestamp: daysAgo(20) },
+      { metric_name: 'api_request_tokens', source: 'jsonl_usage', timestamp: daysAgo(100) }
+    ];
+
+    for (const point of points) {
+      store.insertMetric({
+        timestamp: point.timestamp,
+        runtime: 'codex',
+        metric_name: point.metric_name,
+        metric_value: 1,
+        source: point.source,
+        confidence: 'actual'
+      });
+    }
+
+    store.deleteMetricsOlderThanBySource('pm2', 7);
+    store.deleteMetricsOlderThanBySource('system', 14);
+
+    assert.equal(store.db.prepare("SELECT COUNT(*) AS c FROM metric_points WHERE source = 'pm2'").get().c, 1);
+    assert.equal(store.db.prepare("SELECT COUNT(*) AS c FROM metric_points WHERE source = 'system'").get().c, 1);
+    assert.equal(store.db.prepare("SELECT COUNT(*) AS c FROM metric_points WHERE source = 'jsonl_usage'").get().c, 2);
+
+    store.deleteMetricsOlderThan(90);
+
+    assert.equal(store.db.prepare("SELECT COUNT(*) AS c FROM metric_points WHERE source = 'jsonl_usage'").get().c, 1);
   } finally {
     cleanup();
   }

@@ -36,6 +36,14 @@ import { isNewerVersion } from './lib/version-utils.js';
 import Database from 'better-sqlite3';
 
 const startedAt = new Date();
+const PM2_COLLECT_INTERVAL_MS = 60_000;
+const SYSTEM_COLLECT_INTERVAL_MS = 30_000;
+const RETENTION_INTERVAL_MS = 60 * 60 * 1000;
+const EVENT_RETENTION_DAYS = 30;
+const PM2_METRIC_RETENTION_DAYS = 7;
+const SYSTEM_METRIC_RETENTION_DAYS = 14;
+const DEFAULT_METRIC_RETENTION_DAYS = 90;
+const FACT_RETENTION_DAYS = 365;
 
 let zylosVersion = null;
 let ccInstalledVersion = null;
@@ -909,8 +917,8 @@ if (isMain && process.argv.includes('--smoke')) {
   });
 
   // Start periodic collectors
-  pm2Collector.start(10_000);
-  systemCollector.start(30_000);
+  pm2Collector.start(PM2_COLLECT_INTERVAL_MS);
+  systemCollector.start(SYSTEM_COLLECT_INTERVAL_MS);
   if (statuslineCollector) statuslineCollector.start();
   if (conversationCollector) conversationCollector.start(5_000);
   if (codexRolloutCollector) codexRolloutCollector.start(5_000);
@@ -924,13 +932,15 @@ if (isMain && process.argv.includes('--smoke')) {
   // Retention cleanup timer (hourly)
   const retentionTimer = setInterval(() => {
     try {
-      store.deleteEventsOlderThan(30);
-      store.deleteMetricsOlderThan(90);
-      store.deleteFactsOlderThan(365);
+      store.deleteEventsOlderThan(EVENT_RETENTION_DAYS);
+      store.deleteMetricsOlderThanBySource('pm2', PM2_METRIC_RETENTION_DAYS);
+      store.deleteMetricsOlderThanBySource('system', SYSTEM_METRIC_RETENTION_DAYS);
+      store.deleteMetricsOlderThan(DEFAULT_METRIC_RETENTION_DAYS);
+      store.deleteFactsOlderThan(FACT_RETENTION_DAYS);
     } catch (err) {
       process.stderr.write(`[retention] Error: ${err.message}\n`);
     }
-  }, 60 * 60 * 1000);
+  }, RETENTION_INTERVAL_MS);
   retentionTimer.unref();
 
   server.listen(config.port, config.host, () => {
