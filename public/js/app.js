@@ -227,10 +227,11 @@ function renderInfoBar() {
   }
   if (ri.effort) parts.push(esc(effortLabel(ri.effort)));
   if (ri.runtime === 'codex') {
-    const codexVersion = ri.codex_version || ri.codex_installed;
+    const codexVersion = ri.codex_running || ri.codex_version || ri.codex_installed;
     if (codexVersion) {
       let cv = `Codex v${esc(codexVersion)}`;
-      if (ri.codex_update) cv += ` <span class="info-bar-update" title="${esc(t('info.update_available', { version: ri.codex_update }))}">↑${esc(ri.codex_update)}</span>`;
+      if (ri.codex_restart) cv += ` <span class="info-bar-update" title="${esc(t('info.restart_available', { version: ri.codex_restart }))}">↑${esc(ri.codex_restart)}</span>`;
+      else if (ri.codex_update) cv += ` <span class="info-bar-update" title="${esc(t('info.update_available', { version: ri.codex_update }))}">↑${esc(ri.codex_update)}</span>`;
       parts.push(cv);
     }
   } else if (ri.cc_version) {
@@ -1953,7 +1954,7 @@ async function openActionsModal() {
     zylosVer.title = ri?.zylos_update ? t('info.version_available', { version: ri.zylos_update }) : '';
     if (cliLabel) cliLabel.textContent = meta.runtime_cli === 'codex' ? t('actions.upgrade_codex') : t('actions.upgrade_cc');
     ccVer.textContent = meta.cc_version ? ` v${meta.cc_version}` : '';
-    const cliUpdate = meta.runtime_cli === 'codex' ? ri?.codex_update : ri?.cc_update;
+    const cliUpdate = meta.runtime_cli === 'codex' ? ri?.codex_restart || ri?.codex_update : ri?.cc_update;
     ccVer.classList.toggle('action-ver-dot', !!cliUpdate);
     ccVer.title = cliUpdate ? t('info.version_available', { version: cliUpdate }) : '';
 

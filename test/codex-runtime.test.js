@@ -106,7 +106,9 @@ test('CodexRolloutCollector ingests rollout fixture metrics from hook-derived pa
   assert.equal(runtimeUpdates.length, 1);
   assert.equal(runtimeUpdates[0].model_id, 'gpt-5.3-codex');
   assert.equal(runtimeUpdates[0].session_id, 'codex-session-1');
+  assert.equal(runtimeUpdates[0].cli_version, '0.130.0');
   assert.equal(collector.getRuntimeInfo().model_id, 'gpt-5.3-codex');
+  assert.equal(collector.getRuntimeInfo().cli_version, '0.130.0');
 
   const tokens = usageEvents(store);
   assert.equal(tokens.length, 1);
@@ -121,10 +123,11 @@ test('CodexRolloutCollector ingests rollout fixture metrics from hook-derived pa
   assert.equal(tokens[0].dimensions.context_pct, 6);
   assert.equal(tokens[0].dimensions.rate_limit, 37.5);
   assert.equal(tokens[0].dimensions.rate_limit_7d, 12.25);
-  const tokenOffset = Buffer.byteLength(`${fixtureText.split('\n')[0]}\n`, 'utf8');
+  const fixtureLines = fixtureText.split('\n');
+  const tokenOffset = Buffer.byteLength(`${fixtureLines[0]}\n${fixtureLines[1]}\n`, 'utf8');
   assert.equal(tokens[0].dimensions.rollout_offset, tokenOffset);
-  assert.equal(tokens[0].dimensions.rollout_line, 2);
-  assert.ok(tokens[0].dimensions.event_id.startsWith(`token_count-codex-session-1-${tokenOffset}-2-`));
+  assert.equal(tokens[0].dimensions.rollout_line, 3);
+  assert.ok(tokens[0].dimensions.event_id.startsWith(`token_count-codex-session-1-${tokenOffset}-3-`));
 
   const aggregateTokens = store.aggregateTokens({ sessionId: 'codex-session-1' });
   assert.equal(aggregateTokens.input, 12000);
@@ -150,7 +153,7 @@ test('CodexRolloutCollector ingests rollout fixture metrics from hook-derived pa
 
   const duration = store.queryMetrics({ name: 'turn_duration' });
   assert.equal(duration[0].metric_value, 45123);
-  assert.equal(duration[0].dimensions.rollout_line, 3);
+  assert.equal(duration[0].dimensions.rollout_line, 4);
 
   const [turnEvent] = store.queryEvents({ types: ['turn_complete'] });
   assert.equal(turnEvent.runtime, 'codex');
@@ -159,12 +162,163 @@ test('CodexRolloutCollector ingests rollout fixture metrics from hook-derived pa
   assert.equal(turnEvent.duration_ms, 45123);
   assert.equal(turnEvent.metadata.ttft_ms, 987);
   assert.equal(turnEvent.metadata.source_event, 'task_complete');
-  assert.equal(turnEvent.metadata.rollout_line, 3);
+  assert.equal(turnEvent.metadata.rollout_line, 4);
 
   const cursor = store.getCodexRolloutCursor(rolloutPath);
   assert.equal(cursor.byte_offset, fs.statSync(rolloutPath).size);
 
   assert.equal(collector.collect(), 0);
+
+  store.close();
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('CodexRolloutCollector extracts cli_version from session_meta without a model', () => {
+  const dir = tmpDir();
+  const rolloutPath = path.join(dir, 'rollout-codex-session-1.jsonl');
+  fs.writeFileSync(
+    rolloutPath,
+    '{"type":"session_meta","timestamp":"2026-05-23T01:00:00.000Z","payload":{"id":"codex-session-1","cli_version":"0.130.0"}}\n'
+  );
+
+  const store = new Store(path.join(dir, 'dashboard.db'));
+  store.upsertCodexRolloutPath({
+    runtime: 'codex',
+    sessionId: 'codex-session-1',
+    transcriptPath: rolloutPath,
+    lastEventAt: '2026-05-23T01:00:00.000Z'
+  });
+
+  const collector = new CodexRolloutCollector(store, { modelPrices: {} });
+  const runtimeUpdates = [];
+  collector._onRuntimeInfo = (info) => runtimeUpdates.push(info);
+
+  assert.equal(collector.collect(), 0);
+  assert.equal(runtimeUpdates.length, 1);
+  assert.equal(collector.getRuntimeInfo().cli_version, '0.130.0');
+  assert.equal(collector.getRuntimeInfo().model_id, undefined);
+
+  store.close();
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('CodexRolloutCollector preserves cli_version when turn_context arrives later', () => {
+  const dir = tmpDir();
+  const rolloutPath = path.join(dir, 'rollout-codex-session-1.jsonl');
+  fs.writeFileSync(
+    rolloutPath,
+    [
+      '{"type":"session_meta","timestamp":"2026-05-23T01:00:00.000Z","payload":{"id":"codex-session-1","cli_version":"0.130.0"}}',
+      '{"type":"turn_context","timestamp":"2026-05-23T01:00:01.000Z","payload":{"model":"gpt-5.3-codex","service_tier":"priority"}}',
+      ''
+    ].join('\n')
+  );
+
+  const store = new Store(path.join(dir, 'dashboard.db'));
+  store.upsertCodexRolloutPath({
+    runtime: 'codex',
+    sessionId: 'codex-session-1',
+    transcriptPath: rolloutPath,
+    lastEventAt: '2026-05-23T01:00:01.000Z'
+  });
+
+  const collector = new CodexRolloutCollector(store, { modelPrices: {} });
+  collector.collect();
+
+  assert.equal(collector.getRuntimeInfo().cli_version, '0.130.0');
+  assert.equal(collector.getRuntimeInfo().model_id, 'gpt-5.3-codex');
+  assert.equal(collector.getRuntimeInfo().service_tier, 'priority');
+
+  store.close();
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('CodexRolloutCollector preserves model and service tier when session_meta arrives later', () => {
+  const dir = tmpDir();
+  const rolloutPath = path.join(dir, 'rollout-codex-session-1.jsonl');
+  const firstLine = '{"type":"turn_context","timestamp":"2026-05-23T01:00:00.000Z","payload":{"model":"gpt-5.3-codex","service_tier":"priority"}}\n';
+  fs.writeFileSync(rolloutPath, firstLine);
+
+  const store = new Store(path.join(dir, 'dashboard.db'));
+  store.upsertCodexRolloutPath({
+    runtime: 'codex',
+    sessionId: 'codex-session-1',
+    transcriptPath: rolloutPath,
+    lastEventAt: '2026-05-23T01:00:00.000Z'
+  });
+
+  const collector = new CodexRolloutCollector(store, { modelPrices: {} });
+  collector.collect();
+  fs.appendFileSync(
+    rolloutPath,
+    '{"type":"session_meta","timestamp":"2026-05-23T01:00:01.000Z","payload":{"id":"codex-session-1","cli_version":"0.130.0"}}\n'
+  );
+
+  collector.collect();
+
+  assert.equal(collector.getRuntimeInfo().model_id, 'gpt-5.3-codex');
+  assert.equal(collector.getRuntimeInfo().service_tier, 'priority');
+  assert.equal(collector.getRuntimeInfo().cli_version, '0.130.0');
+
+  store.close();
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('CodexRolloutCollector backfills cli_version when cursor is already at EOF', () => {
+  const dir = tmpDir();
+  const rolloutPath = path.join(dir, 'rollout-codex-session-1.jsonl');
+  fs.writeFileSync(
+    rolloutPath,
+    '{"type":"session_meta","timestamp":"2026-05-23T01:00:00.000Z","payload":{"id":"codex-session-1","cli_version":"0.130.0"}}\n'
+  );
+
+  const store = new Store(path.join(dir, 'dashboard.db'));
+  store.upsertCodexRolloutPath({
+    runtime: 'codex',
+    sessionId: 'codex-session-1',
+    transcriptPath: rolloutPath,
+    lastEventAt: '2026-05-23T01:00:00.000Z'
+  });
+  store.upsertCodexRolloutCursor({
+    transcriptPath: rolloutPath,
+    byteOffset: fs.statSync(rolloutPath).size,
+    sessionId: 'codex-session-1'
+  });
+
+  const collector = new CodexRolloutCollector(store, { modelPrices: {} });
+
+  assert.equal(collector.collect(), 0);
+  assert.equal(collector.getRuntimeInfo().cli_version, '0.130.0');
+
+  store.close();
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('CodexRolloutCollector ignores session_meta without cli_version and keeps installed-version fallback available', () => {
+  const dir = tmpDir();
+  const rolloutPath = path.join(dir, 'rollout-codex-session-1.jsonl');
+  fs.writeFileSync(
+    rolloutPath,
+    [
+      '{"type":"session_meta","timestamp":"2026-05-23T01:00:00.000Z","payload":{"id":"codex-session-1"}}',
+      '{"type":"turn_context","timestamp":"2026-05-23T01:00:01.000Z","payload":{"model":"gpt-5.3-codex"}}',
+      ''
+    ].join('\n')
+  );
+
+  const store = new Store(path.join(dir, 'dashboard.db'));
+  store.upsertCodexRolloutPath({
+    runtime: 'codex',
+    sessionId: 'codex-session-1',
+    transcriptPath: rolloutPath,
+    lastEventAt: '2026-05-23T01:00:01.000Z'
+  });
+
+  const collector = new CodexRolloutCollector(store, { modelPrices: {} });
+  collector.collect();
+
+  assert.equal(collector.getRuntimeInfo().model_id, 'gpt-5.3-codex');
+  assert.equal(collector.getRuntimeInfo().cli_version, undefined);
 
   store.close();
   fs.rmSync(dir, { recursive: true, force: true });

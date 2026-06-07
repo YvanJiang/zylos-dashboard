@@ -151,13 +151,19 @@ function buildRuntimeInfo() {
   const settings = isClaudeRuntime ? readClaudeSettings() : {};
   const codexModels = activeRuntime === 'codex' ? readCodexModels() : [];
   const codexRuntimeInfo = codexRolloutCollector?.getRuntimeInfo?.() || null;
+  const codexRunning = activeRuntime === 'codex' ? codexRuntimeInfo?.cli_version || null : null;
   const codexModel = activeRuntime === 'codex' ? codexRuntimeInfo?.model_id || readCodexRootString('model', config.zylosDir) : null;
   const codexModelInfo = codexModels.find(m => m.id === codexModel) || codexModels[0] || null;
   const codexEffort = activeRuntime === 'codex' ? readCodexRootString('model_reasoning_effort', config.zylosDir) : null;
-  const needsRestart = isClaudeRuntime &&
+  const claudeNeedsRestart = isClaudeRuntime &&
     ((settings.model && slInfo?.model_id && settings.model !== slInfo.model_id) ||
     (settings.effortLevel && slInfo?.effort && settings.effortLevel !== slInfo.effort) ||
     (ccInstalledVersion && ccRunning && isNewerVersion(ccInstalledVersion, ccRunning)));
+  const codexNeedsRestart = activeRuntime === 'codex' &&
+    codexInstalledVersion &&
+    codexRunning &&
+    isNewerVersion(codexInstalledVersion, codexRunning);
+  const needsRestart = claudeNeedsRestart || codexNeedsRestart;
 
   const info = {
     zylos_version: zylosVersion,
@@ -168,7 +174,8 @@ function buildRuntimeInfo() {
     service_tier: activeRuntime === 'codex' ? codexRuntimeInfo?.service_tier || null : null,
     cc_version: ccRunning,
     cc_installed: ccInstalledVersion || null,
-    codex_version: codexInstalledVersion || null,
+    codex_version: codexRunning || codexInstalledVersion || null,
+    codex_running: codexRunning,
     codex_installed: codexInstalledVersion || null,
     pending_restart: !!needsRestart,
     zylos_upgrade_result: zylosUpgradeResult,
@@ -176,6 +183,9 @@ function buildRuntimeInfo() {
   // info bar: installed newer than running → show restart hint
   if (ccInstalledVersion && ccRunning && isNewerVersion(ccInstalledVersion, ccRunning)) {
     info.cc_restart = ccInstalledVersion;
+  }
+  if (codexInstalledVersion && codexRunning && isNewerVersion(codexInstalledVersion, codexRunning)) {
+    info.codex_restart = codexInstalledVersion;
   }
   // upgrade button: installed != latest → show upgrade dot
   const ccEffective = ccInstalledVersion || ccRunning;
@@ -543,7 +553,7 @@ function handleApi(req, res, pathname, url) {
     meta.zylos_version = zylosVersion;
     meta.runtime_cli = activeRuntime === 'codex' ? 'codex' : 'claude';
     meta.cc_version = activeRuntime === 'codex'
-      ? codexInstalledVersion || null
+      ? runtimeMeta?.codex_running || runtimeMeta?.codex_version || codexInstalledVersion || null
       : ccInstalledVersion || runtimeMeta?.cc_version || null;
     sendJson(res, 200, meta);
     return true;
