@@ -5,14 +5,15 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 
-function writeConfig(zylosDir, password = 'secret') {
+function writeConfig(zylosDir, password = 'secret', extra = {}) {
   const configDir = path.join(zylosDir, 'components', 'dashboard');
   fs.mkdirSync(configDir, { recursive: true });
   fs.writeFileSync(path.join(configDir, 'config.json'), `${JSON.stringify({
     auth: {
       enabled: true,
       password
-    }
+    },
+    ...extra
   }, null, 2)}\n`);
 }
 
@@ -201,6 +202,76 @@ test('session cookie survives server restart (SQLite persistence)', async () => 
     assert.equal(unauthed.status, 401, 'request without cookie should be rejected');
   } finally {
     await closeServer(server2);
+  }
+});
+
+test('/api/state exposes stable agent identity without fleet secrets', async () => {
+  const zylosDir = fs.mkdtempSync(path.join(os.tmpdir(), 'zylos-dashboard-test-'));
+  writeConfig(zylosDir, 'secret', {
+    auth: { enabled: false },
+    agent: { name: 'Jinglever', id: 'jinglever-main' },
+    fleet: {
+      agents: [
+        {
+          name: 'Remote',
+          base_url: 'https://remote.example.test/dashboard',
+          read_api_key: 'zylos_ak_secret'
+        }
+      ]
+    }
+  });
+
+  const { origin, server } = await makeServerWithDir(zylosDir);
+  try {
+    const resp = await fetch(`${origin}/api/state`);
+    assert.equal(resp.status, 200);
+    const body = await resp.json();
+    assert.equal(body.agent.name, 'Jinglever');
+    assert.equal(body.agent.id, 'jinglever-main');
+    // Identity now also carries the deterministic mascot tint color/hue.
+    assert.equal(typeof body.agent.color, 'string');
+    assert.equal(typeof body.agent.hue, 'number');
+    assert.equal(JSON.stringify(body).includes('zylos_ak_secret'), false);
+    assert.equal(JSON.stringify(body).includes('read_api_key'), false);
+  } finally {
+    await closeServer(server);
+    fs.rmSync(zylosDir, { recursive: true, force: true });
+  }
+});
+
+test('/api/fleet exposes safe records without registry secrets', async () => {
+  const zylosDir = fs.mkdtempSync(path.join(os.tmpdir(), 'zylos-dashboard-test-'));
+  writeConfig(zylosDir, 'secret', {
+    auth: { enabled: false },
+    fleet: {
+      agents: [
+        {
+          name: 'Remote',
+          base_url: 'https://remote.example.test/dashboard',
+          read_api_key: 'zylos_ak_secret'
+        }
+      ]
+    }
+  });
+
+  const { origin, server } = await makeServerWithDir(zylosDir);
+  try {
+    const resp = await fetch(`${origin}/api/fleet`);
+    assert.equal(resp.status, 200);
+    const body = await resp.json();
+    // Self record is always injected first, followed by external agents.
+    assert.equal(body.count, 2);
+    assert.equal(body.agents[0].self, true);
+    assert.equal(body.agents[1].self, false);
+    assert.equal(body.agents[1].name, 'Remote');
+    assert.equal(body.agents[1].health_reason, 'not_polled');
+    const serialized = JSON.stringify(body);
+    assert.equal(serialized.includes('zylos_ak_secret'), false);
+    assert.equal(serialized.includes('read_api_key'), false);
+    assert.equal(serialized.includes('read_session_token'), false);
+  } finally {
+    await closeServer(server);
+    fs.rmSync(zylosDir, { recursive: true, force: true });
   }
 });
 

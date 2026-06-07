@@ -1,5 +1,6 @@
 import { pct, resolveCpuDisplay } from './gauge-utils.js';
 import { setAssetRoot, getLocale, initI18n, t, renderI18n } from './i18n.js';
+import { renderPulseWall, stateMood, MASCOT_BY_MOOD } from './pulse-wall.js';
 
 const BASE_PATH = document.documentElement.dataset.basePath || '';
 const ASSET_ROOT = `${BASE_PATH}/_assets`;
@@ -18,6 +19,7 @@ const state = {
   system: null,
   summary: null,
   communication: null,
+  fleet: null,
   timeline: null,
   sourceUpdatedAt: null,
   metricsUpdatedAt: null,
@@ -27,9 +29,12 @@ const state = {
   timelineUpdatedAt: null,
   timer: null,
   pollTimer: null,
+  fleetTimer: null,
   eventSource: null,
   charts: {},
-  lastCpuPct: null
+  lastCpuPct: null,
+  multiAgent: false,
+  fleetViewActive: false
 };
 
 const $ = (sel) => document.querySelector(sel);
@@ -131,6 +136,31 @@ function fmtResetTime(unixSeconds) {
 
 function esc(v) {
   return String(v ?? '').replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;');
+}
+
+function pulseWallLabels() {
+  return {
+    title: t('pulse.title'),
+    subtitle: t('pulse.subtitle'),
+    totalCost: t('pulse.total_cost'),
+    busy: t('pulse.busy'),
+    thinking: t('pulse.thinking'),
+    idle: t('pulse.idle'),
+    stuck: t('pulse.stuck'),
+    offline: t('pulse.offline'),
+    unreachable: t('pulse.unreachable'),
+    versionUnsupported: t('pulse.version_unsupported'),
+    authFailed: t('pulse.auth_failed'),
+    noActivity: t('pulse.no_activity'),
+    lastSeen: t('pulse.last_seen'),
+    context: t('label.context'),
+    justNow: t('time.just_now'),
+    secondsAgo: t('time.seconds'),
+    minutesAgo: t('pulse.minutes_ago'),
+    hoursAgo: t('pulse.hours_ago'),
+    empty: t('pulse.empty'),
+    you: t('pulse.you')
+  };
 }
 
 // ─── State helpers ───
@@ -248,49 +278,6 @@ function renderInfoBar() {
 const FEED_MAX = 5;
 const prevToolIds = new Set();
 
-function mascotSvg(agentState) {
-  const s = normState(agentState);
-  const body = '#0d9488';
-  const screen = '#e0f2fe';
-  let eyes, mouth, extra = '';
-  if (s === 'BUSY') {
-    eyes = `<rect x="4" y="5" width="1" height="1" fill="#101827"/><rect x="5" y="6" width="1" height="1" fill="#101827"/><rect x="4" y="7" width="1" height="1" fill="#101827"/><rect x="11" y="5" width="1" height="1" fill="#101827"/><rect x="10" y="6" width="1" height="1" fill="#101827"/><rect x="11" y="7" width="1" height="1" fill="#101827"/>`;
-    mouth = `<rect x="6" y="9" width="4" height="1" fill="#101827"/>`;
-  } else if (s === 'IDLE') {
-    eyes = `<rect x="5" y="6" width="2" height="1" fill="#101827"/><rect x="9" y="6" width="2" height="1" fill="#101827"/>`;
-    mouth = `<rect x="5" y="9" width="1" height="1" fill="#101827"/><rect x="6" y="10" width="4" height="1" fill="#101827"/><rect x="10" y="9" width="1" height="1" fill="#101827"/>`;
-  } else if (s === 'OFFLINE') {
-    eyes = `<rect x="5" y="6" width="2" height="1" fill="#64748b"/><rect x="9" y="6" width="2" height="1" fill="#64748b"/>`;
-    mouth = `<rect x="6" y="9" width="4" height="1" fill="#64748b"/>`;
-    extra = `<rect x="5" y="4" width="6" height="1" fill="#64748b" opacity="0.5"/>`;
-  } else if (s === 'WAITING_HUMAN') {
-    eyes = `<rect x="5" y="5" width="2" height="2" fill="#2563eb"/><rect x="9" y="5" width="2" height="2" fill="#2563eb"/>`;
-    mouth = `<rect x="7" y="9" width="2" height="2" fill="#101827"/>`;
-  } else if (s === 'POSSIBLY_STUCK') {
-    eyes = `<rect x="5" y="5" width="2" height="2" fill="#ea580c"/><rect x="9" y="5" width="2" height="2" fill="#ea580c"/>`;
-    mouth = `<rect x="6" y="9" width="4" height="1" fill="#101827"/>`;
-    extra = `<rect x="12" y="2" width="1" height="1" fill="#ea580c"/><rect x="13" y="1" width="1" height="1" fill="#ea580c"/>`;
-  } else if (s === 'STUCK') {
-    eyes = `<rect x="5" y="5" width="1" height="1" fill="#dc2626"/><rect x="7" y="6" width="1" height="1" fill="#dc2626"/><rect x="6" y="5" width="1" height="1" fill="#dc2626"/><rect x="6" y="6" width="1" height="1" fill="#dc2626"/><rect x="9" y="5" width="1" height="1" fill="#dc2626"/><rect x="11" y="6" width="1" height="1" fill="#dc2626"/><rect x="10" y="5" width="1" height="1" fill="#dc2626"/><rect x="10" y="6" width="1" height="1" fill="#dc2626"/>`;
-    mouth = `<rect x="7" y="9" width="2" height="2" fill="#dc2626"/>`;
-  } else {
-    eyes = `<rect x="6" y="5" width="1" height="2" fill="#6b7280"/><rect x="9" y="5" width="1" height="2" fill="#6b7280"/>`;
-    mouth = `<rect x="6" y="9" width="4" height="1" fill="#6b7280"/>`;
-  }
-  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" shape-rendering="crispEdges">
-    <rect x="3" y="1" width="10" height="2" fill="${body}" rx="0"/>
-    <rect x="2" y="3" width="12" height="10" fill="${body}"/>
-    <rect x="3" y="3" width="10" height="9" fill="${screen}"/>
-    ${eyes}${mouth}${extra}
-    <rect x="2" y="13" width="4" height="2" fill="${body}"/>
-    <rect x="10" y="13" width="4" height="2" fill="${body}"/>
-    <rect x="0" y="5" width="2" height="3" fill="${body}"/>
-    <rect x="14" y="5" width="2" height="3" fill="${body}"/>
-    <rect x="6" y="0" width="1" height="1" fill="${body}"/>
-    <rect x="9" y="0" width="1" height="1" fill="${body}"/>
-  </svg>`;
-}
-
 function mascotClass(agentState) {
   const s = normState(agentState);
   if (s === 'BUSY') return 'mascot-busy';
@@ -311,7 +298,14 @@ function renderState() {
   if (mascotArea) {
     mascotArea.className = `mascot-area ${mascotClass(p?.state)}`;
     const sprite = $('#mascot-sprite');
-    if (sprite) sprite.innerHTML = mascotSvg(p?.state);
+    if (sprite) {
+      // Same octopus mascot set + mood logic as the Pulse Wall, tinted with this
+      // agent's own hue, so the agent looks identical in its tile and its detail.
+      const mood = stateMood({ state: p?.state, activity: p?.activity });
+      const file = MASCOT_BY_MOOD[mood] || MASCOT_BY_MOOD.idle;
+      const hue = Number(p?.agent?.hue) || 0;
+      sprite.innerHTML = `<img class="mascot-img" src="${ASSET_ROOT}/img/mascot/${file}" alt="" style="filter:hue-rotate(${hue}deg)">`;
+    }
   }
   $('#state-updated').textContent = fmtAge(p?.updated_at || state.sourceUpdatedAt);
 
@@ -960,6 +954,18 @@ function renderComm() {
   $('#comm-updated').textContent = fmtAge(state.commUpdatedAt);
 }
 
+function renderFleet() {
+  const container = $('#pulse-wall-root');
+  if (!container) return;
+  renderPulseWall(container, state.fleet, {
+    basePath: BASE_PATH,
+    mascotRoot: `${ASSET_ROOT}/img/mascot`,
+    labels: pulseWallLabels()
+  });
+  const updated = $('#fleet-updated');
+  if (updated) updated.textContent = fmtAge(state.fleet?.updated_at);
+}
+
 function renderConnection(mode) {
   const pill = $('#connection-status');
   pill.dataset.state = mode;
@@ -977,6 +983,7 @@ function renderAll() {
   renderHealth();
   renderTimeline();
   renderComm();
+  renderFleet();
 }
 
 // ─── Data fetching ───
@@ -1060,9 +1067,138 @@ async function refreshComm() {
   renderComm();
 }
 
+async function refreshFleet() {
+  try {
+    state.fleet = await fetchJson('/api/fleet');
+    renderFleet();
+    renderConnection(state.eventSource?.readyState === EventSource.OPEN ? 'live' : 'polling');
+    return state.fleet;
+  } catch (err) {
+    renderConnection('degraded');
+    throw err;
+  }
+}
+
+function activeTabName() {
+  return document.querySelector('.tab.active')?.dataset.tab || 'overview';
+}
+
+// ─── Fleet view switch (multi-agent mode) ───
+// In multi-agent mode the Pulse Wall is the top-level landing view and the
+// single-agent dashboard is the "agent detail" view, reached by clicking the
+// self tile. In single mode only the agent dashboard exists.
+const VIEW_ANIM_CLASSES = ['is-entering', 'is-leaving', 'v-enter', 'v-leave-to-fleet', 'v-leave-to-agent'];
+
+function prefersReducedMotion() {
+  return window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+}
+
+// Animate between the two top-level views (fleet wall ↔ agent detail). The two
+// views share a grid cell (#view-stack), so a cross-fade + subtle zoom reads as
+// "zoom out to the fleet" / "zoom into one agent". Falls back to an instant swap
+// when animation is unavailable or unwanted (reduced motion, no stack, already
+// showing the target).
+function transitionView(target, { animate = true } = {}) {
+  const stack = $('#view-stack');
+  const fleetView = $('#fleet-view');
+  const agentDetail = $('#agent-detail');
+  if (!fleetView || !agentDetail) return;
+  const inEl = target === 'fleet' ? fleetView : agentDetail;
+  const outEl = target === 'fleet' ? agentDetail : fleetView;
+
+  const cleanup = () => {
+    [inEl, outEl].forEach((el) => el.classList.remove(...VIEW_ANIM_CLASSES));
+    if (stack) stack.classList.remove('is-animating');
+  };
+
+  const alreadyActive = !inEl.hidden && outEl.hidden;
+  if (!animate || !stack || alreadyActive || prefersReducedMotion()) {
+    inEl.hidden = false;
+    outEl.hidden = true;
+    cleanup();
+    return;
+  }
+
+  const leaveClass = target === 'fleet' ? 'v-leave-to-fleet' : 'v-leave-to-agent';
+  // Render both views during the transition.
+  stack.classList.add('is-animating');
+  inEl.classList.add('is-entering', 'v-enter');
+  inEl.hidden = false;
+  outEl.classList.add('is-leaving');
+  outEl.hidden = false;
+  // Force reflow so the v-enter start state is applied before we animate away.
+  void inEl.offsetWidth;
+
+  const token = {};
+  inEl._viewAnimToken = token;
+
+  requestAnimationFrame(() => {
+    if (inEl._viewAnimToken !== token) return;
+    inEl.classList.remove('v-enter');
+    outEl.classList.add(leaveClass);
+  });
+
+  let done = false;
+  const finish = () => {
+    if (done || inEl._viewAnimToken !== token) return;
+    done = true;
+    inEl.removeEventListener('transitionend', onEnd);
+    outEl.hidden = true;
+    cleanup();
+  };
+  const onEnd = (e) => {
+    if (e.target !== inEl) return;
+    if (e.propertyName !== 'opacity' && e.propertyName !== 'transform') return;
+    finish();
+  };
+  inEl.addEventListener('transitionend', onEnd);
+  setTimeout(finish, 460); // fallback if transitionend doesn't fire
+}
+
+function showFleetView(opts = {}) {
+  if (!state.multiAgent) return;
+  state.fleetViewActive = true;
+  refreshFleet().catch(() => {});
+  transitionView('fleet', opts);
+  syncFleetPolling();
+}
+
+function showAgentDetail(opts = {}) {
+  state.fleetViewActive = false;
+  transitionView('agent', opts);
+  syncFleetPolling();
+}
+
+function stopFleetPolling() {
+  if (state.fleetTimer) {
+    clearInterval(state.fleetTimer);
+    state.fleetTimer = null;
+  }
+}
+
+function shouldPollFleetFast() {
+  return state.fleetViewActive && document.visibilityState !== 'hidden';
+}
+
+function startFleetPolling() {
+  if (!shouldPollFleetFast() || state.fleetTimer) return;
+  state.fleetTimer = setInterval(() => {
+    refreshFleet().catch(() => {});
+  }, 3_000);
+}
+
+function syncFleetPolling() {
+  if (shouldPollFleetFast()) {
+    startFleetPolling();
+  } else {
+    stopFleetPolling();
+  }
+}
+
 async function refreshAll() {
   const stateResult = await Promise.allSettled([refreshState()]);
   const fetches = [refreshHealth(), refreshComm(), refreshMetrics(), refreshTimeline(), refreshSummary()];
+  if (state.fleetViewActive) fetches.push(refreshFleet());
   const restResults = await Promise.allSettled(fetches);
   const all = [...stateResult, ...restResults];
   const ok = all.some((r) => r.status === 'fulfilled');
@@ -1150,17 +1286,84 @@ function scheduleSseReconnect() {
 
 // ─── Tabs ───
 function initTabs() {
+  const activateTab = (name, push = false) => {
+    document.querySelectorAll('.tab').forEach((t) => t.classList.toggle('active', t.dataset.tab === name));
+    document.querySelectorAll('.tab-panel').forEach((p) => {
+      const active = p.id === `tab-${name}`;
+      p.classList.toggle('active', active);
+      p.hidden = !active;
+    });
+    if (name === 'trends') refreshCharts();
+    if (push) {
+      const path = name === 'overview' ? '/' : `/${name}`;
+      window.history.pushState({ tab: name }, '', api(path));
+    }
+  };
   document.querySelectorAll('.tab').forEach((btn) => {
     btn.addEventListener('click', () => {
-      document.querySelectorAll('.tab').forEach((t) => t.classList.toggle('active', t === btn));
-      document.querySelectorAll('.tab-panel').forEach((p) => {
-        const active = p.id === `tab-${btn.dataset.tab}`;
-        p.classList.toggle('active', active);
-        p.hidden = !active;
-      });
-      if (btn.dataset.tab === 'trends') refreshCharts();
+      activateTab(btn.dataset.tab, true);
     });
   });
+  window.addEventListener('popstate', () => {
+    const tab = window.location.pathname.endsWith('/trends') ? 'trends' : 'overview';
+    activateTab(tab, false);
+  });
+  document.addEventListener('visibilitychange', syncFleetPolling);
+  const initialTab = window.location.pathname.endsWith('/trends') ? 'trends' : 'overview';
+  activateTab(initialTab, false);
+}
+
+// ─── Fleet mode init ───
+// Decide landing view based on fleet size. The self record is always present,
+// so length >= 2 means at least one external agent is configured.
+function applyFleetMode(fleet) {
+  state.multiAgent = (fleet?.agents?.length || 0) >= 2;
+  const backBtn = $('#back-to-fleet');
+  const fleetView = $('#fleet-view');
+  const agentDetail = $('#agent-detail');
+  if (!state.multiAgent) {
+    // Single mode: only the agent dashboard exists, no fleet view, no back control.
+    state.fleetViewActive = false;
+    if (backBtn) backBtn.hidden = true;
+    if (fleetView) fleetView.hidden = true;
+    if (agentDetail) agentDetail.hidden = false;
+    syncFleetPolling();
+    return;
+  }
+  // Multi-agent mode: the Pulse Wall is the landing view. The first paint shows
+  // the single-agent dashboard (it is the safe default if JS/fleet fails), so
+  // rather than swap instantly we briefly let it settle, then zoom out to the
+  // wall — turning the unavoidable first frame into a deliberate transition.
+  if (backBtn) backBtn.hidden = false;
+  state.fleetViewActive = false;
+  if (fleetView) fleetView.hidden = true;
+  if (agentDetail) agentDetail.hidden = false;
+  syncFleetPolling();
+  if (prefersReducedMotion()) {
+    showFleetView({ animate: false });
+  } else {
+    setTimeout(() => showFleetView({ animate: true }), 380);
+  }
+}
+
+function initFleetMode() {
+  // Intercept self-tile clicks: switch to the agent dashboard instead of a
+  // full navigation that would just reload the wall. External tiles navigate
+  // normally to /fleet/<name>/.
+  const root = $('#pulse-wall-root');
+  if (root) {
+    root.addEventListener('click', (e) => {
+      const tile = e.target.closest('.pulse-tile');
+      if (tile && tile.dataset.self === 'true') {
+        e.preventDefault();
+        showAgentDetail();
+      }
+    });
+  }
+  const backBtn = $('#back-to-fleet');
+  if (backBtn) {
+    backBtn.addEventListener('click', () => showFleetView());
+  }
 }
 
 function initLocaleToggle() {
@@ -2137,11 +2340,13 @@ function initInfoBarButtons() {
 function startTimers() {
   state.timer = setInterval(() => { renderState(); renderMetrics(); renderHealth(); }, 1000);
   state.pollTimer = setInterval(refreshAll, 30_000);
+  syncFleetPolling();
 }
 
 window.addEventListener('beforeunload', () => {
   clearInterval(state.timer);
   clearInterval(state.pollTimer);
+  stopFleetPolling();
   clearTimeout(state.sseReconnectTimer);
   state.eventSource?.close();
 });
@@ -2150,6 +2355,7 @@ window.addEventListener('beforeunload', () => {
 initTheme();
 await initI18n();
 initTabs();
+initFleetMode();
 initLocaleToggle();
 initLogout();
 initTips();
@@ -2158,5 +2364,13 @@ renderAll();
 initCharts();
 initTrendControls();
 connectSse();
+// Fetch the fleet early to choose the landing view (Pulse Wall vs single agent).
+try {
+  const fleet = await refreshFleet();
+  applyFleetMode(fleet);
+} catch {
+  // Fleet unavailable — fall back to single-agent dashboard.
+  applyFleetMode(null);
+}
 await refreshAll();
 startTimers();

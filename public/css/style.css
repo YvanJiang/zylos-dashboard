@@ -184,6 +184,345 @@ h2 { margin-bottom: 0; font-size: 15px; font-weight: 600; }
 main { padding: var(--space-md) var(--space-lg) var(--space-xl); }
 .tab-panel[hidden] { display: none; }
 
+/* ─── Top-level view stack (fleet wall ↔ agent detail) ─── */
+/* Both top-level views share one grid cell so they can cross-fade/zoom
+   over each other during a transition without layout shift. When idle, the
+   inactive view is [hidden] (display:none) so only the active view sizes the
+   container and receives input. */
+.view-stack { display: grid; }
+.view-stack > .app-view { grid-area: 1 / 1; min-width: 0; }
+.app-view {
+  opacity: 1;
+  transform: none;
+  transition: opacity 280ms ease, transform 280ms ease;
+}
+.app-view[hidden] { display: none; }
+/* Keep both views rendered (and stacked) while a transition is in flight,
+   even though the leaving view will get the hidden attribute at the end. */
+.view-stack.is-animating > .app-view.is-leaving,
+.view-stack.is-animating > .app-view.is-entering { display: block; }
+/* The outgoing view shouldn't capture clicks while it fades away. */
+.view-stack.is-animating > .app-view.is-leaving { pointer-events: none; }
+/* Entering view starts slightly small + transparent, then settles to base. */
+.app-view.v-enter { opacity: 0; transform: scale(0.985); }
+/* Leaving view fades out; direction sets the zoom sense:
+   to-fleet → the single agent recedes (scales down, "zoom out to fleet");
+   to-agent → the wall is pushed through (scales up, "zoom into agent"). */
+.app-view.v-leave-to-fleet { opacity: 0; transform: scale(0.965); }
+.app-view.v-leave-to-agent { opacity: 0; transform: scale(1.025); }
+@media (prefers-reduced-motion: reduce) {
+  .app-view { transition: none; }
+}
+
+/* ─── Fleet view / Pulse Wall ─── */
+.fleet-view {
+  padding: var(--space-md) var(--space-lg) var(--space-xl);
+}
+.back-to-fleet {
+  display: inline-flex;
+  align-items: center;
+  height: 30px;
+  margin: var(--space-sm) 0 0 var(--space-lg);
+  padding: 0 12px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: var(--bg-secondary);
+  color: var(--text-dim);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 150ms ease;
+}
+.back-to-fleet:hover { background: var(--bg-elevated); border-color: var(--border-focus); color: var(--text); }
+.back-to-fleet:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 2px; }
+.pulse-panel-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-md);
+  max-width: 1400px;
+  margin: 0 auto var(--space-md);
+}
+.pulse-panel-head p {
+  margin: 2px 0 0;
+  color: var(--text-muted);
+}
+.pulse-wall {
+  max-width: 1400px;
+  margin: 0 auto;
+  padding: var(--space-md);
+  border-radius: var(--radius-sm);
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+}
+.pulse-heartbeat-bar {
+  display: grid;
+  grid-template-columns: minmax(180px, 1fr) auto auto;
+  gap: var(--space-md);
+  align-items: center;
+  padding: var(--space-md);
+  border-bottom: 1px solid var(--border);
+}
+.pulse-heartbeat-bar h2 {
+  color: var(--text);
+  font-size: 16px;
+}
+.pulse-heartbeat-bar p {
+  margin: 2px 0 0;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+.fleet-pulse-meter,
+.fleet-cost {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-sm);
+  color: var(--text-dim);
+  font-size: 12px;
+  white-space: nowrap;
+}
+.fleet-pulse-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--green);
+  box-shadow: 0 0 0 0 color-mix(in srgb, var(--green) 45%, transparent);
+  animation: fleet-pulse 1.35s ease-in-out infinite;
+}
+.fleet-cost {
+  justify-content: flex-end;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 0;
+}
+.fleet-cost strong,
+.fleet-pulse-meter strong {
+  color: var(--text);
+  font-weight: 650;
+}
+.pulse-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: var(--space-md);
+  padding: var(--space-md);
+}
+.pulse-tile {
+  --agent-accent: #64748b;
+  --agent-hue: 0deg;
+  --pulse-rate: 1s;
+  display: grid;
+  grid-template-rows: auto 1fr auto auto auto;
+  /* As a grid item, default min-width:auto would keep the 1fr column from
+     shrinking below the tile's min-content (its nowrap rows), overflowing the
+     viewport on narrow screens. min-width:0 lets it shrink so inner rows
+     ellipsize instead of forcing horizontal overflow. */
+  min-width: 0;
+  min-height: 276px;
+  padding: var(--space-md);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  text-decoration: none;
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--agent-accent) 12%, transparent), transparent 44%),
+    var(--bg-elevated);
+  border: 1px solid color-mix(in srgb, var(--agent-accent) 30%, var(--border));
+  box-shadow: var(--shadow-card);
+  transition: transform 150ms ease, border-color 150ms ease, box-shadow 150ms ease;
+}
+.pulse-tile:hover {
+  transform: translateY(-1px);
+  border-color: color-mix(in srgb, var(--agent-accent) 55%, var(--border-focus));
+  box-shadow: var(--shadow-card-hover);
+}
+.pulse-tile-top,
+.pulse-tile-bottom,
+.pulse-now {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+}
+.pulse-tile-top {
+  justify-content: space-between;
+}
+.pulse-name {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text);
+  font-weight: 700;
+}
+.pulse-self-badge {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--accent-dim);
+  color: var(--accent-hover);
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  vertical-align: middle;
+}
+.pulse-state,
+.pulse-tile-reason {
+  color: var(--text-dim);
+  font-size: 11px;
+  white-space: nowrap;
+}
+.pulse-dot {
+  width: 8px;
+  height: 8px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: var(--agent-accent);
+  box-shadow: 0 0 0 0 color-mix(in srgb, var(--agent-accent) 42%, transparent);
+  animation: agent-pulse var(--pulse-rate) ease-in-out infinite;
+}
+.pulse-mascot-wrap {
+  position: relative;
+  display: grid;
+  place-items: center;
+  min-height: 128px;
+}
+.context-ring {
+  position: absolute;
+  width: 116px;
+  height: 116px;
+  border-radius: 50%;
+  background:
+    conic-gradient(var(--agent-accent) calc(var(--context-pct) * 1%), color-mix(in srgb, var(--text-muted) 22%, transparent) 0),
+    radial-gradient(circle at center, var(--bg-elevated) 59%, transparent 60%);
+  filter: drop-shadow(0 0 18px color-mix(in srgb, var(--agent-accent) 24%, transparent));
+}
+.pulse-mascot {
+  position: relative;
+  z-index: 1;
+  width: 96px;
+  height: 96px;
+  object-fit: contain;
+  filter: hue-rotate(var(--agent-hue)) drop-shadow(0 8px 14px rgba(15, 23, 42, 0.16));
+}
+.pulse-now {
+  min-height: 34px;
+  padding: 7px 9px;
+  border-radius: var(--radius-xs);
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+}
+.pulse-tool-glyph {
+  display: inline-grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: var(--agent-accent);
+  color: #ffffff;
+  font-weight: 800;
+}
+.pulse-verb {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-dim);
+  font-size: 12px;
+}
+.pulse-tile-bottom {
+  margin-top: var(--space-sm);
+  align-items: end;
+  color: var(--text-muted);
+  font-size: 11px;
+}
+.pulse-cost {
+  color: var(--text);
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 12px;
+}
+.pulse-sparkline {
+  width: 48px;
+  height: 20px;
+  flex: 0 0 48px;
+}
+.pulse-sparkline polyline {
+  fill: none;
+  stroke: var(--agent-accent);
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.pulse-last-seen {
+  min-width: 0;
+  margin-left: auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.pulse-tile-reason {
+  display: inline-flex;
+  width: fit-content;
+  max-width: 100%;
+  margin-top: var(--space-sm);
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--text-muted) 14%, transparent);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.pulse-tile.is-self {
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--border-focus));
+}
+.pulse-tile.is-offline {
+  filter: grayscale(0.7);
+  opacity: 0.7;
+}
+.pulse-tile.is-offline .pulse-dot {
+  animation: none;
+  background: var(--state-offline);
+  box-shadow: none;
+}
+.pulse-tile.is-offline .pulse-mascot {
+  filter: grayscale(1) opacity(0.78);
+}
+@keyframes agent-pulse {
+  0%, 100% { transform: scale(0.82); opacity: 0.62; box-shadow: 0 0 0 0 color-mix(in srgb, var(--agent-accent) 42%, transparent); }
+  50% { transform: scale(1.08); opacity: 1; box-shadow: 0 0 0 8px transparent; }
+}
+@keyframes fleet-pulse {
+  0%, 100% { transform: scale(0.9); opacity: 0.7; }
+  50% { transform: scale(1.15); opacity: 1; }
+}
+@media (max-width: 760px) {
+  .pulse-panel-head,
+  .pulse-heartbeat-bar {
+    grid-template-columns: 1fr;
+    align-items: start;
+  }
+  .pulse-panel-head {
+    flex-direction: column;
+  }
+  .fleet-cost {
+    align-items: flex-start;
+  }
+  .pulse-grid {
+    grid-template-columns: 1fr;
+  }
+  /* Reclaim horizontal space and give the back control a touch-sized target. */
+  .fleet-view {
+    padding-left: var(--space-md);
+    padding-right: var(--space-md);
+  }
+  .back-to-fleet {
+    height: 40px;
+    margin-left: var(--space-md);
+  }
+}
+
 /* ─── Overview Grid ─── */
 .overview-grid {
   display: grid;
@@ -404,6 +743,16 @@ main { padding: var(--space-md) var(--space-lg) var(--space-xl); }
   width: 100%;
   height: 100%;
   image-rendering: pixelated;
+}
+
+/* New octopus mascot PNG (matches the Pulse Wall). Override the pixel-art
+   rendering used by the legacy SVG sprite so the artwork stays smooth. */
+.mascot-sprite img.mascot-img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  image-rendering: auto;
+  display: block;
 }
 
 .mascot-busy .mascot-sprite { animation: mascot-bob 0.8s ease-in-out infinite; }
