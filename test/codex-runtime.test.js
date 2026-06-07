@@ -324,6 +324,59 @@ test('CodexRolloutCollector ignores session_meta without cli_version and keeps i
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
+test('CodexRolloutCollector does not carry cli_version across active session changes', () => {
+  const dir = tmpDir();
+  const rolloutAPath = path.join(dir, 'rollout-codex-session-a.jsonl');
+  const rolloutBPath = path.join(dir, 'rollout-codex-session-b.jsonl');
+  fs.writeFileSync(
+    rolloutAPath,
+    [
+      '{"type":"session_meta","timestamp":"2026-05-23T01:00:00.000Z","payload":{"id":"codex-session-a","cli_version":"0.130.0"}}',
+      '{"type":"turn_context","timestamp":"2026-05-23T01:00:01.000Z","payload":{"model":"gpt-5.3-codex"}}',
+      ''
+    ].join('\n')
+  );
+  fs.writeFileSync(
+    rolloutBPath,
+    '{"type":"turn_context","timestamp":"2026-05-23T01:01:00.000Z","payload":{"model":"gpt-5.5"}}\n'
+  );
+
+  const store = new Store(path.join(dir, 'dashboard.db'));
+  store.upsertCodexRolloutPath({
+    runtime: 'codex',
+    sessionId: 'codex-session-a',
+    transcriptPath: rolloutAPath,
+    lastEventAt: '2026-05-23T01:00:01.000Z'
+  });
+
+  const collector = new CodexRolloutCollector(store, { modelPrices: {} });
+  collector.collect();
+
+  assert.equal(collector.getRuntimeInfo().session_id, 'codex-session-a');
+  assert.equal(collector.getRuntimeInfo().model_id, 'gpt-5.3-codex');
+  assert.equal(collector.getRuntimeInfo().cli_version, '0.130.0');
+
+  store.upsertCodexRolloutPath({
+    runtime: 'codex',
+    sessionId: 'codex-session-b',
+    transcriptPath: rolloutBPath,
+    lastEventAt: '2026-05-23T01:01:00.000Z'
+  });
+  store.db.prepare(`
+    UPDATE codex_rollout_paths
+    SET updated_at = '2099-05-23 01:01:00'
+    WHERE session_id = 'codex-session-b'
+  `).run();
+  collector.collect();
+
+  assert.equal(collector.getRuntimeInfo().session_id, 'codex-session-b');
+  assert.equal(collector.getRuntimeInfo().model_id, 'gpt-5.5');
+  assert.equal(collector.getRuntimeInfo().cli_version, undefined);
+
+  store.close();
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
 test('CodexRolloutCollector deduplicates metrics when rollout cursor is replayed', () => {
   const dir = tmpDir();
   const rolloutPath = path.join(dir, 'rollout-codex-session-1.jsonl');

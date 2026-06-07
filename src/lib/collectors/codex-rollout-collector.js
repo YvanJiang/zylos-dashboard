@@ -718,7 +718,8 @@ export class CodexRolloutCollector {
 
   _updateRuntimeInfo({ sessionId, model, serviceTier, cliVersion, timestamp }) {
     const prev = this._runtimeInfo;
-    const next = { ...(prev || {}) };
+    const sessionChanged = sessionId && prev?.session_id && sessionId !== prev.session_id;
+    const next = sessionChanged ? {} : { ...(prev || {}) };
     let hasUpdate = false;
     if (model != null) {
       next.model = model;
