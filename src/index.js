@@ -28,6 +28,8 @@ import { CodexRolloutCollector } from './lib/collectors/codex-rollout-collector.
 import { StateEngine } from './lib/state-engine.js';
 import { MetricResolver } from './lib/metric-resolver.js';
 import { resolveAggregateValue } from './lib/metric-aggregate.js';
+import { runMetricMaintenance } from './lib/metric-maintenance.js';
+import { buildSystemPayload } from './lib/system-api.js';
 import { SseHub } from './lib/sse.js';
 import { C4Reader } from './lib/c4-reader.js';
 import { consumeZylosUpgradeMarker, handleAction, getActionsMeta, readCodexModels, readCodexRootString } from './lib/actions.js';
@@ -347,6 +349,15 @@ function periodBounds(period, tz, stateEngine) {
   return undefined;
 }
 
+function latestMetricRow(metricName, source) {
+  const rows = store.queryMetrics({
+    name: metricName,
+    since: new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString(),
+    until: new Date().toISOString()
+  }).filter(r => !source || r.source === source);
+  return rows.length > 0 ? rows[rows.length - 1] : null;
+}
+
 function handleApi(req, res, pathname, url) {
   if (pathname === '/api/health') {
     const sourceHealth = stateEngine.getSourceHealth();
@@ -388,16 +399,10 @@ function handleApi(req, res, pathname, url) {
   if (pathname === '/api/system') {
     const pm2Data = pm2Collector.getLatestPM2Data();
     const sysData = systemCollector.getLatestSystemData();
+    const pm2State = store.getAllPm2State?.() || [];
+    const systemSummary = sysData ? null : latestMetricRow('system_summary', 'system');
     const scheduler = readSchedulerStatus(config.zylosDir);
-    sendJson(res, 200, {
-      pm2: pm2Data ? pm2Data.processes : null,
-      system: sysData || null,
-      scheduler: scheduler || null,
-      collected_at: {
-        pm2: pm2Data ? new Date(pm2Data.collectedAt).toISOString() : null,
-        system: sysData ? new Date(sysData.collectedAt).toISOString() : null
-      }
-    });
+    sendJson(res, 200, buildSystemPayload({ pm2Data, sysData, pm2State, systemSummary, scheduler }));
     return true;
   }
 
@@ -944,14 +949,14 @@ if (isMain && process.argv.includes('--smoke')) {
   spoolDrainer.startPeriodicDrain(stateEngine, 30_000);
 
   // Retention cleanup timer (hourly)
+  let lastVacuumDate = null;
   const retentionTimer = setInterval(() => {
     try {
-      store.deletePm2MetricsOlderThan(7);
-      store.deleteMetricsOlderThan(90);
-      store.deleteEventsOlderThan(30);
-      store.deleteSnapshotsOlderThan(7);
-      store.deleteFactsOlderThan(365);
-      store.walCheckpoint();
+      const result = runMetricMaintenance(store, { lastVacuumDate });
+      lastVacuumDate = result.lastVacuumDate;
+      if (result.vacuum?.skipped) {
+        process.stderr.write(`[retention] Skipped VACUUM: ${result.vacuum.reason} (${result.vacuum.sizeBytes} > ${result.vacuum.maxBytes})\n`);
+      }
     } catch (err) {
       process.stderr.write(`[retention] Error: ${err.message}\n`);
     }

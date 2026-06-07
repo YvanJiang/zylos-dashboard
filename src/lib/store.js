@@ -197,6 +197,30 @@ export class Store {
       `);
       this.db.prepare('INSERT OR IGNORE INTO schema_migrations (version) VALUES (?)').run(9);
     }
+    if (currentVersion < 10) {
+      this.db.exec(`
+        CREATE TABLE IF NOT EXISTS pm2_latest_state (
+          process_name TEXT PRIMARY KEY,
+          status TEXT NOT NULL,
+          cpu REAL NOT NULL DEFAULT 0,
+          memory_bytes INTEGER NOT NULL DEFAULT 0,
+          restarts INTEGER NOT NULL DEFAULT 0,
+          uptime_ms INTEGER NOT NULL DEFAULT 0,
+          updated_at TEXT NOT NULL
+        );
+
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_usage_event_dedup
+        ON metric_points (
+          COALESCE(session_id, ''),
+          source,
+          metric_name,
+          json_extract(dimensions, '$.event_id')
+        )
+        WHERE metric_name = 'usage_event'
+          AND json_extract(dimensions, '$.event_id') IS NOT NULL;
+      `);
+      this.db.prepare('INSERT OR IGNORE INTO schema_migrations (version) VALUES (?)').run(10);
+    }
   }
 
   _prepareStatements() {
@@ -254,6 +278,11 @@ export class Store {
       VALUES (@timestamp, @runtime, @session_id, @metric_name, @metric_value, @dimensions, @source, @confidence)
     `);
 
+    this._insertMetricIgnore = this.db.prepare(`
+      INSERT OR IGNORE INTO metric_points (timestamp, runtime, session_id, metric_name, metric_value, dimensions, source, confidence)
+      VALUES (@timestamp, @runtime, @session_id, @metric_name, @metric_value, @dimensions, @source, @confidence)
+    `);
+
     this._metricExistsByEventId = this.db.prepare(`
       SELECT 1 FROM metric_points
       WHERE metric_name = @metric_name
@@ -275,6 +304,45 @@ export class Store {
 
     this._deletePm2Metrics = this.db.prepare(`
       DELETE FROM metric_points WHERE metric_name LIKE 'pm2_%' AND timestamp < datetime('now', '-' || ? || ' days')
+    `);
+
+    this._deleteMetricsByNameAndSource = this.db.prepare(`
+      DELETE FROM metric_points
+      WHERE metric_name LIKE @metric_name_pattern
+        AND source LIKE @source_pattern
+        AND timestamp < datetime('now', '-' || @days || ' days')
+    `);
+
+    this._deleteMetricsByName = this.db.prepare(`
+      DELETE FROM metric_points
+      WHERE metric_name LIKE @metric_name_pattern
+        AND timestamp < datetime('now', '-' || @days || ' days')
+    `);
+
+    this._deleteMetricsExcludingPatterns = this.db.prepare(`
+      DELETE FROM metric_points
+      WHERE timestamp < datetime('now', '-' || @days || ' days')
+        AND metric_name NOT IN ('usage_event', 'statusline_summary', 'system_summary', 'pm2_summary', 'ttft', 'turn_duration')
+        AND metric_name NOT LIKE 'pm2_%'
+        AND source NOT LIKE 'otel%'
+    `);
+
+    this._upsertPm2State = this.db.prepare(`
+      INSERT INTO pm2_latest_state
+        (process_name, status, cpu, memory_bytes, restarts, uptime_ms, updated_at)
+      VALUES
+        (@process_name, @status, @cpu, @memory_bytes, @restarts, @uptime_ms, @updated_at)
+      ON CONFLICT(process_name) DO UPDATE SET
+        status = @status,
+        cpu = @cpu,
+        memory_bytes = @memory_bytes,
+        restarts = @restarts,
+        uptime_ms = @uptime_ms,
+        updated_at = @updated_at
+    `);
+
+    this._getAllPm2State = this.db.prepare(`
+      SELECT * FROM pm2_latest_state ORDER BY process_name ASC
     `);
 
     this._deleteOldSnapshots = this.db.prepare(`
@@ -469,7 +537,15 @@ export class Store {
   }
 
   insertMetric(point) {
-    this._insertMetric.run({
+    return this._runMetricInsert(this._insertMetric, point);
+  }
+
+  insertMetricOnce(point) {
+    return this._runMetricInsert(this._insertMetricIgnore, point);
+  }
+
+  _runMetricInsert(stmt, point) {
+    const info = stmt.run({
       timestamp: point.timestamp,
       runtime: point.runtime || 'claude',
       session_id: point.session_id || null,
@@ -479,6 +555,7 @@ export class Store {
       source: point.source,
       confidence: point.confidence || 'actual'
     });
+    return { inserted: info.changes > 0, changes: info.changes };
   }
 
   hasMetricEventId({ metricName, sessionId, source, eventId }) {
@@ -508,12 +585,86 @@ export class Store {
     return this._deletePm2Metrics.run(days);
   }
 
+  deleteMetricsByNameAndSource(metricNamePattern, sourcePattern, days) {
+    return this._deleteMetricsByNameAndSource.run({
+      metric_name_pattern: metricNamePattern,
+      source_pattern: sourcePattern,
+      days
+    });
+  }
+
+  deleteMetricsByName(metricNamePattern, days) {
+    return this._deleteMetricsByName.run({
+      metric_name_pattern: metricNamePattern,
+      days
+    });
+  }
+
+  deleteOtherLegacyMetricsOlderThan(days) {
+    return this._deleteMetricsExcludingPatterns.run({ days });
+  }
+
+  upsertPm2State(processName, state = {}) {
+    if (!processName) return { changes: 0 };
+    const info = this._upsertPm2State.run({
+      process_name: processName,
+      status: state.status || 'unknown',
+      cpu: Number(state.cpu) || 0,
+      memory_bytes: Math.max(0, Math.floor(Number(state.memory_bytes ?? state.memory) || 0)),
+      restarts: Math.max(0, Math.floor(Number(state.restarts) || 0)),
+      uptime_ms: Math.max(0, Math.floor(Number(state.uptime_ms ?? state.uptime) || 0)),
+      updated_at: state.updated_at || new Date().toISOString()
+    });
+    return { changes: info.changes };
+  }
+
+  getAllPm2State() {
+    return this._getAllPm2State.all().map(row => ({
+      process_name: row.process_name,
+      name: row.process_name,
+      status: row.status,
+      cpu: row.cpu,
+      memory_bytes: row.memory_bytes,
+      memory: row.memory_bytes,
+      restarts: row.restarts,
+      uptime_ms: row.uptime_ms,
+      uptime: row.uptime_ms,
+      updated_at: row.updated_at
+    }));
+  }
+
   deleteSnapshotsOlderThan(days) {
     return this._deleteOldSnapshots.run(days);
   }
 
   walCheckpoint() {
     this.db.pragma('wal_checkpoint(TRUNCATE)');
+  }
+
+  dbSizeBytes() {
+    try {
+      const row = this.db.prepare('PRAGMA database_list').all().find(r => r.name === 'main');
+      if (!row?.file) return 0;
+      return fs.statSync(row.file).size;
+    } catch {
+      return 0;
+    }
+  }
+
+  vacuum() {
+    this.db.exec('VACUUM');
+    this.db.pragma('wal_checkpoint(TRUNCATE)');
+    this.db.pragma('optimize');
+    return { vacuumed: true };
+  }
+
+  vacuumIfSmall(maxBytes = 500 * 1024 * 1024) {
+    const sizeBytes = this.dbSizeBytes();
+    if (sizeBytes > maxBytes) {
+      return { vacuumed: false, skipped: true, reason: 'db_too_large', sizeBytes, maxBytes };
+    }
+    this.vacuum();
+    return { vacuumed: true, skipped: false, sizeBytes, maxBytes };
   }
 
   insertFact(fact) {
@@ -662,43 +813,64 @@ export class Store {
   }
 
   aggregateCost({ since, until, sessionId } = {}) {
-    let sql = `SELECT SUM(metric_value) AS total, COUNT(*) AS cnt FROM metric_points WHERE metric_name = 'api_request_cost'`;
-    const params = {};
-    if (since) { sql += ' AND timestamp >= @since'; params.since = since; }
-    if (until) { sql += ' AND timestamp <= @until'; params.until = until; }
-    if (sessionId) { sql += ' AND session_id = @sessionId'; params.sessionId = sessionId; }
+    const { clause, params } = this._metricBoundsWhere({ since, until, sessionId });
+    const sql = `
+      SELECT SUM(cost) AS total, COUNT(cost) AS cnt FROM (
+        SELECT metric_value AS cost FROM metric_points
+        WHERE metric_name = 'api_request_cost'${clause}
+        UNION ALL
+        SELECT json_extract(dimensions, '$.cost') AS cost FROM metric_points
+        WHERE metric_name = 'usage_event'
+          AND json_extract(dimensions, '$.cost') IS NOT NULL${clause}
+      )`;
     const row = this.db.prepare(sql).get(params);
     if (!row || row.cnt === 0) return null;
     return row.total;
   }
 
   aggregateCacheRate({ since, until, sessionId } = {}) {
-    let sql = `
-      SELECT COALESCE(SUM(json_extract(dimensions, '$.cache_read')), 0) AS cache_read,
-             COALESCE(SUM(metric_value), 0) AS total_input
-      FROM metric_points WHERE metric_name = 'api_request_tokens'`;
-    const params = {};
-    if (since) { sql += ' AND timestamp >= @since'; params.since = since; }
-    if (until) { sql += ' AND timestamp <= @until'; params.until = until; }
-    if (sessionId) { sql += ' AND session_id = @sessionId'; params.sessionId = sessionId; }
+    const { clause, params } = this._metricBoundsWhere({ since, until, sessionId });
+    const sql = `
+      SELECT COALESCE(SUM(cache_read), 0) AS cache_read,
+             COALESCE(SUM(total_input), 0) AS total_input
+      FROM (
+        SELECT json_extract(dimensions, '$.cache_read') AS cache_read,
+               metric_value AS total_input
+        FROM metric_points WHERE metric_name = 'api_request_tokens'${clause}
+        UNION ALL
+        SELECT json_extract(dimensions, '$.cache_read') AS cache_read,
+               metric_value AS total_input
+        FROM metric_points WHERE metric_name = 'usage_event'${clause}
+      )`;
     const row = this.db.prepare(sql).get(params);
     if (!row || row.total_input === 0) return null;
     return row.cache_read / row.total_input;
   }
 
   aggregateTokens({ since, until, sessionId } = {}) {
-    let sql = `
-      SELECT COALESCE(SUM(json_extract(dimensions, '$.input')), 0) AS input,
-             COALESCE(SUM(json_extract(dimensions, '$.cache_read')), 0) AS cache_read,
-             COALESCE(SUM(json_extract(dimensions, '$.cache_creation')), 0) AS cache_creation,
-             COALESCE(SUM(json_extract(dimensions, '$.output')), 0) AS output,
-             COALESCE(SUM(metric_value), 0) AS total_input,
+    const { clause, params } = this._metricBoundsWhere({ since, until, sessionId });
+    const sql = `
+      SELECT COALESCE(SUM(input), 0) AS input,
+             COALESCE(SUM(cache_read), 0) AS cache_read,
+             COALESCE(SUM(cache_creation), 0) AS cache_creation,
+             COALESCE(SUM(output), 0) AS output,
+             COALESCE(SUM(total_input), 0) AS total_input,
              COUNT(*) AS cnt
-      FROM metric_points WHERE metric_name = 'api_request_tokens'`;
-    const params = {};
-    if (since) { sql += ' AND timestamp >= @since'; params.since = since; }
-    if (until) { sql += ' AND timestamp <= @until'; params.until = until; }
-    if (sessionId) { sql += ' AND session_id = @sessionId'; params.sessionId = sessionId; }
+      FROM (
+        SELECT json_extract(dimensions, '$.input') AS input,
+               json_extract(dimensions, '$.cache_read') AS cache_read,
+               json_extract(dimensions, '$.cache_creation') AS cache_creation,
+               json_extract(dimensions, '$.output') AS output,
+               metric_value AS total_input
+        FROM metric_points WHERE metric_name = 'api_request_tokens'${clause}
+        UNION ALL
+        SELECT json_extract(dimensions, '$.input') AS input,
+               json_extract(dimensions, '$.cache_read') AS cache_read,
+               json_extract(dimensions, '$.cache_creation') AS cache_creation,
+               json_extract(dimensions, '$.output') AS output,
+               metric_value AS total_input
+        FROM metric_points WHERE metric_name = 'usage_event'${clause}
+      )`;
     const row = this.db.prepare(sql).get(params);
     if (!row || row.cnt === 0) return null;
     return {
@@ -712,13 +884,27 @@ export class Store {
   aggregateTokenSeries({ since, until, bucketSeconds = 3600 } = {}) {
     const sql = `
       SELECT (CAST(CAST(strftime('%s', timestamp) AS INTEGER) / @bucket AS INTEGER) * @bucket) AS bucket_start,
-             COALESCE(SUM(metric_value), 0) AS input_sum,
-             COALESCE(SUM(json_extract(dimensions, '$.output')), 0) AS output_sum,
-             COALESCE(SUM(json_extract(dimensions, '$.cache_read')), 0) AS cache_read_sum,
-             COALESCE(SUM(metric_value), 0) AS total_input_sum
-      FROM metric_points
-      WHERE metric_name = 'api_request_tokens'
-        AND timestamp >= @since AND timestamp <= @until
+             COALESCE(SUM(total_input), 0) AS input_sum,
+             COALESCE(SUM(output), 0) AS output_sum,
+             COALESCE(SUM(cache_read), 0) AS cache_read_sum,
+             COALESCE(SUM(total_input), 0) AS total_input_sum
+      FROM (
+        SELECT timestamp,
+               metric_value AS total_input,
+               json_extract(dimensions, '$.output') AS output,
+               json_extract(dimensions, '$.cache_read') AS cache_read
+        FROM metric_points
+        WHERE metric_name = 'api_request_tokens'
+          AND timestamp >= @since AND timestamp <= @until
+        UNION ALL
+        SELECT timestamp,
+               metric_value AS total_input,
+               json_extract(dimensions, '$.output') AS output,
+               json_extract(dimensions, '$.cache_read') AS cache_read
+        FROM metric_points
+        WHERE metric_name = 'usage_event'
+          AND timestamp >= @since AND timestamp <= @until
+      )
       GROUP BY bucket_start ORDER BY bucket_start`;
     const rows = this.db.prepare(sql).all({ since, until, bucket: bucketSeconds });
     return rows.map(r => ({
@@ -730,11 +916,20 @@ export class Store {
   aggregateCostSeries({ since, until, bucketSeconds = 3600 } = {}) {
     const sql = `
       SELECT (CAST(CAST(strftime('%s', timestamp) AS INTEGER) / @bucket AS INTEGER) * @bucket) AS bucket_start,
-             SUM(metric_value) AS cost_sum,
+             SUM(cost) AS cost_sum,
              COUNT(*) AS request_count
-      FROM metric_points
-      WHERE metric_name = 'api_request_cost'
-        AND timestamp >= @since AND timestamp <= @until
+      FROM (
+        SELECT timestamp, metric_value AS cost
+        FROM metric_points
+        WHERE metric_name = 'api_request_cost'
+          AND timestamp >= @since AND timestamp <= @until
+        UNION ALL
+        SELECT timestamp, json_extract(dimensions, '$.cost') AS cost
+        FROM metric_points
+        WHERE metric_name = 'usage_event'
+          AND json_extract(dimensions, '$.cost') IS NOT NULL
+          AND timestamp >= @since AND timestamp <= @until
+      )
       GROUP BY bucket_start ORDER BY bucket_start`;
     return this.db.prepare(sql).all({ since, until, bucket: bucketSeconds });
   }
@@ -742,11 +937,23 @@ export class Store {
   aggregateCacheRateSeries({ since, until, bucketSeconds = 3600 } = {}) {
     const sql = `
       SELECT (CAST(CAST(strftime('%s', timestamp) AS INTEGER) / @bucket AS INTEGER) * @bucket) AS bucket_start,
-             COALESCE(SUM(json_extract(dimensions, '$.cache_read')), 0) AS cache_read_sum,
-             COALESCE(SUM(metric_value), 0) AS total_input_sum
-      FROM metric_points
-      WHERE metric_name = 'api_request_tokens'
-        AND timestamp >= @since AND timestamp <= @until
+             COALESCE(SUM(cache_read), 0) AS cache_read_sum,
+             COALESCE(SUM(total_input), 0) AS total_input_sum
+      FROM (
+        SELECT timestamp,
+               json_extract(dimensions, '$.cache_read') AS cache_read,
+               metric_value AS total_input
+        FROM metric_points
+        WHERE metric_name = 'api_request_tokens'
+          AND timestamp >= @since AND timestamp <= @until
+        UNION ALL
+        SELECT timestamp,
+               json_extract(dimensions, '$.cache_read') AS cache_read,
+               metric_value AS total_input
+        FROM metric_points
+        WHERE metric_name = 'usage_event'
+          AND timestamp >= @since AND timestamp <= @until
+      )
       GROUP BY bucket_start ORDER BY bucket_start`;
     const rows = this.db.prepare(sql).all({ since, until, bucket: bucketSeconds });
     return rows.map(r => ({ ...r, rate: r.total_input_sum > 0 ? r.cache_read_sum / r.total_input_sum : null }));
@@ -759,7 +966,7 @@ export class Store {
     // Get rows with project attribution from JSONL-ingested metrics
     const rows = this.db.prepare(`
       SELECT metric_value, dimensions FROM metric_points
-      WHERE metric_name = 'api_request_tokens'
+      WHERE metric_name IN ('api_request_tokens', 'usage_event')
         AND timestamp >= @since AND timestamp <= @until
     `).all({ since: s, until: u });
 
@@ -813,13 +1020,7 @@ export class Store {
       }
     }
 
-    const costRow = this.db.prepare(`
-      SELECT COALESCE(SUM(metric_value), 0) AS total_cost
-      FROM metric_points
-      WHERE metric_name = 'api_request_cost'
-        AND timestamp >= @since AND timestamp <= @until
-    `).get({ since: s, until: u });
-    const totalCost = costRow?.total_cost || 0;
+    const totalCost = this.aggregateCost({ since: s, until: u }) || 0;
 
     const items = Object.entries(projectOutputTokens)
       .sort((a, b) => b[1] - a[1])
@@ -930,6 +1131,15 @@ export class Store {
     const skillsIdx = parts.indexOf('skills');
     if (skillsIdx >= 0 && parts[skillsIdx + 1]) return parts[skillsIdx + 1];
     return null;
+  }
+
+  _metricBoundsWhere({ since, until, sessionId } = {}) {
+    let clause = '';
+    const params = {};
+    if (since) { clause += ' AND timestamp >= @since'; params.since = since; }
+    if (until) { clause += ' AND timestamp <= @until'; params.until = until; }
+    if (sessionId) { clause += ' AND session_id = @sessionId'; params.sessionId = sessionId; }
+    return { clause, params };
   }
 
   insertApiKey({ name, keyHash, scope }) {
