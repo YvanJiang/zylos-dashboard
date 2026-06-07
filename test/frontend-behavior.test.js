@@ -23,9 +23,21 @@ test('runtime info upgrade badges use semver-aware comparison', () => {
 
 test('Codex runtime renders CLI update badge in info bar and actions modal', () => {
   const app = fs.readFileSync(path.resolve('public/js/app.js'), 'utf8');
-  assert.match(app, /if \(ri\.codex_update\) cv \+=/);
-  assert.match(app, /const cliUpdate = meta\.runtime_cli === 'codex' \? ri\?\.codex_update : ri\?\.cc_update;/);
+  assert.match(app, /const codexVersion = ri\.codex_running \|\| ri\.codex_version \|\| ri\.codex_installed;/);
+  assert.match(app, /if \(ri\.codex_restart\) cv \+=/);
+  assert.match(app, /else if \(ri\.codex_update\) cv \+=/);
+  assert.match(app, /const cliUpdate = meta\.runtime_cli === 'codex' \? ri\?\.codex_restart \|\| ri\?\.codex_update : ri\?\.cc_update;/);
   assert.match(app, /ccVer\.classList\.toggle\('action-ver-dot', !!cliUpdate\)/);
+});
+
+test('Codex runtime info exposes running, installed, effective, and restart fields', () => {
+  const index = fs.readFileSync(path.resolve('src/index.js'), 'utf8');
+  assert.match(index, /const codexRunning = activeRuntime === 'codex' \? codexRuntimeInfo\?\.cli_version \|\| null : null;/);
+  assert.match(index, /codex_version: codexRunning \|\| codexInstalledVersion \|\| null,/);
+  assert.match(index, /codex_running: codexRunning,/);
+  assert.match(index, /codex_installed: codexInstalledVersion \|\| null,/);
+  assert.match(index, /info\.codex_restart = codexInstalledVersion;/);
+  assert.match(index, /pending_restart: !!needsRestart,/);
 });
 
 test('upgrade-zylos writes a restart marker and uses double-fork spawning', () => {

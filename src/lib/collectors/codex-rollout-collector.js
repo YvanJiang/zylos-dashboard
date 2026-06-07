@@ -55,12 +55,13 @@ export class CodexRolloutCollector {
     if (stat.size < offset) offset = 0;
 
     const sessionMeta = this._getTranscriptMetadata(mapping.transcript_path);
-    if (sessionMeta.model) {
+    if (sessionMeta.model || sessionMeta.cliVersion) {
       this._updateRuntimeInfo({
         sessionId: mapping.session_id,
         model: sessionMeta.model,
         serviceTier: sessionMeta.serviceTier,
-        timestamp: sessionMeta.modelTimestamp || now
+        cliVersion: sessionMeta.cliVersion,
+        timestamp: sessionMeta.modelTimestamp || sessionMeta.cliVersionTimestamp || now
       });
     }
 
@@ -159,6 +160,15 @@ export class CodexRolloutCollector {
 
   _ingestEvent(event, mapping, sessionMeta = {}, position = {}) {
     const payload = event.payload || {};
+    if (event.type === 'session_meta' && payload.cli_version) {
+      sessionMeta.cliVersion = payload.cli_version;
+      this._updateRuntimeInfo({
+        sessionId: mapping.session_id,
+        cliVersion: payload.cli_version,
+        timestamp: event.timestamp || new Date().toISOString()
+      });
+      return 0;
+    }
     if (event.type === 'turn_context' && payload.model) {
       sessionMeta.model = payload.model;
       sessionMeta.serviceTier = normalizeServiceTier(payload.service_tier ?? payload.serviceTier);
@@ -706,20 +716,35 @@ export class CodexRolloutCollector {
     return input + output + cacheRead + cacheCreation;
   }
 
-  _updateRuntimeInfo({ sessionId, model, serviceTier, timestamp }) {
-    if (!model) return;
-    const next = {
-      model,
-      model_id: model,
-      session_id: sessionId || null,
-      service_tier: serviceTier || null,
-      updated_at: timestamp || new Date().toISOString()
-    };
+  _updateRuntimeInfo({ sessionId, model, serviceTier, cliVersion, timestamp }) {
     const prev = this._runtimeInfo;
+    const sessionChanged = sessionId && prev?.session_id && sessionId !== prev.session_id;
+    const next = sessionChanged ? {} : { ...(prev || {}) };
+    let hasUpdate = false;
+    if (model != null) {
+      next.model = model;
+      next.model_id = model;
+      hasUpdate = true;
+    }
+    if (sessionId != null) {
+      next.session_id = sessionId;
+      hasUpdate = true;
+    }
+    if (serviceTier != null) {
+      next.service_tier = serviceTier;
+      hasUpdate = true;
+    }
+    if (cliVersion != null) {
+      next.cli_version = cliVersion;
+      hasUpdate = true;
+    }
+    if (!hasUpdate) return;
+    next.updated_at = timestamp || new Date().toISOString();
     if (
       prev?.model_id === next.model_id &&
       prev?.session_id === next.session_id &&
-      prev?.service_tier === next.service_tier
+      prev?.service_tier === next.service_tier &&
+      prev?.cli_version === next.cli_version
     ) {
       this._runtimeInfo = { ...prev, updated_at: next.updated_at };
       return;
@@ -750,6 +775,10 @@ export class CodexRolloutCollector {
           metadata.model = event.payload.model;
           metadata.serviceTier = normalizeServiceTier(event.payload.service_tier ?? event.payload.serviceTier);
           metadata.modelTimestamp = event.timestamp || null;
+        }
+        if (event.type === 'session_meta' && event.payload?.cli_version) {
+          metadata.cliVersion = event.payload.cli_version;
+          metadata.cliVersionTimestamp = event.timestamp || null;
         }
         if (event.type === 'event_msg' && event.payload?.type === 'token_count' && event.payload.rate_limits) {
           metadata.rateLimits = event.payload.rate_limits;
