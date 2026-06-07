@@ -22,10 +22,10 @@ Codex runtime currently shows the installed CLI version everywhere, but a Codex 
 ## Development Checklist
 
 - [ ] **1. CodexRolloutCollector: handle `session_meta` events**
-  - In `_ingestEvent()`: add handler for `event.type === 'session_meta'` that extracts `payload.cli_version`
-  - Call `_updateRuntimeInfo()` with a new `cliVersion` field
-  - In `_getTranscriptMetadata()`: also scan for `session_meta` events and cache `cli_version`
-  - In `_updateRuntimeInfo()`: store `cli_version` in `_runtimeInfo` object, include in change detection
+  - **`_updateRuntimeInfo()` must support partial updates.** Current code guards with `if (!model) return` (line 710). Change to merge-based: accept `{ model, serviceTier, cliVersion, sessionId, timestamp }` and merge each non-null field into existing `_runtimeInfo` instead of requiring model. A `session_meta`-only update (cliVersion set, model absent) must succeed. A later `turn_context` update (model set, cliVersion absent) must preserve the existing `cli_version`. Change detection must include `cli_version` and fire `_onRuntimeInfo` when only `cli_version` changes.
+  - **`_ingestEvent()`**: add handler for `event.type === 'session_meta'` before the existing `turn_context` check. Extract `payload.cli_version` and call `_updateRuntimeInfo({ cliVersion: payload.cli_version, sessionId: mapping.session_id, timestamp: event.timestamp })`.
+  - **`_getTranscriptMetadata()`**: scan for `session_meta` events alongside existing `turn_context` scan. Store `metadata.cliVersion` when found.
+  - **`collect()`**: call `_updateRuntimeInfo()` when `sessionMeta.model || sessionMeta.cliVersion` (currently only when `sessionMeta.model`). This ensures backfill works when the cursor has already advanced past the `session_meta` line — the metadata scan reads from file start and can recover `cli_version` even with no new events.
 
 - [ ] **2. buildRuntimeInfo(): expose codex_running and codex_restart**
   - Extract `codexRuntimeInfo.cli_version` as `codex_running`
@@ -55,6 +55,8 @@ Codex runtime currently shows the installed CLI version everywhere, but a Codex 
   - Test installed newer than running → codex_restart set, pending_restart true
   - Test installed == running → no codex_restart
   - Test missing session_meta cli_version → fallback to installed
+  - Test rollout with only `session_meta.payload.cli_version` and no `turn_context` → still yields `getRuntimeInfo().cli_version` (validates partial update works without model)
+  - Test cursor at EOF / no new lines → `_getTranscriptMetadata()` scan still backfills `cli_version` into runtime info (validates the metadata-scan backfill path)
 
 - [ ] **8. Runtime-info tests: version update with running version**
   - Verify applyVersionUpdateFields still works correctly when codex_running is present
@@ -76,7 +78,7 @@ Codex runtime currently shows the installed CLI version everywhere, but a Codex 
 - [ ] **Codex rollout JSONL emits `session_meta` as the first event with `payload.cli_version`** — Confirmed in issue description with real example data. If `session_meta` is absent (older Codex versions), fall back to installed version gracefully.
 - [ ] **`cli_version` in session_meta is a semver-compatible string** — Same format as `codex --version` output after normalization. `isNewerVersion()` from version-utils.js handles comparison.
 - [ ] **Running version is ephemeral in-memory state** — Same pattern as Claude's `cc_version` from statusline. No database storage needed. Resets when collector restarts or new session starts.
-- [ ] **One active Codex session at a time** — Latest `session_meta.cli_version` always represents the current running version. No multi-session tracking needed.
+- [ ] **One active Codex session at a time** — Active session is determined by the existing `Store.latestCodexRolloutPath('codex')` mechanism (selects by `updated_at DESC LIMIT 1`). The collector only consumes `session_meta.cli_version` from that active transcript. No scanning of other rollout files.
 
 ## Acceptance Checklist
 
@@ -88,3 +90,4 @@ Codex runtime currently shows the installed CLI version everywhere, but a Codex 
 - [ ] Actions modal shows running version for Codex
 - [ ] Claude runtime behavior completely unchanged
 - [ ] No regressions in existing dashboard features
+- [ ] runtime_info API payload field verification: `codex_running`, `codex_installed`, `codex_version`, `codex_restart`, `pending_restart` all return expected values for each state
