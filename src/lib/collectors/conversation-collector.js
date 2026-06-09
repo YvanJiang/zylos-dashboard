@@ -17,6 +17,7 @@ export class ConversationCollector {
     this._currentFile = null;
     this._seenUuids = new Set();
     this._onEvent = null;
+    this._onMetric = null;
     this._lastUserPromptAt = null;
     this._sanitizer = config.sanitizer || new Sanitizer(config.zylosDir || path.join(process.env.HOME, 'zylos'));
     this._restoreOffset();
@@ -261,12 +262,14 @@ export class ConversationCollector {
     if (totalInput > 0) dims.cache_hit_rate = cacheRead / totalInput;
 
     let written = 0;
-    this.store.insertMetric({
+    const point = {
       timestamp, runtime: 'claude', session_id: sessionId,
       metric_name: 'usage_event', metric_value: totalInput,
       dimensions: dims,
       source: 'jsonl_usage', confidence: 'actual'
-    });
+    };
+    this.store.insertMetric(point);
+    if (this._onMetric) this._onMetric(point);
     written++;
 
     this.store.upsertSourceHealth('jsonl_usage', 'collector_liveness', 'healthy', {

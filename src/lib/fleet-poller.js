@@ -5,6 +5,8 @@ const DEFAULT_TIMEOUT_MS = 2500;
 const DEFAULT_STALE_MS = 10_000;
 const DEFAULT_JITTER_MS = 500;
 const TOKEN_REFRESH_SKEW_MS = 60_000;
+const DEFAULT_RECONNECT_BASE_MS = 1000;
+const DEFAULT_RECONNECT_MAX_MS = 30_000;
 
 function nowIso(nowMs = Date.now()) {
   return new Date(nowMs).toISOString();
@@ -19,6 +21,75 @@ function joinUrl(baseUrl, apiPath) {
   const base = String(baseUrl || '').replace(/\/+$/, '');
   const path = String(apiPath || '').replace(/^\/+/, '');
   return `${base}/${path}`;
+}
+
+function nextCompleteLineBreak(buffer) {
+  const match = buffer.match(/\r\n|\r|\n/);
+  if (!match) return null;
+  if (match[0] === '\r' && match.index === buffer.length - 1) return null;
+  return match;
+}
+
+export class SseEventParser {
+  constructor(onEvent) {
+    this.onEvent = onEvent;
+    this.buffer = '';
+    this.event = 'message';
+    this.data = [];
+    this.id = null;
+  }
+
+  push(chunk) {
+    this.buffer += chunk;
+    let newline = nextCompleteLineBreak(this.buffer);
+    while (newline) {
+      const newlineIndex = newline.index;
+      const line = this.buffer.slice(0, newlineIndex);
+      this.buffer = this.buffer.slice(newlineIndex + newline[0].length);
+      this._processLine(line);
+      newline = nextCompleteLineBreak(this.buffer);
+    }
+  }
+
+  flush() {
+    if (this.buffer) {
+      this.push('\n');
+      this.buffer = '';
+    }
+  }
+
+  _processLine(line) {
+    if (line === '') {
+      this._dispatch();
+      return;
+    }
+    if (line.startsWith(':')) return;
+
+    const colon = line.indexOf(':');
+    const field = colon >= 0 ? line.slice(0, colon) : line;
+    let value = colon >= 0 ? line.slice(colon + 1) : '';
+    if (value.startsWith(' ')) value = value.slice(1);
+
+    if (field === 'event') this.event = value || 'message';
+    else if (field === 'data') this.data.push(value);
+    else if (field === 'id') this.id = value;
+  }
+
+  _dispatch() {
+    if (this.data.length === 0) {
+      this.event = 'message';
+      this.id = null;
+      return;
+    }
+    this.onEvent({
+      event: this.event || 'message',
+      data: this.data.join('\n'),
+      id: this.id
+    });
+    this.event = 'message';
+    this.data = [];
+    this.id = null;
+  }
 }
 
 async function fetchWithTimeout(fetchImpl, url, options = {}, timeoutMs = DEFAULT_TIMEOUT_MS) {
@@ -104,65 +175,47 @@ function sanitizeRecord(record) {
   };
 }
 
-/**
- * Build the "self" fleet record for the local dashboard's own agent.
- *
- * This mirrors the external-agent record shape produced by `_setSuccess`, but
- * sources its live data from the local in-process state/metrics instead of an
- * HTTP poll. It carries no secrets (the local agent has none) and is flagged
- * with `self: true` so the frontend can drill into the local dashboard.
- *
- * @param {object} opts
- * @param {string} opts.name      - Local agent name (config.agent.name).
- * @param {object} opts.color     - Result of agentColor(name): { color, hue }.
- * @param {object} [opts.state]   - Local state engine getState() result.
- * @param {number|null} [opts.contextPct] - Resolved context_pct metric value.
- * @param {number|null} [opts.sessionCost]
- * @param {number|null} [opts.dailyCost]
- * @param {number|null} [opts.weeklyCost]
- * @param {number} [opts.nowMs]
- */
-export function buildSelfRecord({
-  name,
-  color,
-  state,
-  runtimeInfo = null,
-  contextPct = null,
-  cost = null,
-  newSessionThreshold = null,
-  sessionCost = null,
-  dailyCost = null,
-  weeklyCost = null,
-  systemMetrics = null,
-  nowMs = Date.now()
-}) {
-  const liveState = state?.state || 'UNKNOWN';
+export function stateToFleetRecord(agentConfig = {}, statePayload = {}, opts = {}) {
+  const nowMs = opts.nowMs ?? Date.now();
+  const self = opts.self === true;
+  const name = agentConfig.name ?? statePayload?.agent?.name;
+  const color = agentConfig.color?.color
+    ? agentConfig.color
+    : {
+        color: agentConfig.color || statePayload?.agent?.color || agentColor(name).color,
+        hue: agentConfig.hue ?? statePayload?.agent?.hue ?? agentColor(name).hue
+      };
+  const runtimeInfo = statePayload?.runtime_info || null;
+  const systemMetrics = statePayload?.system_metrics || null;
+  const liveState = statePayload?.state || 'UNKNOWN';
   const offline = liveState === 'OFFLINE' || liveState === 'UNKNOWN';
+  const pulseRate = self && offline ? 0 : 1;
+  const healthReason = liveState === 'IDLE' ? 'idle' : (self && offline ? 'offline' : 'ok');
   return sanitizeRecord({
     name,
-    base_url: null,
+    base_url: opts.base_url ?? agentConfig.base_url ?? null,
     color: color?.color,
     hue: color?.hue,
     state: liveState,
-    activity: deriveActivity(state),
-    context_pct: contextPct,
-    cost: sessionCost ?? cost ?? dailyCost ?? weeklyCost,
-    session_cost: sessionCost ?? cost,
-    daily_cost: dailyCost,
-    weekly_cost: weeklyCost,
+    activity: deriveActivity(statePayload),
+    context_pct: statePayload?.context_pct ?? metricValue(statePayload, 'context_pct'),
+    cost: statePayload?.session_cost ?? statePayload?.daily_cost ?? statePayload?.weekly_cost ?? metricValue(statePayload, 'session_cost') ?? metricValue(statePayload, 'daily_cost'),
+    session_cost: statePayload?.session_cost ?? metricValue(statePayload, 'session_cost'),
+    daily_cost: statePayload?.daily_cost ?? metricValue(statePayload, 'daily_cost'),
+    weekly_cost: statePayload?.weekly_cost ?? null,
     model: runtimeInfo?.model || runtimeInfo?.model_id || null,
     effort: runtimeInfo?.effort || runtimeInfo?.service_tier || null,
-    new_session_threshold: newSessionThreshold,
+    new_session_threshold: statePayload?.new_session_threshold ?? null,
     cpu_pct: numberOrNull(systemMetrics?.cpu_pct),
     mem_pct: memPct(systemMetrics),
     disk_pct: numberOrNull(systemMetrics?.disk_pct ?? systemMetrics?.disk_used_pct),
     has_upgrade: hasUpgrade(runtimeInfo),
-    has_subagent: hasSubagent(state),
+    has_subagent: hasSubagent(statePayload),
     last_seen: nowIso(nowMs),
-    pulse_rate: offline ? 0 : 1,
-    health_reason: liveState === 'IDLE' ? 'idle' : (offline ? 'offline' : 'ok'),
+    pulse_rate: pulseRate,
+    health_reason: healthReason,
     updated_at: nowIso(nowMs),
-    self: true
+    self
   });
 }
 
@@ -174,6 +227,8 @@ export class FleetPoller {
     this.timeoutMs = toNumber(fleet.timeout_ms, DEFAULT_TIMEOUT_MS);
     this.staleMs = toNumber(fleet.stale_ms, DEFAULT_STALE_MS);
     this.jitterMs = toNumber(fleet.jitter_ms, DEFAULT_JITTER_MS);
+    this.reconnectBaseMs = toNumber(fleet.sse_reconnect_base_ms, DEFAULT_RECONNECT_BASE_MS);
+    this.reconnectMaxMs = toNumber(fleet.sse_reconnect_max_ms, DEFAULT_RECONNECT_MAX_MS);
     this.fetch = options.fetch || globalThis.fetch;
     this.now = options.now || (() => Date.now());
     this.setTimeout = options.setTimeout || setTimeout;
@@ -181,6 +236,7 @@ export class FleetPoller {
     this.onPoll = typeof options.onPoll === 'function' ? options.onPoll : null;
     this.records = new Map();
     this.tokens = new Map();
+    this.streams = new Map();
     this.running = false;
     this.timer = null;
 
@@ -217,13 +273,23 @@ export class FleetPoller {
   start() {
     if (this.running || this.agents.length === 0) return;
     this.running = true;
-    this.pollOnce().finally(() => this._scheduleNext());
+    this.pollOnce().finally(() => {
+      if (!this.running) return;
+      for (const agent of this.agents) this._connectSse(agent);
+    });
   }
 
   stop() {
     this.running = false;
     if (this.timer) this.clearTimeout(this.timer);
     this.timer = null;
+    for (const stream of this.streams.values()) {
+      if (stream.compatibilityTimer) this.clearTimeout(stream.compatibilityTimer);
+      if (stream.pollTimer) this.clearTimeout(stream.pollTimer);
+      if (stream.reconnectTimer) this.clearTimeout(stream.reconnectTimer);
+      stream.controller?.abort();
+    }
+    this.streams.clear();
   }
 
   getFleet() {
@@ -260,6 +326,23 @@ export class FleetPoller {
       this.pollOnce().finally(() => this._scheduleNext());
     }, this.pollIntervalMs + jitter);
     this.timer.unref?.();
+  }
+
+  _streamState(agent) {
+    let state = this.streams.get(agent.name);
+    if (!state) {
+      state = {
+        controller: null,
+        compatibilityTimer: null,
+        pollTimer: null,
+        reconnectTimer: null,
+        backoffMs: this.reconnectBaseMs,
+        connecting: false,
+        seenFleetState: false
+      };
+      this.streams.set(agent.name, state);
+    }
+    return state;
   }
 
   async _ensureToken(agent, { force = false } = {}) {
@@ -332,6 +415,12 @@ export class FleetPoller {
     }
   }
 
+  async _pollAgentAndNotify(agent) {
+    await this._pollAgent(agent);
+    this._markStale();
+    this.onPoll?.(this.getFleet());
+  }
+
   _fetchState(agent, token) {
     return fetchWithTimeout(this.fetch, joinUrl(agent.base_url, '/api/state'), {
       method: 'GET',
@@ -339,34 +428,158 @@ export class FleetPoller {
     }, this.timeoutMs);
   }
 
+  _fetchStream(agent, token, signal) {
+    return this.fetch(joinUrl(agent.base_url, '/api/stream'), {
+      method: 'GET',
+      headers: { Authorization: `Bearer ${token}` },
+      signal
+    });
+  }
+
   _setSuccess(agent, state) {
-    const now = this.now();
-    const color = agentColor(agent.name);
-    this.records.set(agent.name, sanitizeRecord({
-      name: agent.name,
+    this.records.set(agent.name, stateToFleetRecord(agent, state, {
+      self: false,
       base_url: agent.base_url,
-      color: color.color,
-      hue: color.hue,
-      state: state?.state || 'UNKNOWN',
-      activity: deriveActivity(state),
-      context_pct: state?.context_pct ?? metricValue(state, 'context_pct'),
-      cost: state?.session_cost ?? state?.daily_cost ?? state?.weekly_cost ?? metricValue(state, 'session_cost') ?? metricValue(state, 'daily_cost'),
-      session_cost: state?.session_cost ?? metricValue(state, 'session_cost'),
-      daily_cost: state?.daily_cost ?? metricValue(state, 'daily_cost'),
-      weekly_cost: state?.weekly_cost ?? null,
-      model: state?.runtime_info?.model || state?.runtime_info?.model_id || null,
-      effort: state?.runtime_info?.effort || state?.runtime_info?.service_tier || null,
-      new_session_threshold: state?.new_session_threshold ?? null,
-      cpu_pct: numberOrNull(state?.system_metrics?.cpu_pct),
-      mem_pct: memPct(state?.system_metrics),
-      disk_pct: numberOrNull(state?.system_metrics?.disk_pct ?? state?.system_metrics?.disk_used_pct),
-      has_upgrade: hasUpgrade(state?.runtime_info),
-      has_subagent: hasSubagent(state),
-      last_seen: nowIso(now),
-      pulse_rate: 1,
-      health_reason: state?.state === 'IDLE' ? 'idle' : 'ok',
-      updated_at: nowIso(now)
+      nowMs: this.now()
     }));
+  }
+
+  _connectSse(agent) {
+    if (!this.running) return;
+    const stream = this._streamState(agent);
+    if (stream.connecting) return;
+    stream.connecting = true;
+    stream.controller?.abort();
+    stream.controller = new AbortController();
+    this._runSse(agent, stream, stream.controller.signal)
+      .catch((err) => {
+        if (!this.running || err?.name === 'AbortError') return;
+        this._startFallbackPolling(agent);
+        this._scheduleReconnect(agent);
+      })
+      .finally(() => {
+        stream.connecting = false;
+      });
+  }
+
+  async _runSse(agent, stream, signal) {
+    let token = await this._ensureToken(agent);
+    let resp = await this._fetchStream(agent, token, signal);
+    if (resp.status === 401) {
+      this.tokens.delete(agent.name);
+      token = await this._ensureToken(agent, { force: true });
+      resp = await this._fetchStream(agent, token, signal);
+    }
+    if (resp.status === 401 || resp.status === 403) {
+      this._setFailure(agent, 'auth_failed');
+      throw new Error('auth_failed');
+    }
+    if (!resp.ok || !resp.body) {
+      this._setFailure(agent, resp.status === 404 ? 'version_unsupported' : 'unreachable');
+      throw new Error('sse_unreachable');
+    }
+
+    this._stopFallbackPolling(agent);
+    stream.backoffMs = this.reconnectBaseMs;
+    stream.seenFleetState = false;
+    await this._pollAgentAndNotify(agent);
+    if (stream.compatibilityTimer) this.clearTimeout(stream.compatibilityTimer);
+    stream.compatibilityTimer = this.setTimeout(() => {
+      const current = this.streams.get(agent.name);
+      if (this.running && current && !current.seenFleetState) this._startFallbackPolling(agent);
+    }, this.pollIntervalMs);
+    stream.compatibilityTimer.unref?.();
+    await this._readSseBody(agent, resp.body, signal);
+    if (this.running && !signal.aborted) throw new Error('sse_closed');
+  }
+
+  async _readSseBody(agent, body, signal) {
+    const decoder = new TextDecoder();
+    const parser = new SseEventParser((event) => this._handleSseEvent(agent, event));
+    if (body.getReader) {
+      const reader = body.getReader();
+      try {
+        while (!signal.aborted) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          parser.push(decoder.decode(value, { stream: true }));
+        }
+      } finally {
+        try { reader.releaseLock(); } catch { /* already released */ }
+      }
+    } else {
+      for await (const chunk of body) {
+        if (signal.aborted) break;
+        parser.push(typeof chunk === 'string' ? chunk : decoder.decode(chunk, { stream: true }));
+      }
+    }
+    parser.push(decoder.decode());
+    parser.flush();
+  }
+
+  _handleSseEvent(agent, event) {
+    if (event.event === 'auth_expired') {
+      this.tokens.delete(agent.name);
+      const err = new Error('auth_expired');
+      err.reason = 'auth_expired';
+      throw err;
+    }
+    if (event.event !== 'fleet_state') return;
+    const stream = this.streams.get(agent.name);
+    if (stream) {
+      stream.seenFleetState = true;
+      if (stream.compatibilityTimer) {
+        this.clearTimeout(stream.compatibilityTimer);
+        stream.compatibilityTimer = null;
+      }
+    }
+    let state;
+    try {
+      state = JSON.parse(event.data || '{}');
+    } catch {
+      return;
+    }
+    this._setSuccess(agent, state);
+    this._stopFallbackPolling(agent);
+    this._markStale();
+    this.onPoll?.(this.getFleet());
+  }
+
+  _startFallbackPolling(agent) {
+    if (!this.running) return;
+    const stream = this._streamState(agent);
+    if (stream.pollTimer) return;
+    const run = () => {
+      if (!this.running || !this.streams.has(agent.name)) return;
+      this._pollAgentAndNotify(agent).finally(() => {
+        const current = this.streams.get(agent.name);
+        if (!this.running || !current || !current.pollTimer) return;
+        current.pollTimer = this.setTimeout(run, this.pollIntervalMs);
+        current.pollTimer.unref?.();
+      });
+    };
+    stream.pollTimer = this.setTimeout(run, 0);
+    stream.pollTimer.unref?.();
+  }
+
+  _stopFallbackPolling(agent) {
+    const stream = this.streams.get(agent.name);
+    if (!stream?.pollTimer) return;
+    this.clearTimeout(stream.pollTimer);
+    stream.pollTimer = null;
+  }
+
+  _scheduleReconnect(agent) {
+    if (!this.running) return;
+    const stream = this._streamState(agent);
+    if (stream.reconnectTimer) this.clearTimeout(stream.reconnectTimer);
+    const delay = stream.backoffMs;
+    stream.backoffMs = Math.min(stream.backoffMs * 2, this.reconnectMaxMs);
+    stream.reconnectTimer = this.setTimeout(() => {
+      stream.reconnectTimer = null;
+      this._connectSse(agent);
+    }, delay);
+    stream.reconnectTimer.unref?.();
   }
 
   _setFailure(agent, reason) {

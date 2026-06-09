@@ -31,7 +31,7 @@ import { resolveAggregateValue } from './lib/metric-aggregate.js';
 import { runMetricMaintenance } from './lib/metric-maintenance.js';
 import { buildSystemPayload } from './lib/system-api.js';
 import { SseHub } from './lib/sse.js';
-import { FleetPoller, buildSelfRecord } from './lib/fleet-poller.js';
+import { FleetPoller, stateToFleetRecord } from './lib/fleet-poller.js';
 import { buildFleetPayload } from './lib/fleet-payload.js';
 import { FleetProxy } from './lib/fleet-proxy.js';
 import { agentColor } from './lib/agent-color.js';
@@ -79,6 +79,7 @@ function refreshInstalledVersions() {
   if (st) {
     st.runtime_info = buildRuntimeInfo();
     sse.broadcast('state_change', st);
+    scheduleFleetStateBroadcast();
   }
 }
 
@@ -127,6 +128,35 @@ if (!isClaudeRuntime) process.stderr.write(`[startup] Runtime "${activeRuntime}"
 
 // SSE hub
 const sse = new SseHub(15_000);
+let fleetStateTimer = null;
+let lastFleetStateBroadcastAt = 0;
+
+function broadcastFleetState() {
+  try {
+    lastFleetStateBroadcastAt = Date.now();
+    sse.broadcast('fleet_state', buildApiStatePayload());
+  } catch (err) {
+    process.stderr.write(`[fleet] fleet_state SSE broadcast skipped: ${err.message}\n`);
+  }
+}
+
+function scheduleFleetStateBroadcast() {
+  const elapsed = Date.now() - lastFleetStateBroadcastAt;
+  if (elapsed >= 1000) {
+    if (fleetStateTimer) {
+      clearTimeout(fleetStateTimer);
+      fleetStateTimer = null;
+    }
+    broadcastFleetState();
+    return;
+  }
+  if (fleetStateTimer) return;
+  fleetStateTimer = setTimeout(() => {
+    fleetStateTimer = null;
+    broadcastFleetState();
+  }, 1000 - elapsed);
+  fleetStateTimer.unref?.();
+}
 
 // 6b. Version checker (polls GitHub + npm registry every 12h)
 const versionChecker = new VersionChecker({
@@ -135,6 +165,7 @@ const versionChecker = new VersionChecker({
       const st = stateEngine.getState();
       st.runtime_info = buildRuntimeInfo();
       sse.broadcast('state_change', st);
+      scheduleFleetStateBroadcast();
     }
   },
 });
@@ -235,15 +266,30 @@ const stateEngine = new StateEngine(store, collectors, config, {
   onStateChange: (st) => {
     st.runtime_info = buildRuntimeInfo();
     sse.broadcast('state_change', st);
+    scheduleFleetStateBroadcast();
   }
 });
 
 // Wire collector updates to state engine
 pm2Collector._onUpdate = (data) => stateEngine.onPM2Update(data);
-systemCollector._onUpdate = (data) => stateEngine.onSystemUpdate(data);
+systemCollector._onUpdate = (data) => {
+  stateEngine.onSystemUpdate(data);
+  scheduleFleetStateBroadcast();
+};
 if (conversationCollector) {
   conversationCollector._stateEngine = stateEngine;
   conversationCollector._onEvent = (event) => stateEngine.onEvent(event);
+  conversationCollector._onMetric = (metric) => {
+    sse.broadcast('metric_update', {
+      metric_name: metric.metric_name,
+      value: Number(metric.metric_value),
+      dimensions: metric.dimensions || null,
+      source: metric.source || 'jsonl_usage',
+      confidence: metric.confidence || 'actual',
+      timestamp: metric.timestamp || new Date().toISOString()
+    });
+    scheduleFleetStateBroadcast();
+  };
 }
 if (codexRolloutCollector) {
   codexRolloutCollector._onEvent = (event) => stateEngine.onEvent(event);
@@ -251,6 +297,7 @@ if (codexRolloutCollector) {
     const st = stateEngine.getState();
     st.runtime_info = buildRuntimeInfo();
     sse.broadcast('state_change', st);
+    scheduleFleetStateBroadcast();
   };
   codexRolloutCollector._onMetric = (metric) => {
     sse.broadcast('metric_update', {
@@ -261,6 +308,7 @@ if (codexRolloutCollector) {
       confidence: metric.confidence || 'actual',
       timestamp: metric.timestamp || new Date().toISOString()
     });
+    scheduleFleetStateBroadcast();
   };
 }
 
@@ -287,20 +335,12 @@ function buildApiStatePayload() {
 }
 
 function buildSelfFleetRecord() {
-  const stateData = stateEngine.getState();
-  const runtimeInfo = buildRuntimeInfo();
-  const costTiers = getCostTiers();
-  return buildSelfRecord({
+  return stateToFleetRecord({
     name: config.agent?.name,
-    color: agentColor(config.agent?.name),
-    state: stateData,
-    runtimeInfo,
-    contextPct: metricResolver.resolve('context_pct').value,
-    newSessionThreshold: getNewSessionThreshold(),
-    systemMetrics: getSystemMetrics(),
-    sessionCost: costTiers.session_cost,
-    dailyCost: costTiers.daily_cost,
-    weeklyCost: costTiers.weekly_cost
+    color: agentColor(config.agent?.name)
+  }, buildApiStatePayload(), {
+    self: true,
+    base_url: null
   });
 }
 
@@ -649,6 +689,7 @@ function handleApi(req, res, pathname, url) {
     const apiToken = req._apiToken;
     const validator = apiToken ? () => !!validateApiSession(apiToken) : null;
     sse.addClient(res, validator);
+    res.write(`event: fleet_state\ndata: ${JSON.stringify(buildApiStatePayload())}\n\n`);
     return true;
   }
 
@@ -893,6 +934,7 @@ async function handleStatuslineIngest(req, res) {
         });
       }
     }
+    scheduleFleetStateBroadcast();
   }
 
   sendJson(res, 200, { ok: true, written });
