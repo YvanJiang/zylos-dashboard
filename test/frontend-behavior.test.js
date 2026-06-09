@@ -207,6 +207,7 @@ test('Agent Fleet fixture renders operational fields and removes deprecated Puls
   assert.match(html, new RegExp(`data-agent="zylos01"[^>]+--agent-hue:${agentColor('zylos01').hue}deg;`));
   assert.match(html, /GPT-5 \/ medium/);
   assert.doesNotMatch(html, /agent-upgrade-badge/);
+  assert.doesNotMatch(html, /Upgrade available/);
   assert.match(html, /Session/);
   assert.match(html, /Today/);
   assert.match(html, /7 days/);

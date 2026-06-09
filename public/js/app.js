@@ -154,7 +154,6 @@ function agentFleetLabels() {
     context: t('label.context'),
     threshold: t('agent_fleet.threshold'),
     model: t('agent_fleet.model'),
-    upgrade: t('agent_fleet.upgrade'),
     sessionCost: t('cost.session'),
     dailyCost: t('cost.today'),
     weeklyCost: t('cost.7d'),
