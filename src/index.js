@@ -298,7 +298,9 @@ function buildSelfFleetRecord() {
     contextPct: metricResolver.resolve('context_pct').value,
     newSessionThreshold: getNewSessionThreshold(),
     systemMetrics: getSystemMetrics(),
-    ...costTiers
+    sessionCost: costTiers.session_cost,
+    dailyCost: costTiers.daily_cost,
+    weeklyCost: costTiers.weekly_cost
   });
 }
 

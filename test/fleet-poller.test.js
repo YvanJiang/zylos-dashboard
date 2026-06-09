@@ -217,6 +217,24 @@ test('buildSelfRecord produces a secret-free self record from local state', () =
   assert.equal(JSON.stringify(record).includes('zylos_st_'), false);
 });
 
+test('buildSelfRecord requires camelCase cost params — snake_case spread yields null (#174)', () => {
+  const snakeCase = buildSelfRecord({
+    name: 'test', color: agentColor('test'), state: { state: 'IDLE' },
+    session_cost: 1.23, daily_cost: 4.56, weekly_cost: 7.89, nowMs: 0
+  });
+  assert.equal(snakeCase.session_cost, null);
+  assert.equal(snakeCase.daily_cost, null);
+  assert.equal(snakeCase.weekly_cost, null);
+
+  const camelCase = buildSelfRecord({
+    name: 'test', color: agentColor('test'), state: { state: 'IDLE' },
+    sessionCost: 1.23, dailyCost: 4.56, weeklyCost: 7.89, nowMs: 0
+  });
+  assert.equal(camelCase.session_cost, 1.23);
+  assert.equal(camelCase.daily_cost, 4.56);
+  assert.equal(camelCase.weekly_cost, 7.89);
+});
+
 test('buildSelfRecord maps idle and offline/unknown states', () => {
   const idle = buildSelfRecord({ name: 'a', color: agentColor('a'), state: { state: 'IDLE' }, nowMs: 0 });
   assert.equal(idle.health_reason, 'idle');

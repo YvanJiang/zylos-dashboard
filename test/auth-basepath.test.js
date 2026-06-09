@@ -249,6 +249,33 @@ test('/api/state exposes stable agent identity without fleet secrets', async () 
   }
 });
 
+test('/api/fleet self record includes cost tiers from DB (#174)', async () => {
+  const zylosDir = fs.mkdtempSync(path.join(os.tmpdir(), 'zylos-dashboard-test-'));
+  writeConfig(zylosDir, 'secret', { auth: { enabled: false } });
+
+  const { origin, server } = await makeServerWithDir(zylosDir);
+  try {
+    const dbPath = path.join(zylosDir, 'components', 'dashboard', 'dashboard.db');
+    const Database = (await import('better-sqlite3')).default;
+    const db = new Database(dbPath);
+    const now = new Date().toISOString();
+    db.prepare(`INSERT INTO metric_points (timestamp, metric_name, metric_value, dimensions, source, confidence)
+      VALUES (?, 'usage_event', 1000, ?, 'jsonl_usage', 'actual')`).run(now, JSON.stringify({ cost: 2.34 }));
+    db.close();
+
+    const resp = await fetch(`${origin}/api/fleet`);
+    assert.equal(resp.status, 200);
+    const body = await resp.json();
+    const self = body.agents.find(a => a.self === true);
+    assert.ok(self, 'self record must exist');
+    assert.equal(typeof self.daily_cost, 'number');
+    assert.ok(self.daily_cost > 0, `daily_cost should be positive, got ${self.daily_cost}`);
+  } finally {
+    await closeServer(server);
+    fs.rmSync(zylosDir, { recursive: true, force: true });
+  }
+});
+
 test('/api/fleet exposes safe records without registry secrets', async () => {
   const zylosDir = fs.mkdtempSync(path.join(os.tmpdir(), 'zylos-dashboard-test-'));
   writeConfig(zylosDir, 'secret', {
