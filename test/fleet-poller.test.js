@@ -293,17 +293,25 @@ test('buildFleetPayload includes self first and rejects leaked secrets', () => {
   }), /fleet_secret_leak_guard/);
 });
 
-test('SseEventParser handles events, ids, comments, CRLF, and multi-line data', () => {
+test('SseEventParser handles events, ids, comments, CRLF, bare CR, and multi-line data', () => {
   const events = [];
   const parser = new SseEventParser((event) => events.push(event));
   parser.push(': keepalive\r\nid: 7\r\nevent: fleet_state\r\ndata: {"state":"BUSY"');
   parser.push('\r\ndata: ,"context_pct":42}\r\n\r\n');
+  parser.push('event: fleet_state\rdata: {"state":"IDLE"}\r\r');
   parser.flush();
-  assert.deepEqual(events, [{
-    event: 'fleet_state',
-    data: '{"state":"BUSY"\n,"context_pct":42}',
-    id: '7'
-  }]);
+  assert.deepEqual(events, [
+    {
+      event: 'fleet_state',
+      data: '{"state":"BUSY"\n,"context_pct":42}',
+      id: '7'
+    },
+    {
+      event: 'fleet_state',
+      data: '{"state":"IDLE"}',
+      id: null
+    }
+  ]);
 });
 
 test('fleet poller SSE uses Bearer auth and fleet_state updates records', async () => {

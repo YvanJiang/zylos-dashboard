@@ -34,13 +34,13 @@ export class SseEventParser {
 
   push(chunk) {
     this.buffer += chunk;
-    let newlineIndex = this.buffer.search(/\r?\n/);
-    while (newlineIndex >= 0) {
-      const line = this.buffer.slice(0, newlineIndex).replace(/\r$/, '');
-      const lineBreakLength = this.buffer[newlineIndex] === '\r' && this.buffer[newlineIndex + 1] === '\n' ? 2 : 1;
-      this.buffer = this.buffer.slice(newlineIndex + lineBreakLength);
+    let newline = this.buffer.match(/\r\n|\r|\n/);
+    while (newline) {
+      const newlineIndex = newline.index;
+      const line = this.buffer.slice(0, newlineIndex);
+      this.buffer = this.buffer.slice(newlineIndex + newline[0].length);
       this._processLine(line);
-      newlineIndex = this.buffer.search(/\r?\n/);
+      newline = this.buffer.match(/\r\n|\r|\n/);
     }
   }
 
