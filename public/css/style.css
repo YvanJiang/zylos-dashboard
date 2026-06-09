@@ -332,20 +332,6 @@ main { padding: var(--space-md) var(--space-lg) var(--space-xl); }
 .agent-state.mood-thinking { color: var(--state-busy); }
 .agent-state.mood-stuck    { color: var(--state-stuck); }
 .agent-state.mood-offline  { color: var(--state-offline); }
-.fleet-state-dot {
-  flex-shrink: 0;
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: var(--state-unknown);
-  transition: background 300ms ease, box-shadow 300ms ease;
-}
-.fleet-state-dot.state-idle     { background: var(--state-idle);     box-shadow: 0 0 0 3px rgba(22, 163, 74, 0.12); }
-.fleet-state-dot.state-busy     { background: var(--state-busy);     box-shadow: 0 0 0 3px rgba(161, 98, 7, 0.12); }
-.fleet-state-dot.state-possibly-stuck { background: var(--state-possibly-stuck); box-shadow: 0 0 0 3px rgba(234, 88, 12, 0.12); }
-.fleet-state-dot.state-stuck    { background: var(--state-stuck);    box-shadow: 0 0 0 3px rgba(220, 38, 38, 0.12); }
-.fleet-state-dot.state-offline  { background: var(--state-offline);  box-shadow: 0 0 0 3px rgba(100, 116, 139, 0.12); }
-.fleet-state-dot.state-unknown  { background: var(--state-unknown);  box-shadow: 0 0 0 3px rgba(107, 114, 128, 0.1); }
 .agent-upgrade-badge {
   width: 8px;
   height: 8px;
