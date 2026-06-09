@@ -440,8 +440,8 @@ main { padding: var(--space-md) var(--space-lg) var(--space-xl); }
     radial-gradient(circle at center, var(--bg-elevated) 56%, transparent 57%),
     conic-gradient(var(--ring-color) calc(var(--ring-pct) * 1%), color-mix(in srgb, var(--text-muted) 22%, transparent) 0);
 }
-.fleet-mini-ring.ring-warning { --ring-color: var(--state-possibly-stuck); }
-.fleet-mini-ring.ring-critical { --ring-color: var(--state-stuck); }
+.fleet-mini-ring.ring-warning { --ring-color: #f59e0b; }
+.fleet-mini-ring.ring-critical { --ring-color: #ef4444; }
 .fleet-mini-ring span {
   color: var(--text);
   font-size: 12px;
