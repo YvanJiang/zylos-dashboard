@@ -123,7 +123,6 @@ export function defaultAgentFleetLabels() {
     context: 'Context',
     threshold: 'threshold',
     model: 'Model',
-    upgrade: 'Upgrade available',
     sessionCost: 'Session',
     dailyCost: 'Today',
     weeklyCost: '7 days',
@@ -166,7 +165,6 @@ export function buildAgentFleetView(fleet, options = {}) {
       cpuPct: agent.cpu_pct,
       memPct: agent.mem_pct,
       diskPct: agent.disk_pct,
-      hasUpgrade: agent.has_upgrade === true,
       hasSubagent: agent.has_subagent === true,
       reason: agent.health_reason || '',
       href: isSelf ? `${basePath}/` : `${basePath}/fleet/${encodeURIComponent(String(agent.name || ''))}/`,
@@ -192,13 +190,11 @@ function renderTile(tile, labels) {
   const threshold = tile.threshold == null ? 70 : tile.threshold;
   const showReason = REASON_BADGE_REASONS.has(String(tile.reason || '').toLowerCase());
   const reason = showReason ? `<span class="agent-fleet-reason">${escapeHtml(tile.stateLabel)}</span>` : '';
-  const upgrade = tile.hasUpgrade ? `<span class="agent-upgrade-badge" title="${escapeHtml(labels.upgrade)}" aria-label="${escapeHtml(labels.upgrade)}"></span>` : '';
   const subagentLabel = tile.hasSubagent ? labels.subagent : '';
   return `<a class="agent-tile agent-tile-${escapeHtml(tile.mood)}${tile.offline ? ' is-offline' : ''}${tile.isSelf ? ' is-self' : ''}${tile.overThreshold ? ' is-over-threshold' : ''}" href="${escapeHtml(tile.href)}" data-agent="${escapeHtml(tile.name)}" data-state="${escapeHtml(tile.mood)}"${tile.isSelf ? ' data-self="true"' : ''} style="--agent-accent:${escapeHtml(tile.color)};--agent-hue:${tile.hue}deg;--context-pct:${ringPct};--threshold-pct:${threshold};">
     <div class="agent-tile-head">
       <span class="agent-name">${escapeHtml(tile.name)}</span>
       <span class="agent-state mood-${escapeHtml(tile.mood)}">${escapeHtml(tile.stateLabel)}</span>
-      ${upgrade}
     </div>
     <div class="agent-runtime-line">
       <span>${escapeHtml(labels.model)}</span>
