@@ -6,6 +6,8 @@ export const MASCOT_BY_MOOD = {
   offline: 'offline.png'
 };
 
+const REASON_BADGE_REASONS = new Set(['unreachable', 'auth_failed', 'version_unsupported', 'offline', 'stuck']);
+
 export function escapeHtml(value) {
   return String(value ?? '')
     .replaceAll('&', '&amp;')
@@ -180,7 +182,8 @@ export function buildAgentFleetView(fleet, options = {}) {
 function renderTile(tile, labels) {
   const ringPct = tile.contextPct == null ? 0 : tile.contextPct;
   const threshold = tile.threshold == null ? 70 : tile.threshold;
-  const reason = tile.reason ? `<span class="agent-fleet-reason">${escapeHtml(tile.stateLabel)}</span>` : '';
+  const showReason = REASON_BADGE_REASONS.has(String(tile.reason || '').toLowerCase());
+  const reason = showReason ? `<span class="agent-fleet-reason">${escapeHtml(tile.stateLabel)}</span>` : '';
   const upgrade = tile.hasUpgrade ? `<span class="agent-upgrade-badge" title="${escapeHtml(labels.upgrade)}" aria-label="${escapeHtml(labels.upgrade)}"></span>` : '';
   const subagentLabel = tile.hasSubagent ? labels.subagent : '';
   return `<a class="agent-tile agent-tile-${escapeHtml(tile.mood)}${tile.offline ? ' is-offline' : ''}${tile.isSelf ? ' is-self' : ''}${tile.overThreshold ? ' is-over-threshold' : ''}" href="${escapeHtml(tile.href)}" data-agent="${escapeHtml(tile.name)}" data-state="${escapeHtml(tile.mood)}"${tile.isSelf ? ' data-self="true"' : ''} style="--agent-accent:${escapeHtml(tile.color)};--agent-hue:${tile.hue}deg;--context-pct:${ringPct};--threshold-pct:${threshold};">
