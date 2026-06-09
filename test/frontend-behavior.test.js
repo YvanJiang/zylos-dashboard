@@ -238,6 +238,8 @@ test('Agent Fleet uses SSE fleet events with one-shot fetch fallback', () => {
   const app = fs.readFileSync(path.resolve('public/js/app.js'), 'utf8');
   assert.match(app, /function clearFleetFallback\(\)/);
   assert.match(app, /function shouldReceiveFleetEvents\(\)/);
+  assert.match(app, /function isSseOpen\(\)/);
+  assert.match(app, /!!window\.EventSource && state\.eventSource\?\.readyState === window\.EventSource\.OPEN/);
   assert.match(app, /state\.fleetViewActive && document\.visibilityState !== 'hidden'/);
   assert.match(app, /document\.addEventListener\('visibilitychange', syncFleetSubscription\)/);
   assert.match(app, /state\.eventSource\.addEventListener\(ev,/);
@@ -246,6 +248,7 @@ test('Agent Fleet uses SSE fleet events with one-shot fetch fallback', () => {
   assert.match(app, /refreshFleet\(\)\.catch\(\(\) => \{\}\)/);
   assert.doesNotMatch(app, /state\.fleetTimer = setInterval\(refreshFleet, 3_000\)/);
   assert.doesNotMatch(app, /setInterval\(\(\) => \{\s*refreshFleet/);
+  assert.doesNotMatch(app, /[^.]EventSource\.OPEN/);
 });
 
 test('multi-agent vs single mode landing view is gated on fleet size', () => {

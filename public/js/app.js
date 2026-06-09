@@ -1070,11 +1070,15 @@ async function refreshComm() {
   renderComm();
 }
 
+function isSseOpen() {
+  return !!window.EventSource && state.eventSource?.readyState === window.EventSource.OPEN;
+}
+
 async function refreshFleet() {
   try {
     state.fleet = await fetchJson('/api/fleet');
     renderFleet();
-    renderConnection(state.eventSource?.readyState === EventSource.OPEN ? 'live' : 'polling');
+    renderConnection(isSseOpen() ? 'live' : 'polling');
     return state.fleet;
   } catch (err) {
     renderConnection('degraded');
@@ -1207,7 +1211,7 @@ async function refreshAll() {
   const restResults = await Promise.allSettled(fetches);
   const all = [...stateResult, ...restResults];
   const ok = all.some((r) => r.status === 'fulfilled');
-  const sseOpen = state.eventSource?.readyState === EventSource.OPEN;
+  const sseOpen = isSseOpen();
   renderConnection(ok ? (sseOpen ? 'live' : 'polling') : 'degraded');
 }
 
