@@ -219,7 +219,6 @@
   "agent_fleet.no_activity": "Standing by",
   "agent_fleet.threshold": "threshold",
   "agent_fleet.model": "Model",
-  "agent_fleet.upgrade": "Upgrade available",
   "agent_fleet.empty": "No fleet agents configured",
   "agent_fleet.back_to_fleet": "← Fleet",
   "reset.now": "now",

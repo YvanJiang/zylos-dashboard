@@ -332,14 +332,6 @@ main { padding: var(--space-md) var(--space-lg) var(--space-xl); }
 .agent-state.mood-thinking { color: var(--state-busy); }
 .agent-state.mood-stuck    { color: var(--state-stuck); }
 .agent-state.mood-offline  { color: var(--state-offline); }
-.agent-upgrade-badge {
-  width: 8px;
-  height: 8px;
-  flex: 0 0 auto;
-  border-radius: 50%;
-  background: var(--state-possibly-stuck);
-  box-shadow: 0 0 0 4px color-mix(in srgb, var(--state-possibly-stuck) 18%, transparent);
-}
 .agent-runtime-line {
   justify-content: space-between;
   color: var(--text-muted);

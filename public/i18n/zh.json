@@ -219,7 +219,6 @@
   "agent_fleet.no_activity": "待命中",
   "agent_fleet.threshold": "阈值",
   "agent_fleet.model": "模型",
-  "agent_fleet.upgrade": "有可用升级",
   "agent_fleet.empty": "未配置 fleet agent",
   "agent_fleet.back_to_fleet": "← 舰队",
   "reset.now": "现在",
