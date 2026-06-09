@@ -4,6 +4,8 @@ import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
+import { generateApiKey, hashApiKey } from '../src/lib/auth.js';
+import { Store } from '../src/lib/store.js';
 
 function writeConfig(zylosDir, password = 'secret', extra = {}) {
   const configDir = path.join(zylosDir, 'components', 'dashboard');
@@ -270,6 +272,60 @@ test('/api/fleet self record includes cost tiers from DB (#174)', async () => {
     assert.ok(self, 'self record must exist');
     assert.equal(typeof self.daily_cost, 'number');
     assert.ok(self.daily_cost > 0, `daily_cost should be positive, got ${self.daily_cost}`);
+  } finally {
+    await closeServer(server);
+    fs.rmSync(zylosDir, { recursive: true, force: true });
+  }
+});
+
+test('/api/stream accepts Bearer API session and emits initial fleet_state', async () => {
+  const zylosDir = fs.mkdtempSync(path.join(os.tmpdir(), 'zylos-dashboard-test-'));
+  writeConfig(zylosDir, 'secret', {
+    auth: { enabled: true, password: 'secret' },
+    agent: { name: 'Jinglever' }
+  });
+
+  const { origin, server } = await makeServerWithDir(zylosDir);
+  try {
+    const dbPath = path.join(zylosDir, 'components', 'dashboard', 'dashboard.db');
+    const store = new Store(dbPath);
+    const apiKey = generateApiKey();
+    store.insertApiKey({ name: 'test-key', keyHash: hashApiKey(apiKey), scope: 'read' });
+    store.close();
+
+    const tokenResp = await fetch(`${origin}/api/auth/token`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${apiKey}` }
+    });
+    assert.equal(tokenResp.status, 200);
+    const { token } = await tokenResp.json();
+
+    const controller = new AbortController();
+    const streamResp = await fetch(`${origin}/api/stream`, {
+      headers: { Authorization: `Bearer ${token}` },
+      signal: controller.signal
+    });
+    assert.equal(streamResp.status, 200);
+    const reader = streamResp.body.getReader();
+    const decoder = new TextDecoder();
+    let body = '';
+    while (!body.includes('event: fleet_state')) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      body += decoder.decode(value, { stream: true });
+    }
+    controller.abort();
+    try { reader.releaseLock(); } catch { /* already released */ }
+    assert.match(body, /event: fleet_state/);
+    const dataLine = body.split('\n').find(line => line.startsWith('data: '));
+    assert.ok(dataLine, 'fleet_state should include a data line');
+    const payload = JSON.parse(dataLine.slice('data: '.length));
+    assert.equal(payload.agent.name, 'Jinglever');
+    assert.ok(Object.hasOwn(payload, 'context_pct'));
+    assert.ok(Object.hasOwn(payload, 'session_cost'));
+    assert.ok(Object.hasOwn(payload, 'system_metrics'));
+    assert.equal(body.includes(apiKey), false);
+    assert.equal(body.includes(token), false);
   } finally {
     await closeServer(server);
     fs.rmSync(zylosDir, { recursive: true, force: true });

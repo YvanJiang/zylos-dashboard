@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { agentColor } from '../src/lib/agent-color.js';
-import { FleetPoller, buildSelfRecord } from '../src/lib/fleet-poller.js';
+import { FleetPoller, SseEventParser, stateToFleetRecord } from '../src/lib/fleet-poller.js';
 import { buildFleetPayload } from '../src/lib/fleet-payload.js';
 
 function jsonResponse(body, status = 200) {
@@ -21,6 +21,15 @@ function makeConfig(agents, fleet = {}) {
       ...fleet
     }
   };
+}
+
+function streamResponse(text, status = 200) {
+  return new Response(new ReadableStream({
+    start(controller) {
+      controller.enqueue(new TextEncoder().encode(text));
+      controller.close();
+    }
+  }), { status, headers: { 'content-type': 'text/event-stream' } });
 }
 
 test('fleet poller exchanges token and derives safe agent records', async () => {
@@ -170,23 +179,25 @@ test('fleet poller marks stale successful records offline', async () => {
   assert.equal(poller.getFleet().agents[0].state, 'OFFLINE');
 });
 
-test('buildSelfRecord produces a secret-free self record from local state', () => {
+test('stateToFleetRecord produces a secret-free self record from local API state', () => {
   const name = 'zylos01';
-  const record = buildSelfRecord({
+  const record = stateToFleetRecord({
     name,
-    color: agentColor(name),
-    state: {
+    color: agentColor(name)
+  }, {
       state: 'BUSY',
       running_tools: [{ tool_name: 'Bash', tool_detail: 'npm test' }],
-      active_subagents: [{ last_activity: 'Subagent active' }]
-    },
-    runtimeInfo: { model: 'Opus 4.6', effort: 'high', codex_update: '0.137.0' },
-    contextPct: 42,
-    newSessionThreshold: 75,
-    sessionCost: 1.23,
-    dailyCost: 4.56,
-    weeklyCost: 7.89,
-    systemMetrics: { cpu_pct: 12, mem_pct: 34, disk_pct: 56 },
+      active_subagents: [{ last_activity: 'Subagent active' }],
+      runtime_info: { model: 'Opus 4.6', effort: 'high', codex_update: '0.137.0' },
+      context_pct: 42,
+      new_session_threshold: 75,
+      session_cost: 1.23,
+      daily_cost: 4.56,
+      weekly_cost: 7.89,
+      system_metrics: { cpu_pct: 12, mem_pct: 34, disk_pct: 56 }
+  }, {
+    self: true,
+    base_url: null,
     nowMs: 0
   });
 
@@ -217,41 +228,42 @@ test('buildSelfRecord produces a secret-free self record from local state', () =
   assert.equal(JSON.stringify(record).includes('zylos_st_'), false);
 });
 
-test('buildSelfRecord requires camelCase cost params — snake_case spread yields null (#174)', () => {
-  const snakeCase = buildSelfRecord({
-    name: 'test', color: agentColor('test'), state: { state: 'IDLE' },
-    session_cost: 1.23, daily_cost: 4.56, weekly_cost: 7.89, nowMs: 0
+test('stateToFleetRecord consumes API snake_case cost tiers directly (#174)', () => {
+  const record = stateToFleetRecord({
+    name: 'test',
+    color: agentColor('test')
+  }, {
+    state: 'IDLE',
+    session_cost: 1.23,
+    daily_cost: 4.56,
+    weekly_cost: 7.89
+  }, {
+    self: true,
+    nowMs: 0
   });
-  assert.equal(snakeCase.session_cost, null);
-  assert.equal(snakeCase.daily_cost, null);
-  assert.equal(snakeCase.weekly_cost, null);
-
-  const camelCase = buildSelfRecord({
-    name: 'test', color: agentColor('test'), state: { state: 'IDLE' },
-    sessionCost: 1.23, dailyCost: 4.56, weeklyCost: 7.89, nowMs: 0
-  });
-  assert.equal(camelCase.session_cost, 1.23);
-  assert.equal(camelCase.daily_cost, 4.56);
-  assert.equal(camelCase.weekly_cost, 7.89);
+  assert.equal(record.session_cost, 1.23);
+  assert.equal(record.daily_cost, 4.56);
+  assert.equal(record.weekly_cost, 7.89);
 });
 
-test('buildSelfRecord maps idle and offline/unknown states', () => {
-  const idle = buildSelfRecord({ name: 'a', color: agentColor('a'), state: { state: 'IDLE' }, nowMs: 0 });
+test('stateToFleetRecord maps idle and self offline/unknown states', () => {
+  const agent = { name: 'a', color: agentColor('a') };
+  const idle = stateToFleetRecord(agent, { state: 'IDLE' }, { self: true, nowMs: 0 });
   assert.equal(idle.health_reason, 'idle');
   assert.equal(idle.pulse_rate, 1);
 
-  const offline = buildSelfRecord({ name: 'a', color: agentColor('a'), state: { state: 'OFFLINE' }, nowMs: 0 });
+  const offline = stateToFleetRecord(agent, { state: 'OFFLINE' }, { self: true, nowMs: 0 });
   assert.equal(offline.health_reason, 'offline');
   assert.equal(offline.pulse_rate, 0);
 
-  const unknown = buildSelfRecord({ name: 'a', color: agentColor('a'), state: { state: 'UNKNOWN' }, nowMs: 0 });
+  const unknown = stateToFleetRecord(agent, { state: 'UNKNOWN' }, { self: true, nowMs: 0 });
   assert.equal(unknown.health_reason, 'offline');
   assert.equal(unknown.pulse_rate, 0);
 });
 
 test('self record injected into fleet is first, flagged, and order-independent', () => {
   // Simulate the /api/fleet handler composition: self prepended to poller output.
-  const self = buildSelfRecord({ name: 'local', color: agentColor('local'), state: { state: 'IDLE' }, nowMs: 0 });
+  const self = stateToFleetRecord({ name: 'local', color: agentColor('local') }, { state: 'IDLE' }, { self: true, nowMs: 0 });
   const external = [
     { name: 'remote1', self: false },
     { name: 'remote2', self: false }
@@ -264,7 +276,7 @@ test('self record injected into fleet is first, flagged, and order-independent',
 });
 
 test('buildFleetPayload includes self first and rejects leaked secrets', () => {
-  const self = buildSelfRecord({ name: 'local', color: agentColor('local'), state: { state: 'IDLE' }, nowMs: 0 });
+  const self = stateToFleetRecord({ name: 'local', color: agentColor('local') }, { state: 'IDLE' }, { self: true, nowMs: 0 });
   const payload = buildFleetPayload({
     selfRecord: self,
     remoteFleet: { agents: [{ name: 'remote', self: false }], count: 1, updated_at: '2026-06-09T00:00:00.000Z' }
@@ -279,6 +291,147 @@ test('buildFleetPayload includes self first and rejects leaked secrets', () => {
     selfRecord: self,
     remoteFleet: { agents: [{ name: 'bad', read_api_key: 'zylos_ak_secret' }] }
   }), /fleet_secret_leak_guard/);
+});
+
+test('SseEventParser handles events, ids, comments, CRLF, and multi-line data', () => {
+  const events = [];
+  const parser = new SseEventParser((event) => events.push(event));
+  parser.push(': keepalive\r\nid: 7\r\nevent: fleet_state\r\ndata: {"state":"BUSY"');
+  parser.push('\r\ndata: ,"context_pct":42}\r\n\r\n');
+  parser.flush();
+  assert.deepEqual(events, [{
+    event: 'fleet_state',
+    data: '{"state":"BUSY"\n,"context_pct":42}',
+    id: '7'
+  }]);
+});
+
+test('fleet poller SSE uses Bearer auth and fleet_state updates records', async () => {
+  const calls = [];
+  const fetchImpl = async (url, options = {}) => {
+    calls.push({ url, authorization: options.headers?.Authorization });
+    if (url.endsWith('/api/auth/token')) {
+      return jsonResponse({ token: 'zylos_st_stream', expires_at: new Date(120000).toISOString() });
+    }
+    if (url.endsWith('/api/state')) return jsonResponse({ state: 'IDLE', context_pct: 1 });
+    if (url.endsWith('/api/stream')) {
+      assert.equal(options.headers.Authorization, 'Bearer zylos_st_stream');
+      assert.equal(url.includes('token='), false);
+      return streamResponse('event: fleet_state\ndata: {"state":"BUSY","context_pct":55,"session_cost":0.75}\n\n');
+    }
+    throw new Error(`unexpected URL ${url}`);
+  };
+  const poller = new FleetPoller(makeConfig([
+    { name: 'Remote', base_url: 'https://remote.example.test', read_api_key: 'zylos_ak_secret' }
+  ]), { fetch: fetchImpl, now: () => 0 });
+
+  await poller._runSse(poller.agents[0], poller._streamState(poller.agents[0]), new AbortController().signal).catch(() => {});
+  const record = poller.getFleet().agents[0];
+  assert.equal(record.state, 'BUSY');
+  assert.equal(record.context_pct, 55);
+  assert.equal(record.session_cost, 0.75);
+  assert.ok(calls.some(c => c.url.endsWith('/api/stream') && c.authorization === 'Bearer zylos_st_stream'));
+});
+
+test('fleet poller SSE auth_expired forces token refresh on reconnect', async () => {
+  let tokenCount = 0;
+  let streamCount = 0;
+  const fetchImpl = async (url) => {
+    if (url.endsWith('/api/auth/token')) {
+      tokenCount += 1;
+      return jsonResponse({ token: `zylos_st_${tokenCount}`, expires_at: new Date(120000).toISOString() });
+    }
+    if (url.endsWith('/api/state')) return jsonResponse({ state: 'IDLE' });
+    if (url.endsWith('/api/stream')) {
+      streamCount += 1;
+      return streamResponse(streamCount === 1
+        ? 'event: auth_expired\ndata: {}\n\n'
+        : 'event: fleet_state\ndata: {"state":"BUSY"}\n\n');
+    }
+    throw new Error(`unexpected URL ${url}`);
+  };
+  const poller = new FleetPoller(makeConfig([
+    { name: 'Remote', base_url: 'https://remote.example.test', read_api_key: 'zylos_ak_secret' }
+  ]), { fetch: fetchImpl, now: () => 0 });
+  const agent = poller.agents[0];
+
+  await assert.rejects(
+    () => poller._runSse(agent, poller._streamState(agent), new AbortController().signal),
+    /auth_expired/
+  );
+  await poller._runSse(agent, poller._streamState(agent), new AbortController().signal).catch(() => {});
+  assert.equal(tokenCount, 2);
+  assert.equal(poller.getFleet().agents[0].state, 'BUSY');
+});
+
+test('fleet poller stop aborts active SSE fetch streams', async () => {
+  let signal;
+  const fetchImpl = async (url, options = {}) => {
+    if (url.endsWith('/api/auth/token')) {
+      return jsonResponse({ token: 'zylos_st_stream', expires_at: new Date(120000).toISOString() });
+    }
+    if (url.endsWith('/api/state')) return jsonResponse({ state: 'IDLE' });
+    if (url.endsWith('/api/stream')) {
+      signal = options.signal;
+      return new Promise(() => {});
+    }
+    throw new Error(`unexpected URL ${url}`);
+  };
+  const poller = new FleetPoller(makeConfig([
+    { name: 'Remote', base_url: 'https://remote.example.test', read_api_key: 'zylos_ak_secret' }
+  ]), { fetch: fetchImpl, now: () => 0 });
+
+  poller.start();
+  await new Promise(resolve => setTimeout(resolve, 10));
+  poller.stop();
+  assert.equal(signal.aborted, true);
+});
+
+test('fleet poller resumes fallback polling when SSE has no fleet_state and stops after recovery', async () => {
+  const timers = [];
+  const cleared = new Set();
+  let stateFetches = 0;
+  const fetchImpl = async (url) => {
+    if (url.endsWith('/api/auth/token')) {
+      return jsonResponse({ token: 'zylos_st_stream', expires_at: new Date(120000).toISOString() });
+    }
+    if (url.endsWith('/api/state')) {
+      stateFetches += 1;
+      return jsonResponse({ state: 'IDLE', context_pct: stateFetches });
+    }
+    if (url.endsWith('/api/stream')) {
+      return streamResponse(': connected\n\n');
+    }
+    throw new Error(`unexpected URL ${url}`);
+  };
+  const poller = new FleetPoller(makeConfig([
+    { name: 'Remote', base_url: 'https://remote.example.test', read_api_key: 'zylos_ak_secret' }
+  ]), {
+    fetch: fetchImpl,
+    now: () => 0,
+    setTimeout: (fn, ms) => {
+      const timer = { fn, ms, unref() {} };
+      timers.push(timer);
+      return timer;
+    },
+    clearTimeout: (timer) => cleared.add(timer)
+  });
+  const agent = poller.agents[0];
+  poller.running = true;
+  const stream = poller._streamState(agent);
+  const run = poller._runSse(agent, stream, new AbortController().signal).catch(err => err);
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.equal(timers[0].ms, 3000);
+
+  timers[0].fn();
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.ok(stream.pollTimer, 'compatibility fallback should start polling');
+
+  poller._handleSseEvent(agent, { event: 'fleet_state', data: '{"state":"BUSY"}' });
+  assert.equal(stream.pollTimer, null);
+  assert.ok(cleared.has(timers[0]));
+  poller.running = false;
+  await run;
 });
 
 test('fleet poller onPoll receives safe remote fleet after poll cycle completion', async () => {
