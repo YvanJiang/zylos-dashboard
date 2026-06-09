@@ -231,6 +231,15 @@ test('/api/state exposes stable agent identity without fleet secrets', async () 
     // Identity now also carries the deterministic mascot tint color/hue.
     assert.equal(typeof body.agent.color, 'string');
     assert.equal(typeof body.agent.hue, 'number');
+    assert.equal(typeof body.new_session_threshold, 'number');
+    assert.ok(body.runtime_info && typeof body.runtime_info === 'object');
+    assert.ok(body.system_metrics && typeof body.system_metrics === 'object');
+    assert.ok(Object.hasOwn(body.system_metrics, 'cpu_pct'));
+    assert.ok(Object.hasOwn(body.system_metrics, 'mem_pct'));
+    assert.ok(Object.hasOwn(body.system_metrics, 'disk_pct'));
+    assert.ok(Object.hasOwn(body, 'session_cost'));
+    assert.ok(Object.hasOwn(body, 'daily_cost'));
+    assert.ok(Object.hasOwn(body, 'weekly_cost'));
     assert.equal(JSON.stringify(body).includes('zylos_ak_secret'), false);
     assert.equal(JSON.stringify(body).includes('read_api_key'), false);
   } finally {

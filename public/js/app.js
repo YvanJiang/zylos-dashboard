@@ -1,6 +1,6 @@
 import { pct, resolveCpuDisplay } from './gauge-utils.js';
 import { setAssetRoot, getLocale, initI18n, t, renderI18n } from './i18n.js';
-import { renderPulseWall, stateMood, MASCOT_BY_MOOD } from './pulse-wall.js';
+import { renderAgentFleet, stateMood, MASCOT_BY_MOOD } from './agent-fleet.js';
 
 const BASE_PATH = document.documentElement.dataset.basePath || '';
 const ASSET_ROOT = `${BASE_PATH}/_assets`;
@@ -29,7 +29,7 @@ const state = {
   timelineUpdatedAt: null,
   timer: null,
   pollTimer: null,
-  fleetTimer: null,
+  fleetFallbackTimer: null,
   eventSource: null,
   charts: {},
   lastCpuPct: null,
@@ -138,28 +138,31 @@ function esc(v) {
   return String(v ?? '').replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;');
 }
 
-function pulseWallLabels() {
+function agentFleetLabels() {
   return {
-    title: t('pulse.title'),
-    subtitle: t('pulse.subtitle'),
-    totalCost: t('pulse.total_cost'),
-    busy: t('pulse.busy'),
-    thinking: t('pulse.thinking'),
-    idle: t('pulse.idle'),
-    stuck: t('pulse.stuck'),
-    offline: t('pulse.offline'),
-    unreachable: t('pulse.unreachable'),
-    versionUnsupported: t('pulse.version_unsupported'),
-    authFailed: t('pulse.auth_failed'),
-    noActivity: t('pulse.no_activity'),
-    lastSeen: t('pulse.last_seen'),
+    title: t('agent_fleet.title'),
+    subtitle: t('agent_fleet.subtitle'),
+    busy: t('agent_fleet.busy'),
+    thinking: t('agent_fleet.thinking'),
+    idle: t('agent_fleet.idle'),
+    stuck: t('agent_fleet.stuck'),
+    offline: t('agent_fleet.offline'),
+    unreachable: t('agent_fleet.unreachable'),
+    versionUnsupported: t('agent_fleet.version_unsupported'),
+    authFailed: t('agent_fleet.auth_failed'),
+    noActivity: t('agent_fleet.no_activity'),
     context: t('label.context'),
-    justNow: t('time.just_now'),
-    secondsAgo: t('time.seconds'),
-    minutesAgo: t('pulse.minutes_ago'),
-    hoursAgo: t('pulse.hours_ago'),
-    empty: t('pulse.empty'),
-    you: t('pulse.you')
+    threshold: t('agent_fleet.threshold'),
+    model: t('agent_fleet.model'),
+    upgrade: t('agent_fleet.upgrade'),
+    sessionCost: t('cost.session'),
+    dailyCost: t('cost.today'),
+    weeklyCost: t('cost.7d'),
+    cpu: t('label.cpu'),
+    memory: t('label.memory'),
+    disk: t('label.disk'),
+    subagent: t('label.subagents'),
+    empty: t('agent_fleet.empty')
   };
 }
 
@@ -299,7 +302,7 @@ function renderState() {
     mascotArea.className = `mascot-area ${mascotClass(p?.state)}`;
     const sprite = $('#mascot-sprite');
     if (sprite) {
-      // Same octopus mascot set + mood logic as the Pulse Wall, tinted with this
+      // Same octopus mascot set + mood logic as Agent Fleet, tinted with this
       // agent's own hue, so the agent looks identical in its tile and its detail.
       const mood = stateMood({ state: p?.state, activity: p?.activity });
       const file = MASCOT_BY_MOOD[mood] || MASCOT_BY_MOOD.idle;
@@ -955,12 +958,12 @@ function renderComm() {
 }
 
 function renderFleet() {
-  const container = $('#pulse-wall-root');
+  const container = $('#agent-fleet-root');
   if (!container) return;
-  renderPulseWall(container, state.fleet, {
+  renderAgentFleet(container, state.fleet, {
     basePath: BASE_PATH,
     mascotRoot: `${ASSET_ROOT}/img/mascot`,
-    labels: pulseWallLabels()
+    labels: agentFleetLabels()
   });
   const updated = $('#fleet-updated');
   if (updated) updated.textContent = fmtAge(state.fleet?.updated_at);
@@ -1084,7 +1087,7 @@ function activeTabName() {
 }
 
 // ─── Fleet view switch (multi-agent mode) ───
-// In multi-agent mode the Pulse Wall is the top-level landing view and the
+// In multi-agent mode Agent Fleet is the top-level landing view and the
 // single-agent dashboard is the "agent detail" view, reached by clicking the
 // self tile. In single mode only the agent dashboard exists.
 const VIEW_ANIM_CLASSES = ['is-entering', 'is-leaving', 'v-enter', 'v-leave-to-fleet', 'v-leave-to-agent'];
@@ -1160,38 +1163,40 @@ function showFleetView(opts = {}) {
   state.fleetViewActive = true;
   refreshFleet().catch(() => {});
   transitionView('fleet', opts);
-  syncFleetPolling();
+  scheduleFleetFallback();
 }
 
 function showAgentDetail(opts = {}) {
   state.fleetViewActive = false;
   transitionView('agent', opts);
-  syncFleetPolling();
+  clearFleetFallback();
 }
 
-function stopFleetPolling() {
-  if (state.fleetTimer) {
-    clearInterval(state.fleetTimer);
-    state.fleetTimer = null;
+function clearFleetFallback() {
+  if (state.fleetFallbackTimer) {
+    clearTimeout(state.fleetFallbackTimer);
+    state.fleetFallbackTimer = null;
   }
 }
 
-function shouldPollFleetFast() {
+function shouldReceiveFleetEvents() {
   return state.fleetViewActive && document.visibilityState !== 'hidden';
 }
 
-function startFleetPolling() {
-  if (!shouldPollFleetFast() || state.fleetTimer) return;
-  state.fleetTimer = setInterval(() => {
+function scheduleFleetFallback() {
+  clearFleetFallback();
+  if (!shouldReceiveFleetEvents()) return;
+  state.fleetFallbackTimer = setTimeout(() => {
+    state.fleetFallbackTimer = null;
     refreshFleet().catch(() => {});
-  }, 3_000);
+  }, 10_000);
 }
 
-function syncFleetPolling() {
-  if (shouldPollFleetFast()) {
-    startFleetPolling();
+function syncFleetSubscription() {
+  if (shouldReceiveFleetEvents()) {
+    scheduleFleetFallback();
   } else {
-    stopFleetPolling();
+    clearFleetFallback();
   }
 }
 
@@ -1213,7 +1218,7 @@ function applySse(name, data) {
     const prevRi = state.dashboardState?.runtime_info;
     // The SSE state payload carries only raw state — the agent identity color
     // (hue) is added by /api/state, not by the broadcast. Preserve it across SSE
-    // updates so the single-agent mascot stays tinted to match its Pulse Wall
+    // updates so the single-agent mascot stays tinted to match its Agent Fleet
     // tile instead of falling back to the untinted base art on every update.
     const prevAgent = state.dashboardState?.agent;
     state.dashboardState = data;
@@ -1237,6 +1242,11 @@ function applySse(name, data) {
     state.system = data; state.healthUpdatedAt = new Date().toISOString(); renderHealth();
   } else if (name === 'health_update') {
     state.health = data; state.healthUpdatedAt = new Date().toISOString(); renderHealth();
+  } else if (name === 'fleet') {
+    state.fleet = data;
+    renderFleet();
+    clearFleetFallback();
+    scheduleFleetFallback();
   }
 }
 
@@ -1262,7 +1272,7 @@ function connectSse() {
     scheduleSseReconnect();
   };
 
-  for (const ev of ['state_change', 'metric_update', 'system_update', 'health_update']) {
+  for (const ev of ['state_change', 'metric_update', 'system_update', 'health_update', 'fleet']) {
     state.eventSource.addEventListener(ev, (e) => {
       try { applySse(ev, JSON.parse(e.data)); renderConnection('live'); }
       catch { renderConnection('degraded'); }
@@ -1314,7 +1324,7 @@ function initTabs() {
     const tab = window.location.pathname.endsWith('/trends') ? 'trends' : 'overview';
     activateTab(tab, false);
   });
-  document.addEventListener('visibilitychange', syncFleetPolling);
+  document.addEventListener('visibilitychange', syncFleetSubscription);
   const initialTab = window.location.pathname.endsWith('/trends') ? 'trends' : 'overview';
   activateTab(initialTab, false);
 }
@@ -1333,10 +1343,10 @@ function applyFleetMode(fleet) {
     if (backBtn) backBtn.hidden = true;
     if (fleetView) fleetView.hidden = true;
     if (agentDetail) agentDetail.hidden = false;
-    syncFleetPolling();
+    syncFleetSubscription();
     return;
   }
-  // Multi-agent mode: the Pulse Wall is the landing view. The first paint shows
+  // Multi-agent mode: Agent Fleet is the landing view. The first paint shows
   // the single-agent dashboard (it is the safe default if JS/fleet fails), so
   // rather than swap instantly we briefly let it settle, then zoom out to the
   // wall — turning the unavoidable first frame into a deliberate transition.
@@ -1344,7 +1354,7 @@ function applyFleetMode(fleet) {
   state.fleetViewActive = false;
   if (fleetView) fleetView.hidden = true;
   if (agentDetail) agentDetail.hidden = false;
-  syncFleetPolling();
+  syncFleetSubscription();
   if (prefersReducedMotion()) {
     showFleetView({ animate: false });
   } else {
@@ -1356,10 +1366,10 @@ function initFleetMode() {
   // Intercept self-tile clicks: switch to the agent dashboard instead of a
   // full navigation that would just reload the wall. External tiles navigate
   // normally to /fleet/<name>/.
-  const root = $('#pulse-wall-root');
+  const root = $('#agent-fleet-root');
   if (root) {
     root.addEventListener('click', (e) => {
-      const tile = e.target.closest('.pulse-tile');
+      const tile = e.target.closest('.agent-tile');
       if (tile && tile.dataset.self === 'true') {
         e.preventDefault();
         showAgentDetail();
@@ -2346,13 +2356,13 @@ function initInfoBarButtons() {
 function startTimers() {
   state.timer = setInterval(() => { renderState(); renderMetrics(); renderHealth(); }, 1000);
   state.pollTimer = setInterval(refreshAll, 30_000);
-  syncFleetPolling();
+  syncFleetSubscription();
 }
 
 window.addEventListener('beforeunload', () => {
   clearInterval(state.timer);
   clearInterval(state.pollTimer);
-  stopFleetPolling();
+  clearFleetFallback();
   clearTimeout(state.sseReconnectTimer);
   state.eventSource?.close();
 });
@@ -2370,7 +2380,7 @@ renderAll();
 initCharts();
 initTrendControls();
 connectSse();
-// Fetch the fleet early to choose the landing view (Pulse Wall vs single agent).
+// Fetch the fleet early to choose the landing view (Agent Fleet vs single agent).
 try {
   const fleet = await refreshFleet();
   applyFleetMode(fleet);

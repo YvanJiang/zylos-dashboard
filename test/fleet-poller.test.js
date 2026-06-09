@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { agentColor } from '../src/lib/agent-color.js';
 import { FleetPoller, buildSelfRecord } from '../src/lib/fleet-poller.js';
+import { buildFleetPayload } from '../src/lib/fleet-payload.js';
 
 function jsonResponse(body, status = 200) {
   return new Response(JSON.stringify(body), {
@@ -33,6 +34,13 @@ test('fleet poller exchanges token and derives safe agent records', async () => 
     return jsonResponse({
       state: 'BUSY',
       running_tools: [{ tool_name: 'Bash', tool_detail: 'npm test' }],
+      runtime_info: { model: 'GPT-5', effort: 'high', zylos_update: '1.2.3' },
+      new_session_threshold: 75,
+      system_metrics: { cpu_pct: 12, mem_pct: 34, disk_pct: 56 },
+      session_cost: 1.23,
+      daily_cost: 4.56,
+      weekly_cost: 7.89,
+      active_subagents: [{ last_activity: 'Worker running' }],
       metrics: {
         context_pct: { value: 42 },
         session_cost: { value: 1.23 }
@@ -54,6 +62,17 @@ test('fleet poller exchanges token and derives safe agent records', async () => 
   assert.equal(fleet.agents[0].activity, 'npm test');
   assert.equal(fleet.agents[0].context_pct, 42);
   assert.equal(fleet.agents[0].cost, 1.23);
+  assert.equal(fleet.agents[0].session_cost, 1.23);
+  assert.equal(fleet.agents[0].daily_cost, 4.56);
+  assert.equal(fleet.agents[0].weekly_cost, 7.89);
+  assert.equal(fleet.agents[0].model, 'GPT-5');
+  assert.equal(fleet.agents[0].effort, 'high');
+  assert.equal(fleet.agents[0].new_session_threshold, 75);
+  assert.equal(fleet.agents[0].cpu_pct, 12);
+  assert.equal(fleet.agents[0].mem_pct, 34);
+  assert.equal(fleet.agents[0].disk_pct, 56);
+  assert.equal(fleet.agents[0].has_upgrade, true);
+  assert.equal(fleet.agents[0].has_subagent, true);
   assert.equal(fleet.agents[0].health_reason, 'ok');
   assert.equal(JSON.stringify(fleet).includes('zylos_ak_secret'), false);
   assert.equal(JSON.stringify(fleet).includes('zylos_st_secret'), false);
@@ -158,10 +177,16 @@ test('buildSelfRecord produces a secret-free self record from local state', () =
     color: agentColor(name),
     state: {
       state: 'BUSY',
-      running_tools: [{ tool_name: 'Bash', tool_detail: 'npm test' }]
+      running_tools: [{ tool_name: 'Bash', tool_detail: 'npm test' }],
+      active_subagents: [{ last_activity: 'Subagent active' }]
     },
+    runtimeInfo: { model: 'Opus 4.6', effort: 'high', codex_update: '0.137.0' },
     contextPct: 42,
-    cost: 1.23,
+    newSessionThreshold: 75,
+    sessionCost: 1.23,
+    dailyCost: 4.56,
+    weeklyCost: 7.89,
+    systemMetrics: { cpu_pct: 12, mem_pct: 34, disk_pct: 56 },
     nowMs: 0
   });
 
@@ -173,6 +198,17 @@ test('buildSelfRecord produces a secret-free self record from local state', () =
   assert.equal(record.activity, 'npm test');
   assert.equal(record.context_pct, 42);
   assert.equal(record.cost, 1.23);
+  assert.equal(record.session_cost, 1.23);
+  assert.equal(record.daily_cost, 4.56);
+  assert.equal(record.weekly_cost, 7.89);
+  assert.equal(record.model, 'Opus 4.6');
+  assert.equal(record.effort, 'high');
+  assert.equal(record.new_session_threshold, 75);
+  assert.equal(record.cpu_pct, 12);
+  assert.equal(record.mem_pct, 34);
+  assert.equal(record.disk_pct, 56);
+  assert.equal(record.has_upgrade, true);
+  assert.equal(record.has_subagent, true);
   assert.equal(record.base_url, null);
   assert.equal(record.pulse_rate, 1);
   assert.equal(record.health_reason, 'ok');
@@ -207,4 +243,46 @@ test('self record injected into fleet is first, flagged, and order-independent',
   assert.equal(agents[0].name, 'local');
   assert.equal(agents.filter((a) => a.self === true).length, 1);
   assert.ok(agents.slice(1).every((a) => a.self === false));
+});
+
+test('buildFleetPayload includes self first and rejects leaked secrets', () => {
+  const self = buildSelfRecord({ name: 'local', color: agentColor('local'), state: { state: 'IDLE' }, nowMs: 0 });
+  const payload = buildFleetPayload({
+    selfRecord: self,
+    remoteFleet: { agents: [{ name: 'remote', self: false }], count: 1, updated_at: '2026-06-09T00:00:00.000Z' }
+  });
+  assert.equal(payload.count, 2);
+  assert.equal(payload.agents[0].name, 'local');
+  assert.equal(payload.agents[0].self, true);
+  assert.equal(payload.agents[1].name, 'remote');
+  assert.equal(payload.agents[1].self, false);
+
+  assert.throws(() => buildFleetPayload({
+    selfRecord: self,
+    remoteFleet: { agents: [{ name: 'bad', read_api_key: 'zylos_ak_secret' }] }
+  }), /fleet_secret_leak_guard/);
+});
+
+test('fleet poller onPoll receives safe remote fleet after poll cycle completion', async () => {
+  let onPollFleet = null;
+  const fetchImpl = async (url) => {
+    if (url.endsWith('/api/auth/token')) {
+      return jsonResponse({ token: 'zylos_st_ok', expires_at: new Date(120000).toISOString() });
+    }
+    return jsonResponse({ state: 'IDLE' });
+  };
+
+  const poller = new FleetPoller(makeConfig([
+    { name: 'Remote', base_url: 'https://remote.example.test', read_api_key: 'zylos_ak_secret' }
+  ]), {
+    fetch: fetchImpl,
+    now: () => 0,
+    onPoll: (fleet) => { onPollFleet = fleet; }
+  });
+
+  await poller.pollOnce();
+  assert.equal(onPollFleet.count, 1);
+  assert.equal(onPollFleet.agents[0].name, 'Remote');
+  assert.equal(JSON.stringify(onPollFleet).includes('zylos_ak_secret'), false);
+  assert.equal(JSON.stringify(onPollFleet).includes('zylos_st_ok'), false);
 });

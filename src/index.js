@@ -32,6 +32,7 @@ import { runMetricMaintenance } from './lib/metric-maintenance.js';
 import { buildSystemPayload } from './lib/system-api.js';
 import { SseHub } from './lib/sse.js';
 import { FleetPoller, buildSelfRecord } from './lib/fleet-poller.js';
+import { buildFleetPayload } from './lib/fleet-payload.js';
 import { FleetProxy } from './lib/fleet-proxy.js';
 import { agentColor } from './lib/agent-color.js';
 import { C4Reader } from './lib/c4-reader.js';
@@ -199,6 +200,36 @@ function buildRuntimeInfo() {
   });
 }
 
+function getNewSessionThreshold() {
+  const zylosCfg = loadZylosConfig(config.zylosDir);
+  const runtime = zylosCfg.runtime || 'claude';
+  const thresholdKey = runtime === 'codex' ? 'codex_new_session_threshold' : 'new_session_threshold';
+  return parseInt(zylosCfg[thresholdKey], 10) || (runtime === 'codex' ? 75 : 70);
+}
+
+function getSystemMetrics() {
+  const data = systemCollector.getLatestSystemData();
+  const memUsed = Number(data?.mem_used_bytes);
+  const memTotal = Number(data?.mem_total_bytes);
+  return {
+    cpu_pct: Number.isFinite(Number(data?.cpu_pct)) ? Number(data.cpu_pct) : null,
+    mem_pct: Number.isFinite(memUsed) && Number.isFinite(memTotal) && memTotal > 0 ? (memUsed / memTotal) * 100 : null,
+    mem_used_bytes: Number.isFinite(memUsed) ? memUsed : null,
+    mem_total_bytes: Number.isFinite(memTotal) ? memTotal : null,
+    disk_pct: Number.isFinite(Number(data?.disk_used_pct)) ? Number(data.disk_used_pct) : null,
+    disk_free_bytes: Number.isFinite(Number(data?.disk_free_bytes)) ? Number(data.disk_free_bytes) : null
+  };
+}
+
+function getCostTiers() {
+  const aggregate = metricResolver.resolveAggregated('cost') || {};
+  return {
+    session_cost: aggregate.session ?? metricResolver.resolve('session_cost').value ?? null,
+    daily_cost: aggregate.today ?? metricResolver.resolve('daily_cost').value ?? null,
+    weekly_cost: aggregate.seven_day ?? null
+  };
+}
+
 // 7. State engine
 const stateEngine = new StateEngine(store, collectors, config, {
   onStateChange: (st) => {
@@ -241,7 +272,52 @@ const c4Reader = new C4Reader(config.zylosDir);
 
 // 9. Ingest handler (with state engine reference)
 const ingestHandler = new IngestHandler(store, sanitizer, stateEngine, config);
-const fleetPoller = new FleetPoller(config);
+
+function buildApiStatePayload() {
+  const stateData = stateEngine.getState();
+  // Include the agent's deterministic identity color/hue so the single-agent
+  // mascot can be tinted to match this agent's fleet tile.
+  stateData.agent = { ...config.agent, ...agentColor(config.agent?.name) };
+  stateData.runtime_info = buildRuntimeInfo();
+  stateData.new_session_threshold = getNewSessionThreshold();
+  stateData.system_metrics = getSystemMetrics();
+  Object.assign(stateData, getCostTiers());
+  return stateData;
+}
+
+function buildSelfFleetRecord() {
+  const stateData = stateEngine.getState();
+  const runtimeInfo = buildRuntimeInfo();
+  const costTiers = getCostTiers();
+  return buildSelfRecord({
+    name: config.agent?.name,
+    color: agentColor(config.agent?.name),
+    state: stateData,
+    runtimeInfo,
+    contextPct: metricResolver.resolve('context_pct').value,
+    newSessionThreshold: getNewSessionThreshold(),
+    systemMetrics: getSystemMetrics(),
+    ...costTiers
+  });
+}
+
+function buildFullFleetPayload(remoteFleet = fleetPoller.getFleet()) {
+  return buildFleetPayload({
+    remoteFleet,
+    selfRecord: buildSelfFleetRecord(),
+    nowIso: new Date().toISOString()
+  });
+}
+
+function broadcastFleet(remoteFleet) {
+  try {
+    sse.broadcast('fleet', buildFullFleetPayload(remoteFleet));
+  } catch (err) {
+    process.stderr.write(`[fleet] SSE broadcast skipped: ${err.message}\n`);
+  }
+}
+
+const fleetPoller = new FleetPoller(config, { onPoll: broadcastFleet });
 
 async function startupSequence() {
   // Initial collector runs
@@ -385,38 +461,16 @@ function handleApi(req, res, pathname, url) {
   }
 
   if (pathname === '/api/state') {
-    const stateData = stateEngine.getState();
-    // Include the agent's deterministic identity color/hue so the single-agent
-    // mascot can be tinted to match this agent's Pulse Wall tile.
-    stateData.agent = { ...config.agent, ...agentColor(config.agent?.name) };
-    stateData.runtime_info = buildRuntimeInfo();
-    const zylosCfg = loadZylosConfig(config.zylosDir);
-    const runtime = zylosCfg.runtime || 'claude';
-    const thresholdKey = runtime === 'codex' ? 'codex_new_session_threshold' : 'new_session_threshold';
-    stateData.new_session_threshold = parseInt(zylosCfg[thresholdKey], 10) || (runtime === 'codex' ? 75 : 70);
-    sendJson(res, 200, stateData);
+    sendJson(res, 200, buildApiStatePayload());
     return true;
   }
 
   if (pathname === '/api/fleet') {
-    const fleetData = fleetPoller.getFleet();
-    // Inject the local agent ("self") as the first record, built from the
-    // in-process state/metrics — never an HTTP call to self. It has no secrets.
-    const selfRecord = buildSelfRecord({
-      name: config.agent?.name,
-      color: agentColor(config.agent?.name),
-      state: stateEngine.getState(),
-      contextPct: metricResolver.resolve('context_pct').value,
-      cost: metricResolver.resolve('session_cost').value ?? metricResolver.resolve('daily_cost').value
-    });
-    fleetData.agents = [selfRecord, ...fleetData.agents];
-    fleetData.count = fleetData.agents.length;
-    const payload = JSON.stringify(fleetData);
-    if (payload.includes('read_api_key') || payload.includes('read_session_token') || payload.includes('zylos_ak_') || payload.includes('zylos_st_')) {
-      sendJson(res, 500, { error: 'fleet_secret_leak_guard' });
-      return true;
+    try {
+      sendJson(res, 200, buildFullFleetPayload());
+    } catch (err) {
+      sendJson(res, 500, { error: err.code || err.message });
     }
-    sendJson(res, 200, fleetData);
     return true;
   }
 
