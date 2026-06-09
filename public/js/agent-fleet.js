@@ -89,11 +89,19 @@ function sortAgents(agents) {
   return [...self, ...others];
 }
 
+function ringLevel(pct) {
+  if (pct == null) return 'ok';
+  if (pct >= 90) return 'critical';
+  if (pct >= 70) return 'warning';
+  return 'ok';
+}
+
 function miniRing(name, value, labels) {
   const pct = pctValue(value);
   const ringPct = pct == null ? 0 : pct;
   const valueLabel = pct == null ? '--' : `${ringPct.toFixed(0)}%`;
-  return `<span class="fleet-mini-ring" style="--ring-pct:${ringPct};" aria-label="${escapeHtml(name)} ${escapeHtml(valueLabel)}">
+  const level = ringLevel(pct);
+  return `<span class="fleet-mini-ring ring-${level}" style="--ring-pct:${ringPct};" aria-label="${escapeHtml(name)} ${escapeHtml(valueLabel)}">
     <span>${escapeHtml(valueLabel)}</span>
     <small>${escapeHtml(name)}</small>
   </span>`;
@@ -189,7 +197,7 @@ function renderTile(tile, labels) {
   return `<a class="agent-tile agent-tile-${escapeHtml(tile.mood)}${tile.offline ? ' is-offline' : ''}${tile.isSelf ? ' is-self' : ''}${tile.overThreshold ? ' is-over-threshold' : ''}" href="${escapeHtml(tile.href)}" data-agent="${escapeHtml(tile.name)}" data-state="${escapeHtml(tile.mood)}"${tile.isSelf ? ' data-self="true"' : ''} style="--agent-accent:${escapeHtml(tile.color)};--agent-hue:${tile.hue}deg;--context-pct:${ringPct};--threshold-pct:${threshold};">
     <div class="agent-tile-head">
       <span class="agent-name">${escapeHtml(tile.name)}</span>
-      <span class="agent-state">${escapeHtml(tile.stateLabel)}</span>
+      <span class="agent-state mood-${escapeHtml(tile.mood)}">${escapeHtml(tile.stateLabel)}</span>
       ${upgrade}
     </div>
     <div class="agent-runtime-line">

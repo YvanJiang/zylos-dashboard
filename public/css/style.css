@@ -327,6 +327,11 @@ main { padding: var(--space-md) var(--space-lg) var(--space-xl); }
   font-size: 11px;
   white-space: nowrap;
 }
+.agent-state.mood-idle     { color: var(--state-idle); }
+.agent-state.mood-busy     { color: var(--state-busy); }
+.agent-state.mood-thinking { color: var(--state-busy); }
+.agent-state.mood-stuck    { color: var(--state-stuck); }
+.agent-state.mood-offline  { color: var(--state-offline); }
 .agent-upgrade-badge {
   width: 8px;
   height: 8px;
@@ -424,6 +429,7 @@ main { padding: var(--space-md) var(--space-lg) var(--space-xl); }
 }
 .fleet-mini-ring {
   --ring-pct: 0;
+  --ring-color: var(--agent-accent);
   display: grid;
   place-items: center;
   gap: 2px;
@@ -432,8 +438,10 @@ main { padding: var(--space-md) var(--space-lg) var(--space-xl); }
   border-radius: 50%;
   background:
     radial-gradient(circle at center, var(--bg-elevated) 56%, transparent 57%),
-    conic-gradient(var(--agent-accent) calc(var(--ring-pct) * 1%), color-mix(in srgb, var(--text-muted) 22%, transparent) 0);
+    conic-gradient(var(--ring-color) calc(var(--ring-pct) * 1%), color-mix(in srgb, var(--text-muted) 22%, transparent) 0);
 }
+.fleet-mini-ring.ring-warning { --ring-color: var(--state-possibly-stuck); }
+.fleet-mini-ring.ring-critical { --ring-color: var(--state-stuck); }
 .fleet-mini-ring span {
   color: var(--text);
   font-size: 12px;

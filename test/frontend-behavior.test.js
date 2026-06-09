@@ -195,6 +195,12 @@ test('Agent Fleet fixture renders operational fields and removes deprecated Puls
   assert.match(html, /class="agent-tile agent-tile-stuck/);
   assert.match(html, /class="agent-tile agent-tile-offline is-offline/);
   assert.match(html, /Unreachable/);
+  assert.match(html, /agent-state mood-idle/);
+  assert.match(html, /agent-state mood-busy/);
+  assert.match(html, /agent-state mood-stuck/);
+  assert.match(html, /agent-state mood-offline/);
+  assert.match(html, /ring-warning/);
+  assert.doesNotMatch(html, /ring-critical/);
   assert.equal((html.match(/class="agent-fleet-reason"/g) || []).length, 2);
   assert.match(html, /href="\/dash\/fleet\/zylos01\/"/);
   assert.match(html, /src="\/dash\/_assets\/img\/mascot\/busy\.png"/);
