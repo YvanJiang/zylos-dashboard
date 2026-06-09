@@ -240,6 +240,7 @@ test('/api/state exposes stable agent identity without fleet secrets', async () 
     assert.ok(Object.hasOwn(body, 'session_cost'));
     assert.ok(Object.hasOwn(body, 'daily_cost'));
     assert.ok(Object.hasOwn(body, 'weekly_cost'));
+    assert.ok(Object.hasOwn(body, 'context_pct'));
     assert.equal(JSON.stringify(body).includes('zylos_ak_secret'), false);
     assert.equal(JSON.stringify(body).includes('read_api_key'), false);
   } finally {
