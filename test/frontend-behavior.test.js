@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import test from 'node:test';
-import { buildPulseWallView, renderPulseWallHtml } from '../public/js/pulse-wall.js';
+import { buildAgentFleetView, renderAgentFleetHtml } from '../public/js/agent-fleet.js';
 import { agentColor } from '../src/lib/agent-color.js';
 
 test('prompt source transient display is capped at 5 seconds', () => {
@@ -12,11 +12,11 @@ test('prompt source transient display is capped at 5 seconds', () => {
   assert.doesNotMatch(app, /promptAge < 30/);
 });
 
-test('single-agent mascot uses the new octopus PNGs (shared with the Pulse Wall) tinted by agent hue', () => {
+test('single-agent mascot uses the octopus PNGs shared with Agent Fleet and tinted by agent hue', () => {
   const app = fs.readFileSync(path.resolve('public/js/app.js'), 'utf8');
   const index = fs.readFileSync(path.resolve('src/index.js'), 'utf8');
-  // Reuses the Pulse Wall mood logic + mascot file map (single source of truth).
-  assert.match(app, /import \{ renderPulseWall, stateMood, MASCOT_BY_MOOD \} from '\.\/pulse-wall\.js'/);
+  // Reuses the Agent Fleet mood logic + mascot file map (single source of truth).
+  assert.match(app, /import \{ renderAgentFleet, stateMood, MASCOT_BY_MOOD \} from '\.\/agent-fleet\.js'/);
   // Renders an <img> from the shared mascot set, not the legacy inline SVG.
   assert.match(app, /img class="mascot-img" src="\$\{ASSET_ROOT\}\/img\/mascot\//);
   assert.match(app, /hue-rotate\(\$\{hue\}deg\)/);
@@ -85,6 +85,17 @@ function fleetFixture() {
         state: 'IDLE',
         activity: null,
         context_pct: 0.18,
+        session_cost: 0.006,
+        daily_cost: 0.04,
+        weekly_cost: 0.2,
+        model: 'Opus 4.6',
+        effort: 'high',
+        new_session_threshold: 70,
+        cpu_pct: 12,
+        mem_pct: 34,
+        disk_pct: 56,
+        has_upgrade: false,
+        has_subagent: false,
         cost: 0.006,
         last_seen: now,
         pulse_rate: 1,
@@ -98,6 +109,17 @@ function fleetFixture() {
         state: 'BUSY',
         activity: 'exec_command npm test',
         context_pct: 72,
+        session_cost: 0.12,
+        daily_cost: 0.4,
+        weekly_cost: 1.8,
+        model: 'GPT-5',
+        effort: 'medium',
+        new_session_threshold: 70,
+        cpu_pct: 21,
+        mem_pct: 43,
+        disk_pct: 65,
+        has_upgrade: true,
+        has_subagent: true,
         cost: 0.12,
         last_seen: '2026-06-07T15:19:45.000Z',
         pulse_rate: 0.8,
@@ -111,6 +133,17 @@ function fleetFixture() {
         state: 'POSSIBLY_STUCK',
         activity: 'no progress',
         context_pct: 0.91,
+        session_cost: 0.03,
+        daily_cost: 0.09,
+        weekly_cost: 0.7,
+        model: 'Sonnet',
+        effort: 'low',
+        new_session_threshold: 80,
+        cpu_pct: 82,
+        mem_pct: 71,
+        disk_pct: 44,
+        has_upgrade: false,
+        has_subagent: false,
         cost: 0.03,
         last_seen: '2026-06-07T15:18:00.000Z',
         pulse_rate: 1.5,
@@ -123,6 +156,17 @@ function fleetFixture() {
         state: 'OFFLINE',
         activity: 'last message',
         context_pct: null,
+        session_cost: 0,
+        daily_cost: null,
+        weekly_cost: null,
+        model: null,
+        effort: null,
+        new_session_threshold: null,
+        cpu_pct: null,
+        mem_pct: null,
+        disk_pct: null,
+        has_upgrade: false,
+        has_subagent: false,
         cost: 0,
         last_seen: '2026-06-07T14:20:00.000Z',
         pulse_rate: 0,
@@ -132,14 +176,12 @@ function fleetFixture() {
   };
 }
 
-test('Pulse Wall fixture renders aggregate counts, tile states, reason, and drill-down links', () => {
-  const view = buildPulseWallView(fleetFixture(), {
-    nowMs: Date.parse('2026-06-07T15:20:00.000Z'),
+test('Agent Fleet fixture renders operational fields and removes deprecated Pulse Wall elements', () => {
+  const view = buildAgentFleetView(fleetFixture(), {
     basePath: '/dash',
     mascotRoot: '/dash/_assets/img/mascot'
   });
-  const html = renderPulseWallHtml(fleetFixture(), {
-    nowMs: Date.parse('2026-06-07T15:20:00.000Z'),
+  const html = renderAgentFleetHtml(fleetFixture(), {
     basePath: '/dash',
     mascotRoot: '/dash/_assets/img/mascot'
   });
@@ -149,28 +191,37 @@ test('Pulse Wall fixture renders aggregate counts, tile states, reason, and dril
   assert.equal(view.counts.idle, 1);
   assert.equal(view.counts.stuck, 1);
   assert.equal(view.counts.offline, 1);
-  assert.equal(view.totalCostLabel, '$0.1560');
-
-  assert.match(html, /class="pulse-tile pulse-tile-busy"/);
-  assert.match(html, /class="pulse-tile pulse-tile-stuck"/);
-  assert.match(html, /class="pulse-tile pulse-tile-offline is-offline"/);
-  assert.match(html, /unreachable/);
-  assert.match(html, /last seen 15s ago/);
+  assert.match(html, /class="agent-tile agent-tile-busy/);
+  assert.match(html, /class="agent-tile agent-tile-stuck/);
+  assert.match(html, /class="agent-tile agent-tile-offline is-offline/);
+  assert.match(html, /Unreachable/);
+  assert.equal((html.match(/class="agent-fleet-reason"/g) || []).length, 2);
   assert.match(html, /href="\/dash\/fleet\/zylos01\/"/);
   assert.match(html, /src="\/dash\/_assets\/img\/mascot\/busy\.png"/);
   assert.match(html, new RegExp(`data-agent="zylos01"[^>]+--agent-hue:${agentColor('zylos01').hue}deg;`));
-  assert.match(html, /<svg class="pulse-sparkline"/);
+  assert.match(html, /GPT-5 \/ medium/);
+  assert.match(html, /Upgrade available/);
+  assert.match(html, /Session/);
+  assert.match(html, /Today/);
+  assert.match(html, /7 days/);
+  assert.match(html, /CPU/);
+  assert.match(html, /Memory/);
+  assert.match(html, /Disk/);
+  assert.match(html, /subagent-light is-on/);
+  assert.doesNotMatch(html, /pulse-sparkline/);
+  assert.doesNotMatch(html, /last seen/);
+  assert.doesNotMatch(html, /--pulse-rate/);
+  assert.doesNotMatch(html, /pulse-self-badge/);
 });
 
-test('Pulse Wall preserves name color mapping when fleet response order changes', () => {
-  const original = buildPulseWallView(fleetFixture(), {
-    nowMs: Date.parse('2026-06-07T15:20:00.000Z')
-  });
+test('Agent Fleet preserves self first and stable name color mapping when response order changes', () => {
+  const fixture = fleetFixture();
+  fixture.agents[1].self = true;
+  const original = buildAgentFleetView(fixture);
   const shuffledFixture = fleetFixture();
+  shuffledFixture.agents[1].self = true;
   shuffledFixture.agents = [...shuffledFixture.agents].reverse();
-  const shuffled = buildPulseWallView(shuffledFixture, {
-    nowMs: Date.parse('2026-06-07T15:20:00.000Z')
-  });
+  const shuffled = buildAgentFleetView(shuffledFixture);
 
   const originalColors = Object.fromEntries(original.tiles.map((tile) => [tile.name, tile.color]));
   const shuffledColors = Object.fromEntries(shuffled.tiles.map((tile) => [tile.name, tile.color]));
@@ -179,26 +230,32 @@ test('Pulse Wall preserves name color mapping when fleet response order changes'
   assert.deepEqual(shuffledColors, originalColors);
   assert.deepEqual(shuffledHues, originalHues);
   assert.ok(Object.values(originalHues).some((hue) => hue !== 0));
-  assert.deepEqual(shuffled.tiles.map((tile) => tile.name), original.tiles.map((tile) => tile.name));
+  assert.equal(shuffled.tiles[0].name, 'zylos01');
+  assert.equal(shuffled.tiles[0].isSelf, true);
 });
 
-test('Pulse Wall fast polling is scoped to the active fleet view and catches interval errors', () => {
+test('Agent Fleet uses SSE fleet events with one-shot fetch fallback', () => {
   const app = fs.readFileSync(path.resolve('public/js/app.js'), 'utf8');
-  assert.match(app, /function stopFleetPolling\(\)/);
-  assert.match(app, /function shouldPollFleetFast\(\)/);
+  assert.match(app, /function clearFleetFallback\(\)/);
+  assert.match(app, /function shouldReceiveFleetEvents\(\)/);
+  assert.match(app, /function isSseOpen\(\)/);
+  assert.match(app, /!!window\.EventSource && state\.eventSource\?\.readyState === window\.EventSource\.OPEN/);
   assert.match(app, /state\.fleetViewActive && document\.visibilityState !== 'hidden'/);
-  assert.match(app, /document\.addEventListener\('visibilitychange', syncFleetPolling\)/);
+  assert.match(app, /document\.addEventListener\('visibilitychange', syncFleetSubscription\)/);
+  assert.match(app, /state\.eventSource\.addEventListener\(ev,/);
+  assert.match(app, /'fleet'/);
+  assert.match(app, /setTimeout\(\(\) => \{[\s\S]*?refreshFleet\(\)\.catch\(\(\) => \{\}\);[\s\S]*?\}, 10_000\)/);
   assert.match(app, /refreshFleet\(\)\.catch\(\(\) => \{\}\)/);
   assert.doesNotMatch(app, /state\.fleetTimer = setInterval\(refreshFleet, 3_000\)/);
-  // Fast polling must no longer key on a "pulse" tab being active.
-  assert.doesNotMatch(app, /activeTabName\(\) === 'pulse'/);
+  assert.doesNotMatch(app, /setInterval\(\(\) => \{\s*refreshFleet/);
+  assert.doesNotMatch(app, /[^.]EventSource\.OPEN/);
 });
 
 test('multi-agent vs single mode landing view is gated on fleet size', () => {
   const app = fs.readFileSync(path.resolve('public/js/app.js'), 'utf8');
   // multiAgent is true when the fleet (self + at least one external) has >= 2 agents.
   assert.match(app, /state\.multiAgent = \(fleet\?\.agents\?\.length \|\| 0\) >= 2;/);
-  // Multi-agent mode lands on the Pulse Wall; single mode shows the agent dashboard.
+  // Multi-agent mode lands on Agent Fleet; single mode shows the agent dashboard.
   assert.match(app, /if \(!state\.multiAgent\)/);
   assert.match(app, /showFleetView\(\)/);
   assert.match(app, /showAgentDetail\(\)/);
@@ -237,8 +294,7 @@ test('self tile drills to local root and external tiles drill to /fleet/<name>/'
       { name: 'remote', color: agentColor('remote').color, hue: agentColor('remote').hue, state: 'BUSY', activity: 'work', context_pct: 0.5, cost: 0.02, last_seen: '2026-06-07T15:20:00.000Z', pulse_rate: 1, health_reason: 'ok', self: false }
     ]
   };
-  const view = buildPulseWallView(selfFleet, {
-    nowMs: Date.parse('2026-06-07T15:20:00.000Z'),
+  const view = buildAgentFleetView(selfFleet, {
     basePath: '/dash'
   });
   const byName = Object.fromEntries(view.tiles.map((tile) => [tile.name, tile]));
@@ -247,11 +303,10 @@ test('self tile drills to local root and external tiles drill to /fleet/<name>/'
   assert.equal(byName.remote.isSelf, false);
   assert.equal(byName.remote.href, '/dash/fleet/remote/');
 
-  const html = renderPulseWallHtml(selfFleet, {
-    nowMs: Date.parse('2026-06-07T15:20:00.000Z'),
+  const html = renderAgentFleetHtml(selfFleet, {
     basePath: '/dash'
   });
-  assert.match(html, /class="pulse-tile pulse-tile-idle is-self"/);
+  assert.match(html, /class="agent-tile agent-tile-idle is-self"/);
   assert.match(html, /data-self="true"/);
   assert.match(html, /href="\/dash\/"/);
   assert.match(html, /href="\/dash\/fleet\/remote\/"/);
@@ -267,14 +322,14 @@ test('back-to-fleet control is hidden via [hidden] in single-agent mode (no CSS 
   assert.match(app, /if \(!state\.multiAgent\)[\s\S]*?backBtn\.hidden = true/);
 });
 
-test('pulse is no longer a peer tab in the tab bar', () => {
+test('Agent Fleet is the top-level fleet view and pulse is gone from UI', () => {
   const html = fs.readFileSync(path.resolve('public/index.html'), 'utf8');
   assert.doesNotMatch(html, /data-tab="pulse"/);
   assert.doesNotMatch(html, /id="tab-pulse"/);
+  assert.doesNotMatch(html, /Pulse Wall/);
   assert.match(html, /data-tab="overview"/);
   assert.match(html, /data-tab="trends"/);
-  // The Pulse Wall is now a top-level fleet view with a back-to-fleet control.
   assert.match(html, /id="fleet-view"/);
   assert.match(html, /id="back-to-fleet"/);
-  assert.match(html, /id="pulse-wall-root"/);
+  assert.match(html, /id="agent-fleet-root"/);
 });

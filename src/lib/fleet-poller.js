@@ -40,6 +40,35 @@ function metricValue(state, name) {
   return source ?? null;
 }
 
+function numberOrNull(value) {
+  if (value == null || value === '') return null;
+  const n = Number(value);
+  return Number.isFinite(n) ? n : null;
+}
+
+function memPct(systemMetrics) {
+  const explicit = numberOrNull(systemMetrics?.mem_pct ?? systemMetrics?.mem_used_pct);
+  if (explicit != null) return explicit;
+  const used = numberOrNull(systemMetrics?.mem_used_bytes);
+  const total = numberOrNull(systemMetrics?.mem_total_bytes);
+  return used != null && total > 0 ? (used / total) * 100 : null;
+}
+
+function hasUpgrade(runtimeInfo) {
+  return Boolean(
+    runtimeInfo?.zylos_update ||
+    runtimeInfo?.cc_update ||
+    runtimeInfo?.cc_restart ||
+    runtimeInfo?.codex_update ||
+    runtimeInfo?.codex_restart ||
+    runtimeInfo?.pending_restart
+  );
+}
+
+function hasSubagent(state) {
+  return Array.isArray(state?.active_subagents) && state.active_subagents.length > 0;
+}
+
 function deriveActivity(state) {
   if (state?.running_tools?.length > 0) return state.running_tools[0].tool_detail || state.running_tools[0].tool_name || 'Running tool';
   if (state?.active_subagents?.length > 0) return state.active_subagents[0].last_activity || state.active_subagents[0].description || 'Subagent active';
@@ -55,6 +84,17 @@ function sanitizeRecord(record) {
     activity: record.activity,
     context_pct: record.context_pct,
     cost: record.cost,
+    session_cost: record.session_cost,
+    daily_cost: record.daily_cost,
+    weekly_cost: record.weekly_cost,
+    model: record.model,
+    effort: record.effort,
+    new_session_threshold: record.new_session_threshold,
+    cpu_pct: record.cpu_pct,
+    mem_pct: record.mem_pct,
+    disk_pct: record.disk_pct,
+    has_upgrade: record.has_upgrade === true,
+    has_subagent: record.has_subagent === true,
     last_seen: record.last_seen,
     pulse_rate: record.pulse_rate,
     health_reason: record.health_reason,
@@ -77,10 +117,25 @@ function sanitizeRecord(record) {
  * @param {object} opts.color     - Result of agentColor(name): { color, hue }.
  * @param {object} [opts.state]   - Local state engine getState() result.
  * @param {number|null} [opts.contextPct] - Resolved context_pct metric value.
- * @param {number|null} [opts.cost]        - Resolved session/daily cost value.
+ * @param {number|null} [opts.sessionCost]
+ * @param {number|null} [opts.dailyCost]
+ * @param {number|null} [opts.weeklyCost]
  * @param {number} [opts.nowMs]
  */
-export function buildSelfRecord({ name, color, state, contextPct = null, cost = null, nowMs = Date.now() }) {
+export function buildSelfRecord({
+  name,
+  color,
+  state,
+  runtimeInfo = null,
+  contextPct = null,
+  cost = null,
+  newSessionThreshold = null,
+  sessionCost = null,
+  dailyCost = null,
+  weeklyCost = null,
+  systemMetrics = null,
+  nowMs = Date.now()
+}) {
   const liveState = state?.state || 'UNKNOWN';
   const offline = liveState === 'OFFLINE' || liveState === 'UNKNOWN';
   return sanitizeRecord({
@@ -91,7 +146,18 @@ export function buildSelfRecord({ name, color, state, contextPct = null, cost = 
     state: liveState,
     activity: deriveActivity(state),
     context_pct: contextPct,
-    cost,
+    cost: sessionCost ?? cost ?? dailyCost ?? weeklyCost,
+    session_cost: sessionCost ?? cost,
+    daily_cost: dailyCost,
+    weekly_cost: weeklyCost,
+    model: runtimeInfo?.model || runtimeInfo?.model_id || null,
+    effort: runtimeInfo?.effort || runtimeInfo?.service_tier || null,
+    new_session_threshold: newSessionThreshold,
+    cpu_pct: numberOrNull(systemMetrics?.cpu_pct),
+    mem_pct: memPct(systemMetrics),
+    disk_pct: numberOrNull(systemMetrics?.disk_pct ?? systemMetrics?.disk_used_pct),
+    has_upgrade: hasUpgrade(runtimeInfo),
+    has_subagent: hasSubagent(state),
     last_seen: nowIso(nowMs),
     pulse_rate: offline ? 0 : 1,
     health_reason: liveState === 'IDLE' ? 'idle' : (offline ? 'offline' : 'ok'),
@@ -112,6 +178,7 @@ export class FleetPoller {
     this.now = options.now || (() => Date.now());
     this.setTimeout = options.setTimeout || setTimeout;
     this.clearTimeout = options.clearTimeout || clearTimeout;
+    this.onPoll = typeof options.onPoll === 'function' ? options.onPoll : null;
     this.records = new Map();
     this.tokens = new Map();
     this.running = false;
@@ -128,6 +195,17 @@ export class FleetPoller {
         activity: null,
         context_pct: null,
         cost: null,
+        session_cost: null,
+        daily_cost: null,
+        weekly_cost: null,
+        model: null,
+        effort: null,
+        new_session_threshold: null,
+        cpu_pct: null,
+        mem_pct: null,
+        disk_pct: null,
+        has_upgrade: false,
+        has_subagent: false,
         last_seen: null,
         pulse_rate: null,
         health_reason: 'not_polled',
@@ -170,7 +248,9 @@ export class FleetPoller {
   async pollOnce() {
     await Promise.all(this.agents.map(agent => this._pollAgent(agent)));
     this._markStale();
-    return this.getFleet();
+    const fleet = this.getFleet();
+    this.onPoll?.(fleet);
+    return fleet;
   }
 
   _scheduleNext() {
@@ -270,7 +350,18 @@ export class FleetPoller {
       state: state?.state || 'UNKNOWN',
       activity: deriveActivity(state),
       context_pct: metricValue(state, 'context_pct'),
-      cost: metricValue(state, 'session_cost') ?? metricValue(state, 'daily_cost'),
+      cost: state?.session_cost ?? state?.daily_cost ?? state?.weekly_cost ?? metricValue(state, 'session_cost') ?? metricValue(state, 'daily_cost'),
+      session_cost: state?.session_cost ?? metricValue(state, 'session_cost'),
+      daily_cost: state?.daily_cost ?? metricValue(state, 'daily_cost'),
+      weekly_cost: state?.weekly_cost ?? null,
+      model: state?.runtime_info?.model || state?.runtime_info?.model_id || null,
+      effort: state?.runtime_info?.effort || state?.runtime_info?.service_tier || null,
+      new_session_threshold: state?.new_session_threshold ?? null,
+      cpu_pct: numberOrNull(state?.system_metrics?.cpu_pct),
+      mem_pct: memPct(state?.system_metrics),
+      disk_pct: numberOrNull(state?.system_metrics?.disk_pct ?? state?.system_metrics?.disk_used_pct),
+      has_upgrade: hasUpgrade(state?.runtime_info),
+      has_subagent: hasSubagent(state),
       last_seen: nowIso(now),
       pulse_rate: 1,
       health_reason: state?.state === 'IDLE' ? 'idle' : 'ok',
@@ -290,6 +381,17 @@ export class FleetPoller {
       activity: existing.activity || null,
       context_pct: existing.context_pct ?? null,
       cost: existing.cost ?? null,
+      session_cost: existing.session_cost ?? null,
+      daily_cost: existing.daily_cost ?? null,
+      weekly_cost: existing.weekly_cost ?? null,
+      model: existing.model ?? null,
+      effort: existing.effort ?? null,
+      new_session_threshold: existing.new_session_threshold ?? null,
+      cpu_pct: existing.cpu_pct ?? null,
+      mem_pct: existing.mem_pct ?? null,
+      disk_pct: existing.disk_pct ?? null,
+      has_upgrade: existing.has_upgrade === true,
+      has_subagent: existing.has_subagent === true,
       last_seen: existing.last_seen || null,
       pulse_rate: 0,
       health_reason: reason,
