@@ -314,6 +314,19 @@ test('SseEventParser handles events, ids, comments, CRLF, bare CR, and multi-lin
   ]);
 });
 
+test('SseEventParser preserves event type when CRLF splits across chunks', () => {
+  const events = [];
+  const parser = new SseEventParser((event) => events.push(event));
+  parser.push('event: fleet_state\r');
+  parser.push('\ndata: {"state":"BUSY"}\r\n\r\n');
+  parser.flush();
+  assert.deepEqual(events, [{
+    event: 'fleet_state',
+    data: '{"state":"BUSY"}',
+    id: null
+  }]);
+});
+
 test('fleet poller SSE uses Bearer auth and fleet_state updates records', async () => {
   const calls = [];
   const fetchImpl = async (url, options = {}) => {

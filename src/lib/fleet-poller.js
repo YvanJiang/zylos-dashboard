@@ -23,6 +23,13 @@ function joinUrl(baseUrl, apiPath) {
   return `${base}/${path}`;
 }
 
+function nextCompleteLineBreak(buffer) {
+  const match = buffer.match(/\r\n|\r|\n/);
+  if (!match) return null;
+  if (match[0] === '\r' && match.index === buffer.length - 1) return null;
+  return match;
+}
+
 export class SseEventParser {
   constructor(onEvent) {
     this.onEvent = onEvent;
@@ -34,19 +41,19 @@ export class SseEventParser {
 
   push(chunk) {
     this.buffer += chunk;
-    let newline = this.buffer.match(/\r\n|\r|\n/);
+    let newline = nextCompleteLineBreak(this.buffer);
     while (newline) {
       const newlineIndex = newline.index;
       const line = this.buffer.slice(0, newlineIndex);
       this.buffer = this.buffer.slice(newlineIndex + newline[0].length);
       this._processLine(line);
-      newline = this.buffer.match(/\r\n|\r|\n/);
+      newline = nextCompleteLineBreak(this.buffer);
     }
   }
 
   flush() {
     if (this.buffer) {
-      this._processLine(this.buffer.replace(/\r$/, ''));
+      this.push('\n');
       this.buffer = '';
     }
   }
