@@ -349,7 +349,7 @@ export class FleetPoller {
       hue: color.hue,
       state: state?.state || 'UNKNOWN',
       activity: deriveActivity(state),
-      context_pct: metricValue(state, 'context_pct'),
+      context_pct: state?.context_pct ?? metricValue(state, 'context_pct'),
       cost: state?.session_cost ?? state?.daily_cost ?? state?.weekly_cost ?? metricValue(state, 'session_cost') ?? metricValue(state, 'daily_cost'),
       session_cost: state?.session_cost ?? metricValue(state, 'session_cost'),
       daily_cost: state?.daily_cost ?? metricValue(state, 'daily_cost'),

@@ -286,3 +286,24 @@ test('fleet poller onPoll receives safe remote fleet after poll cycle completion
   assert.equal(JSON.stringify(onPollFleet).includes('zylos_ak_secret'), false);
   assert.equal(JSON.stringify(onPollFleet).includes('zylos_st_ok'), false);
 });
+
+test('fleet poller reads top-level context_pct when metrics object is absent (#171)', async () => {
+  const fetchImpl = async (url) => {
+    if (url.endsWith('/api/auth/token')) {
+      return jsonResponse({ token: 'zylos_st_ok', expires_at: new Date(120000).toISOString() });
+    }
+    return jsonResponse({
+      state: 'IDLE',
+      context_pct: 63.5,
+      session_cost: 0.50
+    });
+  };
+
+  const poller = new FleetPoller(makeConfig([
+    { name: 'Remote', base_url: 'https://remote.example.test', read_api_key: 'zylos_ak_secret' }
+  ]), { fetch: fetchImpl, now: () => 0 });
+
+  await poller.pollOnce();
+  const record = poller.getFleet().agents[0];
+  assert.equal(record.context_pct, 63.5);
+});

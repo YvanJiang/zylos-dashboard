@@ -281,6 +281,7 @@ function buildApiStatePayload() {
   stateData.runtime_info = buildRuntimeInfo();
   stateData.new_session_threshold = getNewSessionThreshold();
   stateData.system_metrics = getSystemMetrics();
+  stateData.context_pct = metricResolver.resolve('context_pct').value;
   Object.assign(stateData, getCostTiers());
   return stateData;
 }
