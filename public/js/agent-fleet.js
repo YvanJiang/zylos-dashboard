@@ -8,6 +8,14 @@ export const MASCOT_BY_MOOD = {
 
 const REASON_BADGE_REASONS = new Set(['unreachable', 'auth_failed', 'version_unsupported', 'offline', 'stuck']);
 
+const MOOD_TO_STATE_CLASS = {
+  idle: 'state-idle',
+  busy: 'state-busy',
+  thinking: 'state-busy',
+  stuck: 'state-possibly-stuck',
+  offline: 'state-offline'
+};
+
 export function escapeHtml(value) {
   return String(value ?? '')
     .replaceAll('&', '&amp;')
@@ -197,6 +205,7 @@ function renderTile(tile, labels) {
   return `<a class="agent-tile agent-tile-${escapeHtml(tile.mood)}${tile.offline ? ' is-offline' : ''}${tile.isSelf ? ' is-self' : ''}${tile.overThreshold ? ' is-over-threshold' : ''}" href="${escapeHtml(tile.href)}" data-agent="${escapeHtml(tile.name)}" data-state="${escapeHtml(tile.mood)}"${tile.isSelf ? ' data-self="true"' : ''} style="--agent-accent:${escapeHtml(tile.color)};--agent-hue:${tile.hue}deg;--context-pct:${ringPct};--threshold-pct:${threshold};">
     <div class="agent-tile-head">
       <span class="agent-name">${escapeHtml(tile.name)}</span>
+      <span class="fleet-state-dot ${MOOD_TO_STATE_CLASS[tile.mood] || 'state-unknown'}"></span>
       <span class="agent-state mood-${escapeHtml(tile.mood)}">${escapeHtml(tile.stateLabel)}</span>
       ${upgrade}
     </div>
