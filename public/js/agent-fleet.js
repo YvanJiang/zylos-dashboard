@@ -58,8 +58,7 @@ function isOffline(agent) {
   return stateMood(agent) === 'offline' || Number(agent?.pulse_rate) === 0;
 }
 
-function stateLabel(agent, labels) {
-  const mood = stateMood(agent);
+function stateLabel(agent, labels, mood = stateMood(agent)) {
   const reason = String(agent?.health_reason || '').toLowerCase();
   if (reason === 'version_unsupported') return labels.versionUnsupported;
   if (reason === 'unreachable') return labels.unreachable;
@@ -184,7 +183,13 @@ export function buildAgentFleetView(fleet, options = {}) {
   const labels = { ...defaultAgentFleetLabels(), ...(options.labels || {}) };
   const basePath = options.basePath || '';
   const tiles = sortAgents(fleet?.agents).map((agent) => {
-    const mood = stateMood(agent);
+    const activityFeed = Array.isArray(agent.activity_feed) ? agent.activity_feed : [];
+    const baseMood = stateMood(agent);
+    // The legacy `activity` string never says "thinking" (it falls back to the
+    // last prompt summary), so use the structured feed signal for the mascot.
+    const mood = baseMood === 'busy' && activityFeed.some((entry) => entry?.kind === 'thinking')
+      ? 'thinking'
+      : baseMood;
     const offline = isOffline(agent);
     const color = colorForAgent(agent);
     const isSelf = agent.self === true;
@@ -198,14 +203,14 @@ export function buildAgentFleetView(fleet, options = {}) {
       isSelf,
       color,
       hue: Number.isFinite(Number(agent.hue)) ? Number(agent.hue) : 0,
-      stateLabel: stateLabel(agent, labels),
+      stateLabel: stateLabel(agent, labels, mood),
       activity,
       contextPct,
       threshold,
       overThreshold: contextPct != null && threshold != null && contextPct >= threshold,
       model: labelText(agent.model),
       effort: labelText(agent.effort),
-      activityFeed: Array.isArray(agent.activity_feed) ? agent.activity_feed : [],
+      activityFeed,
       rate5hPct: pctValue(agent.rate_limit_pct),
       rate7dPct: pctValue(agent.rate_limit_7d_pct),
       sessionCostLabel: money(agent.session_cost ?? agent.cost),
@@ -279,7 +284,8 @@ function renderAgentFleetViewHtml(view) {
   if (view.tiles.length === 0) {
     return `<section class="agent-fleet"><p class="empty-state">${escapeHtml(labels.empty)}</p></section>`;
   }
-  const summary = `${view.counts.busy} ${labels.busy} / ${view.counts.idle} ${labels.idle} / ${view.counts.stuck} ${labels.stuck}`;
+  const working = view.counts.busy + view.counts.thinking;
+  const summary = `${working} ${labels.busy} / ${view.counts.idle} ${labels.idle} / ${view.counts.stuck} ${labels.stuck}`;
   return `<section class="agent-fleet" data-fleet-count="${view.tiles.length}">
     <div class="agent-fleet-summary">
       <strong>${escapeHtml(summary)}</strong>
