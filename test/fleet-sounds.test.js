@@ -285,6 +285,51 @@ test('any pointerdown resumes a suspended context when unmuted', async (t) => {
   assert.ok(contexts[0].resumeCalls >= 1, 'click resumes the suspended context');
 });
 
+test('fast unmute -> mute cancels the scheduled confirmation cue', async (t) => {
+  const contexts = withAudioFactory(t, { stored: null }); // start muted
+  const { createFleetSounds } = await import('../public/js/fleet-sounds.js');
+  const button = fakeButton();
+  const sounds = createFleetSounds({ button, mediaDevices: null, doc: null });
+
+  button.click(); // unmute — confirmation blip parked behind resume()
+  button.click(); // mute again before the cue ever sounds
+  assert.equal(sounds.isMuted(), true);
+  assert.equal(contexts[0].closed, true, 'mute drops the context immediately');
+
+  await flushMicrotasks();
+  assert.equal(contexts[0].oscillatorStarts, 0, 'no cue plays after mute');
+});
+
+test('mute cancels fleet cues parked behind a pending resume()', async (t) => {
+  const contexts = withAudioFactory(t); // stored unmuted
+  const { createFleetSounds } = await import('../public/js/fleet-sounds.js');
+  const button = fakeButton();
+  const sounds = createFleetSounds({ button, mediaDevices: null, doc: null });
+
+  sounds.handleFleet({ agents: [{ name: 'a', state: 'IDLE' }] }); // seed
+  sounds.handleFleet({ agents: [{ name: 'a', state: 'BUSY' }] }); // cue queued, ctx suspended
+  button.click(); // mute before resume() settles
+  assert.equal(sounds.isMuted(), true);
+
+  await flushMicrotasks();
+  assert.equal(contexts[0].oscillatorStarts, 0, 'queued cue dies with the dropped context');
+});
+
+test('unmute after a cancelled cue still plays its confirmation', async (t) => {
+  const contexts = withAudioFactory(t, { stored: null });
+  const { createFleetSounds } = await import('../public/js/fleet-sounds.js');
+  const button = fakeButton();
+  createFleetSounds({ button, mediaDevices: null, doc: null });
+
+  button.click(); // unmute
+  button.click(); // mute — drops ctx 1
+  button.click(); // unmute again — fresh context, new confirmation
+  await flushMicrotasks();
+  assert.equal(contexts.length, 2);
+  assert.equal(contexts[0].oscillatorStarts, 0);
+  assert.equal(contexts[1].oscillatorStarts, 1, 'confirmation plays on the fresh context');
+});
+
 test('pointerdown does not create or resume audio while muted', async (t) => {
   const contexts = withAudioFactory(t, { stored: null });
   const doc = fakeEventTarget();

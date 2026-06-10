@@ -64,15 +64,22 @@ export function createFleetSounds({ button, labels, mediaDevices, doc } = {}) {
     return audioCtx;
   }
 
+  // Closing the context kills everything scheduled into it — pending
+  // resume() callbacks see a closed (never 'running') context and bail.
+  function dropContext() {
+    if (!audioCtx) return;
+    const old = audioCtx;
+    audioCtx = null;
+    old.close?.().catch?.(() => {});
+  }
+
   // Re-setting an identical sinkId is a spec'd no-op, so the only reliable way
   // to rebind after the system default output changes (devicechange fires for
   // that — the UA's virtual default device entry updates) is to drop the
   // context and build a fresh one, which binds to the new default at creation.
   function handleDeviceChange() {
     if (!audioCtx) return;
-    const old = audioCtx;
-    audioCtx = null;
-    old.close?.().catch?.(() => {});
+    dropContext();
     if (!muted) ensureContext();
   }
 
@@ -164,6 +171,11 @@ export function createFleetSounds({ button, labels, mediaDevices, doc } = {}) {
       // audibly so "did that work?" never needs a second agent to answer.
       // playWhenRunning handles the suspended->running resume internally.
       playStart();
+    } else {
+      // Mute must be immediate: cues already scheduled SCHEDULE_LEAD ahead
+      // (or parked behind a pending resume()) would otherwise still play
+      // after the UI says muted. Dropping the context cancels them all.
+      dropContext();
     }
     renderButton();
   }
