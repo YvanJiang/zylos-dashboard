@@ -1966,6 +1966,7 @@ function createActionsModal() {
         <div class="action-model-wrap">
           <select id="action-model" class="action-select"></select>
           <input id="action-model-custom" class="action-input" type="text" placeholder="${esc(t('actions.model_placeholder'))}" hidden />
+          <button id="action-model-apply" class="action-btn action-btn-sm" type="button" hidden>${esc(t('btn.apply'))}</button>
         </div>
       </div>
       <div class="action-field" id="action-effort-field">
@@ -2035,21 +2036,29 @@ function createActionsModal() {
 
   const modelSel = overlay.querySelector('#action-model');
   const modelCustom = overlay.querySelector('#action-model-custom');
+  const modelApply = overlay.querySelector('#action-model-apply');
+  function setCustomModelMode(on) {
+    modelCustom.hidden = !on;
+    modelApply.hidden = !on;
+    modelSel.classList.toggle('action-select-narrow', on);
+  }
   modelSel.addEventListener('change', () => {
     if (modelSel.value === '__custom__') {
-      modelCustom.hidden = false;
+      setCustomModelMode(true);
       modelCustom.focus();
     } else {
-      modelCustom.hidden = true;
+      setCustomModelMode(false);
       if (actionsModal?._renderEffortOptions) actionsModal._renderEffortOptions(modelSel.value);
       selectAction(modelSel, 'switch-model', 'model');
     }
   });
+  function submitCustomModel() {
+    if (modelCustom.value.trim()) execAction('switch-model', { model: modelCustom.value.trim() });
+  }
   modelCustom.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter' && modelCustom.value.trim()) {
-      execAction('switch-model', { model: modelCustom.value.trim() });
-    }
+    if (e.key === 'Enter') submitCustomModel();
   });
+  modelApply.addEventListener('click', submitCustomModel);
 
   const runtimeSel = overlay.querySelector('#action-runtime');
   runtimeSel.addEventListener('change', () => {
@@ -2134,18 +2143,31 @@ async function openActionsModal() {
     if (effortField) effortField.hidden = false;
 
     modelSel.innerHTML = '';
+    let currentIsSystem = false;
     for (const m of meta.models || []) {
       const opt = document.createElement('option');
       opt.value = m.id;
       opt.textContent = m.display_name || m.id;
-      if (m.id === meta.current_model) opt.selected = true;
+      if (m.id === meta.current_model) { opt.selected = true; currentIsSystem = true; }
       modelSel.appendChild(opt);
     }
     const customOpt = document.createElement('option');
     customOpt.value = '__custom__';
     customOpt.textContent = t('actions.custom');
     modelSel.appendChild(customOpt);
-    modal.querySelector('#action-model-custom').hidden = true;
+    const modelCustomEl = modal.querySelector('#action-model-custom');
+    const modelApplyEl = modal.querySelector('#action-model-apply');
+    if (!currentIsSystem && meta.current_model) {
+      modelSel.value = '__custom__';
+      modelCustomEl.value = meta.current_model;
+      modelCustomEl.hidden = false;
+      modelApplyEl.hidden = false;
+      modelSel.classList.add('action-select-narrow');
+    } else {
+      modelCustomEl.hidden = true;
+      modelApplyEl.hidden = true;
+      modelSel.classList.remove('action-select-narrow');
+    }
 
     const effortsByModel = meta.efforts_by_model || {};
     modal._renderEffortOptions = (modelId) => {

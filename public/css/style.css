@@ -2055,10 +2055,13 @@ main { padding: var(--space-md) var(--space-lg) var(--space-xl); }
   flex: 1;
   display: flex;
   gap: var(--space-xs);
+  min-width: 0;
 }
-.action-model-wrap .action-select { flex: 1; }
-.action-model-wrap .action-input { flex: 1; }
+.action-model-wrap .action-select { flex: 1; min-width: 0; }
+.action-model-wrap .action-select.action-select-narrow { flex: 0 0 auto; width: 100px; }
+.action-model-wrap .action-input { flex: 1; min-width: 0; }
 .action-model-wrap .action-input[hidden] { display: none; }
+.action-model-wrap .action-btn[hidden] { display: none; }
 
 .modal-status {
   padding: var(--space-sm) var(--space-lg);
@@ -2113,6 +2116,8 @@ main { padding: var(--space-md) var(--space-lg) var(--space-xl); }
   .action-btn { white-space: normal; min-width: 0; font-size: 12px; height: auto; padding: 8px var(--space-sm); }
   .action-field { flex-wrap: wrap; }
   .action-field-label { min-width: auto; }
+  .action-model-wrap { flex-wrap: wrap; }
+  .action-model-wrap .action-select-narrow { flex: 1 0 100%; width: auto; }
 }
 
 /* ─── Info Bar Actions Button ─── */
