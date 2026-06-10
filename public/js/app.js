@@ -2054,8 +2054,11 @@ function createActionsModal() {
       if (wasCustom && modelSel.value === '__custom__') setCustomModelMode(true);
     }
   });
-  function submitCustomModel() {
-    if (modelCustom.value.trim()) execAction('switch-model', { model: modelCustom.value.trim() });
+  async function submitCustomModel() {
+    const val = modelCustom.value.trim();
+    if (!val) return;
+    const ok = await execAction('switch-model', { model: val });
+    if (ok !== false) modelSel._prevValue = '__custom__';
   }
   modelCustom.addEventListener('keydown', (e) => {
     if (e.key === 'Enter') submitCustomModel();
