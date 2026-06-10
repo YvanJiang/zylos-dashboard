@@ -64,15 +64,22 @@ export function createFleetSounds({ button, labels, mediaDevices, doc } = {}) {
     return audioCtx;
   }
 
+  // Closing the context kills everything scheduled into it — pending
+  // resume() callbacks see a closed (never 'running') context and bail.
+  function dropContext() {
+    if (!audioCtx) return;
+    const old = audioCtx;
+    audioCtx = null;
+    old.close?.().catch?.(() => {});
+  }
+
   // Re-setting an identical sinkId is a spec'd no-op, so the only reliable way
   // to rebind after the system default output changes (devicechange fires for
   // that — the UA's virtual default device entry updates) is to drop the
   // context and build a fresh one, which binds to the new default at creation.
   function handleDeviceChange() {
     if (!audioCtx) return;
-    const old = audioCtx;
-    audioCtx = null;
-    old.close?.().catch?.(() => {});
+    dropContext();
     if (!muted) ensureContext();
   }
 
@@ -122,18 +129,27 @@ export function createFleetSounds({ button, labels, mediaDevices, doc } = {}) {
     osc.stop(at + duration + 0.05);
   }
 
+  // Cues scheduled at exactly currentTime start mid-render-quantum, so a
+  // random slice of the 20ms attack ramp gets clamped away — consecutive
+  // plays come out at audibly different loudness. A fixed lead also gives
+  // sleepy output paths (Bluetooth/USB speakers reopening their stream)
+  // time to wake before the audible part begins. 80ms is below the
+  // threshold where a cue would feel detached from the event.
+  const SCHEDULE_LEAD = 0.08;
+
   // Start: short rising blip. Finish: two-note falling chime. Distinct shapes
   // so they're tellable apart without looking at the wall.
   function playStart() {
     playWhenRunning((ctx) => {
-      tone(ctx, { from: 587, to: 880, at: ctx.currentTime, duration: 0.16 });
+      tone(ctx, { from: 587, to: 880, at: ctx.currentTime + SCHEDULE_LEAD, duration: 0.16 });
     });
   }
 
   function playFinish() {
     playWhenRunning((ctx) => {
-      tone(ctx, { from: 880, to: 660, at: ctx.currentTime, duration: 0.14 });
-      tone(ctx, { from: 660, to: 440, at: ctx.currentTime + 0.16, duration: 0.2 });
+      const at = ctx.currentTime + SCHEDULE_LEAD;
+      tone(ctx, { from: 880, to: 660, at, duration: 0.14 });
+      tone(ctx, { from: 660, to: 440, at: at + 0.16, duration: 0.2 });
     });
   }
 
@@ -155,6 +171,11 @@ export function createFleetSounds({ button, labels, mediaDevices, doc } = {}) {
       // audibly so "did that work?" never needs a second agent to answer.
       // playWhenRunning handles the suspended->running resume internally.
       playStart();
+    } else {
+      // Mute must be immediate: cues already scheduled SCHEDULE_LEAD ahead
+      // (or parked behind a pending resume()) would otherwise still play
+      // after the UI says muted. Dropping the context cancels them all.
+      dropContext();
     }
     renderButton();
   }
