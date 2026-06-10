@@ -2042,14 +2042,16 @@ function createActionsModal() {
     modelApply.hidden = !on;
     modelSel.classList.toggle('action-select-narrow', on);
   }
-  modelSel.addEventListener('change', () => {
+  modelSel.addEventListener('change', async () => {
     if (modelSel.value === '__custom__') {
       setCustomModelMode(true);
       modelCustom.focus();
     } else {
+      const wasCustom = modelSel._prevValue === '__custom__';
       setCustomModelMode(false);
       if (actionsModal?._renderEffortOptions) actionsModal._renderEffortOptions(modelSel.value);
-      selectAction(modelSel, 'switch-model', 'model');
+      await selectAction(modelSel, 'switch-model', 'model');
+      if (wasCustom && modelSel.value === '__custom__') setCustomModelMode(true);
     }
   });
   function submitCustomModel() {
