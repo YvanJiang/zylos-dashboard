@@ -726,6 +726,7 @@ test('fleet management entry is local-only and modal is extensible for future ma
   assert.match(app, /id="api-key-scope"/);
   assert.match(css, /\.manage-modal/);
   assert.match(css, /\.modal-tabs/);
+  assert.match(css, /\.fleet-help\[hidden\]\s*\{\s*display:\s*none;\s*\}/);
   assert.match(css, /\.api-key-created/);
   assert.match(css, /\.api-key-admin-warning/);
 
