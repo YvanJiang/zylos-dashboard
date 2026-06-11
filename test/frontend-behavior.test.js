@@ -263,13 +263,17 @@ test('multi-agent vs single mode landing view is gated on fleet size', () => {
   // multiAgent is true when the fleet (self + at least one external) has >= 2
   // agents — but never in remote-proxy context, where the remote's own fleet
   // config must not hijack the landing view.
-  assert.match(app, /state\.multiAgent = !REMOTE_AGENT && \(fleet\?\.agents\?\.length \|\| 0\) >= 2;/);
+  assert.match(app, /function hasFleetWall\(fleet\)/);
+  assert.match(app, /return !REMOTE_AGENT && \(fleet\?\.agents\?\.length \|\| 0\) >= 2;/);
+  assert.match(app, /function syncLiveFleetMode\(fleet\)/);
+  assert.match(app, /const modeChanged = state\.fleetModeInitialized \? syncLiveFleetMode\(payload\) : false;/);
   // Remote context is derived from the proxy-injected base path.
   assert.match(app, /BASE_PATH\.match\(/);
-  // Multi-agent mode lands on Agent Fleet; single mode shows the agent dashboard.
+  // Multi-agent mode lands on Agent Fleet; single mode shows the agent dashboard,
+  // including live 0<->1 remote transitions after boot.
   assert.match(app, /if \(!state\.multiAgent\)/);
-  assert.match(app, /showFleetView\(\)/);
-  assert.match(app, /showAgentDetail\(\)/);
+  assert.match(app, /showFleetView\(\{ animate: !prefersReducedMotion\(\) \}\)/);
+  assert.match(app, /showAgentDetail\(\{ animate: !prefersReducedMotion\(\) \}\)/);
   // Early fetch drives the landing-view decision.
   assert.match(app, /applyFleetMode\(fleet\)/);
 });
@@ -489,9 +493,10 @@ test('fleet tile renders context chip with usage and threshold, no tick line', (
 
 test('fleet wall pauses re-render on hover so native tooltips can appear', () => {
   const app = fs.readFileSync(path.resolve('public/js/app.js'), 'utf8');
-  // All fleet payload applications go through the hover gate (after the sound
-  // tracker, which must see every payload even while rendering is frozen)...
-  assert.match(app, /function setFleet\(payload\) \{\n(.*\n)*?  fleetSounds\?\.handleFleet\(payload\);\n  if \(state\.fleetHoverPaused\) \{/);
+  // Fleet payload applications still go through the hover gate after the sound
+  // tracker and live view-mode reconciliation; a 0<->1 remote transition is
+  // allowed to pierce hover pause so the page changes mode immediately.
+  assert.match(app, /function setFleet\(payload\) \{\n(.*\n)*?  fleetSounds\?\.handleFleet\(payload\);\n  state\.fleet = payload;\n  const modeChanged = state\.fleetModeInitialized \? syncLiveFleetMode\(payload\) : false;\n  if \(state\.fleetHoverPaused && !modeChanged\) \{/);
   assert.doesNotMatch(app, /state\.fleet = data;\n\s*renderFleet\(\)/);
   // ...armed by pointer enter/leave on the grid root, flushing pending data on leave.
   assert.match(app, /addEventListener\('mouseenter', \(\) => \{ state\.fleetHoverPaused = true; \}\)/);
@@ -682,7 +687,9 @@ test('fleet management entry is local-only and modal is extensible for future ma
 
   assert.match(index, /id="fleet-manage-btn"/);
   assert.match(index, /data-i18n-title="fleet_manage\.open"/);
-  assert.match(index, /app\.js\?v=43/);
+  assert.match(index, /app\.js\?v=44/);
+  assert.match(index, /<path d="M12 8V4H8"/);
+  assert.match(index, /<rect width="16" height="12" x="4" y="8" rx="2"/);
   assert.match(app, /function initFleetManageButton\(\)[\s\S]*btn\.hidden = !!REMOTE_AGENT/);
   assert.match(app, /if \(e\.target\.closest\('#fleet-manage-btn'\)\) \{ e\.preventDefault\(\); openFleetManageModal\(\); return; \}/);
 

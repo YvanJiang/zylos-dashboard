@@ -189,7 +189,7 @@ test('unmute confirmation plays after a suspended context resumes', async (t) =>
   assert.ok(ctx.resumeCalls >= 1);
 
   await flushMicrotasks();
-  assert.equal(ctx.oscillatorStarts, 1, 'confirmation blip plays once resume() settles');
+  assert.equal(ctx.oscillatorStarts, 2, 'confirmation cue plays two crisp rising notes once resume() settles');
 });
 
 test('first cue after unmute is not dropped by a suspended context', async (t) => {
@@ -205,7 +205,22 @@ test('first cue after unmute is not dropped by a suspended context', async (t) =
   sounds.handleFleet({ agents: [{ name: 'a', state: 'IDLE' }] }); // seed
   sounds.handleFleet({ agents: [{ name: 'a', state: 'BUSY' }] }); // start cue, ctx suspended
   await flushMicrotasks();
-  assert.equal(ctx.oscillatorStarts, 1, 'start cue plays after resume() settles');
+  assert.equal(ctx.oscillatorStarts, 2, 'start cue plays two rising notes after resume() settles');
+});
+
+test('start cue has two notes and finish cue has three notes', async (t) => {
+  const contexts = withAudioFactory(t);
+  const { createFleetSounds } = await import('../public/js/fleet-sounds.js');
+  const sounds = createFleetSounds({ mediaDevices: null, doc: null });
+
+  sounds.handleFleet({ agents: [{ name: 'a', state: 'IDLE' }] });
+  sounds.handleFleet({ agents: [{ name: 'a', state: 'BUSY' }] });
+  await flushMicrotasks();
+  assert.equal(contexts[0].oscillatorStarts, 2, 'start cue is two notes');
+
+  sounds.handleFleet({ agents: [{ name: 'a', state: 'IDLE' }] });
+  await flushMicrotasks();
+  assert.equal(contexts[0].oscillatorStarts, 5, 'finish cue adds three notes');
 });
 
 // ─── Output device routing + global unlock (#195) ───
@@ -327,7 +342,7 @@ test('unmute after a cancelled cue still plays its confirmation', async (t) => {
   await flushMicrotasks();
   assert.equal(contexts.length, 2);
   assert.equal(contexts[0].oscillatorStarts, 0);
-  assert.equal(contexts[1].oscillatorStarts, 1, 'confirmation plays on the fresh context');
+  assert.equal(contexts[1].oscillatorStarts, 2, 'confirmation plays on the fresh context');
 });
 
 test('pointerdown does not create or resume audio while muted', async (t) => {
