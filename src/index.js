@@ -4,7 +4,7 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { AuthGate, exchangeApiKeyForToken, generateApiKey, validateApiSession } from './lib/auth.js';
+import { AuthGate, exchangeApiKeyForToken, generateApiKey, hashApiKey, validateApiSession } from './lib/auth.js';
 import { browserBaseFromRequest } from './lib/browser-base.js';
 import {
   DEFAULT_RUNTIME_SERVICE_TIER_MODEL_PRICES,
@@ -406,6 +406,33 @@ function maskApiKey(value) {
   return key.startsWith('zylos_ak_') ? `zylos_ak_...${suffix}` : `...${suffix}`;
 }
 
+function normalizeApiKeyName(value) {
+  return String(value || '').trim();
+}
+
+function apiKeysPayload() {
+  return {
+    keys: store.listApiKeys().map(key => ({
+      name: key.name,
+      scope: key.scope,
+      created_at: key.created_at,
+      last_used_at: key.last_used_at,
+      revoked_at: key.revoked_at,
+      status: key.revoked_at ? 'revoked' : 'active'
+    }))
+  };
+}
+
+function validateApiKeyName(name) {
+  if (!/^[\w.-]{1,64}$/.test(name)) return 'invalid_name';
+  if (store.getApiKeyByName(name)) return 'duplicate_name';
+  return null;
+}
+
+function validateApiKeyScope(scope) {
+  return scope === 'read' || scope === 'admin';
+}
+
 function currentFleetAgents() {
   return Array.isArray(config.fleet?.agents) ? config.fleet.agents : [];
 }
@@ -652,6 +679,77 @@ async function handleAgentRename(req, res) {
     process.stderr.write(`[fleet-config] Failed to rename local agent: ${err.message}\n`);
     sendJson(res, 500, { error: 'failed_to_save_config' });
   }
+}
+
+async function handleApiKeys(req, res) {
+  if (req.method === 'GET') {
+    sendJson(res, 200, apiKeysPayload());
+    return;
+  }
+  if (req.method !== 'POST') {
+    sendJson(res, 405, { error: 'method_not_allowed' });
+    return;
+  }
+  let body;
+  try {
+    body = await readJsonBody(req, 4096);
+  } catch (err) {
+    sendJson(res, err.status || 400, { error: err.message });
+    return;
+  }
+  const name = normalizeApiKeyName(body.name);
+  const nameError = validateApiKeyName(name);
+  if (nameError) {
+    sendJson(res, 400, { error: nameError });
+    return;
+  }
+  const scope = String(body.scope || 'read').trim();
+  if (!validateApiKeyScope(scope)) {
+    sendJson(res, 400, { error: 'invalid_scope' });
+    return;
+  }
+  const key = generateApiKey();
+  try {
+    store.insertApiKey({ name, keyHash: hashApiKey(key), scope });
+    const created = store.getApiKeyByName(name);
+    sendJson(res, 200, {
+      ok: true,
+      key: {
+        name: created.name,
+        scope: created.scope,
+        created_at: created.created_at,
+        last_used_at: created.last_used_at,
+        revoked_at: created.revoked_at,
+        status: created.revoked_at ? 'revoked' : 'active'
+      },
+      plaintext_key: key,
+      ...apiKeysPayload()
+    });
+  } catch (err) {
+    process.stderr.write(`[api-keys] Failed to create API key: ${err.message}\n`);
+    sendJson(res, 500, { error: 'failed_to_save_key' });
+  }
+}
+
+async function handleApiKeyDelete(req, res, pathname) {
+  if (req.method !== 'DELETE') {
+    sendJson(res, 405, { error: 'method_not_allowed' });
+    return;
+  }
+  const encodedName = pathname.slice('/api/keys/'.length);
+  let name = '';
+  try {
+    name = decodeURIComponent(encodedName);
+  } catch {
+    sendJson(res, 400, { error: 'invalid_name' });
+    return;
+  }
+  const result = store.revokeApiKey(name);
+  if (result.changes === 0) {
+    sendJson(res, 404, { error: 'unknown_key' });
+    return;
+  }
+  sendJson(res, 200, { ok: true, ...apiKeysPayload() });
 }
 
 async function startupSequence() {
@@ -1339,6 +1437,16 @@ export function createServer() {
 
     if (pathname === '/api/agent/name') {
       await handleAgentRename(req, res);
+      return;
+    }
+
+    if (pathname === '/api/keys') {
+      await handleApiKeys(req, res);
+      return;
+    }
+
+    if (pathname.startsWith('/api/keys/')) {
+      await handleApiKeyDelete(req, res, pathname);
       return;
     }
 

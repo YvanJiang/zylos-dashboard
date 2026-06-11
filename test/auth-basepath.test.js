@@ -442,6 +442,138 @@ test('proxied remote writes require consumer admin API scope or browser session'
   }
 });
 
+test('API key management is admin-gated, show-once, and revoke invalidates active sessions', async () => {
+  const zylosDir = fs.mkdtempSync(path.join(os.tmpdir(), 'zylos-dashboard-test-'));
+  writeConfig(zylosDir, 'secret', { auth: { enabled: true, password: 'secret' } });
+
+  const { origin, server } = await makeServerWithDir(zylosDir);
+  try {
+    const dbPath = path.join(zylosDir, 'components', 'dashboard', 'dashboard.db');
+    const store = new Store(dbPath);
+    const readKey = generateApiKey();
+    const adminKey = generateApiKey();
+    store.insertApiKey({ name: 'read-key', keyHash: hashApiKey(readKey), scope: 'read' });
+    store.insertApiKey({ name: 'admin-key', keyHash: hashApiKey(adminKey), scope: 'admin' });
+    store.close();
+
+    const readTokenResp = await fetch(`${origin}/api/auth/token`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${readKey}` }
+    });
+    const adminTokenResp = await fetch(`${origin}/api/auth/token`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${adminKey}` }
+    });
+    const { token: readToken } = await readTokenResp.json();
+    const { token: adminToken } = await adminTokenResp.json();
+
+    const readList = await fetch(`${origin}/api/keys`, {
+      headers: { Authorization: `Bearer ${readToken}` }
+    });
+    assert.equal(readList.status, 403);
+    assert.deepEqual(await readList.json(), { error: 'insufficient_scope', required: 'admin' });
+
+    const create = await fetch(`${origin}/api/keys`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${adminToken}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({ name: 'producer-read', scope: 'read' })
+    });
+    assert.equal(create.status, 200);
+    const createBody = await create.json();
+    assert.equal(createBody.key.name, 'producer-read');
+    assert.equal(createBody.key.scope, 'read');
+    assert.equal(createBody.key.status, 'active');
+    assert.match(createBody.plaintext_key, /^zylos_ak_/);
+    assert.equal(JSON.stringify(createBody.keys).includes(createBody.plaintext_key), false);
+    assert.equal(JSON.stringify(createBody).includes('key_hash'), false);
+
+    const createdTokenResp = await fetch(`${origin}/api/auth/token`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${createBody.plaintext_key}` }
+    });
+    assert.equal(createdTokenResp.status, 200);
+    const { token: createdToken, scope } = await createdTokenResp.json();
+    assert.equal(scope, 'read');
+
+    const duplicate = await fetch(`${origin}/api/keys`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${adminToken}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({ name: 'producer-read', scope: 'read' })
+    });
+    assert.equal(duplicate.status, 400);
+    assert.deepEqual(await duplicate.json(), { error: 'duplicate_name' });
+
+    const badScope = await fetch(`${origin}/api/keys`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${adminToken}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({ name: 'bad-scope', scope: 'owner' })
+    });
+    assert.equal(badScope.status, 400);
+    assert.deepEqual(await badScope.json(), { error: 'invalid_scope' });
+
+    const createAdmin = await fetch(`${origin}/api/keys`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${adminToken}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({ name: 'producer-admin', scope: 'admin' })
+    });
+    assert.equal(createAdmin.status, 200);
+    const createAdminBody = await createAdmin.json();
+    assert.equal(createAdminBody.key.scope, 'admin');
+    assert.match(createAdminBody.plaintext_key, /^zylos_ak_/);
+
+    const list = await fetch(`${origin}/api/keys`, {
+      headers: { Authorization: `Bearer ${adminToken}` }
+    });
+    assert.equal(list.status, 200);
+    const listBody = await list.json();
+    assert.equal(listBody.keys.some(k => k.name === 'producer-read' && k.status === 'active'), true);
+    assert.equal(JSON.stringify(listBody).includes(createBody.plaintext_key), false);
+    assert.equal(JSON.stringify(listBody).includes(createAdminBody.plaintext_key), false);
+    assert.equal(JSON.stringify(listBody).includes('key_hash'), false);
+
+    const revoke = await fetch(`${origin}/api/keys/producer-read`, {
+      method: 'DELETE',
+      headers: { Authorization: `Bearer ${adminToken}` }
+    });
+    assert.equal(revoke.status, 200);
+    const revokeBody = await revoke.json();
+    assert.equal(revokeBody.keys.some(k => k.name === 'producer-read' && k.status === 'revoked'), true);
+
+    const revokedExchange = await fetch(`${origin}/api/auth/token`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${createBody.plaintext_key}` }
+    });
+    assert.equal(revokedExchange.status, 401);
+
+    const staleSessionUse = await fetch(`${origin}/api/state`, {
+      headers: { Authorization: `Bearer ${createdToken}` }
+    });
+    assert.equal(staleSessionUse.status, 401, 'revoking a key should immediately invalidate existing session tokens');
+
+    const secondRevoke = await fetch(`${origin}/api/keys/producer-read`, {
+      method: 'DELETE',
+      headers: { Authorization: `Bearer ${adminToken}` }
+    });
+    assert.equal(secondRevoke.status, 404);
+    assert.deepEqual(await secondRevoke.json(), { error: 'unknown_key' });
+  } finally {
+    await closeServer(server);
+    fs.rmSync(zylosDir, { recursive: true, force: true });
+  }
+});
+
 test('/api/fleet exposes safe records without registry secrets', async () => {
   const zylosDir = fs.mkdtempSync(path.join(os.tmpdir(), 'zylos-dashboard-test-'));
   writeConfig(zylosDir, 'secret', {

@@ -1082,7 +1082,11 @@ function renderAll() {
       selfName: fleetManageModal.querySelector('#fleet-self-name')?.value || '',
       name: fleetManageModal.querySelector('#fleet-add-name')?.value || '',
       baseUrl: fleetManageModal.querySelector('#fleet-add-url')?.value || '',
-      readKey: fleetManageModal.querySelector('#fleet-add-key')?.value || ''
+      readKey: fleetManageModal.querySelector('#fleet-add-key')?.value || '',
+      keyName: fleetManageModal.querySelector('#api-key-name')?.value || '',
+      keyScope: fleetManageModal.querySelector('#api-key-scope')?.value || 'read',
+      activeTab: fleetManageModal.querySelector('.modal-tab.active')?.dataset.tab || 'fleet',
+      createdKey: fleetManageModal._createdKey || null
     };
     fleetManageModal.remove();
     fleetManageModal = null;
@@ -1934,40 +1938,70 @@ function createFleetManageModal() {
     <button class="modal-close" type="button" aria-label="Close">&times;</button>
   </div>
   <div class="modal-tabs" role="tablist">
-    <button class="modal-tab active" type="button">${esc(t('fleet_manage.tab_fleet'))}</button>
+    <button class="modal-tab active" type="button" data-tab="fleet">${esc(t('fleet_manage.tab_fleet'))}</button>
+    <button class="modal-tab" type="button" data-tab="keys">${esc(t('fleet_manage.tab_keys'))}</button>
   </div>
   <div class="modal-body">
-    <section class="manage-section">
-      <span class="action-group-label">${esc(t('fleet_manage.local_agent'))}</span>
-      <div class="fleet-self-row">
-        <input class="action-input" id="fleet-self-name" type="text" autocomplete="off" />
-        <button class="action-btn action-btn-sm" id="fleet-rename-save" type="button">${esc(t('btn.save'))}</button>
-      </div>
-      <small class="fleet-help">${esc(t('fleet_manage.rename_hint'))}</small>
-    </section>
-    <section class="manage-section">
-      <span class="action-group-label">${esc(t('fleet_manage.remote_agents'))}</span>
-      <div class="fleet-agent-list" id="fleet-agent-list"></div>
-    </section>
-    <section class="manage-section">
-      <span class="action-group-label">${esc(t('fleet_manage.add_agent'))}</span>
-      <div class="action-field">
-        <label class="action-field-label" for="fleet-add-name">${esc(t('fleet_manage.name'))}</label>
-        <input class="action-input" id="fleet-add-name" type="text" autocomplete="off" placeholder="zylos01" />
-      </div>
-      <div class="action-field">
-        <label class="action-field-label" for="fleet-add-url">${esc(t('fleet_manage.base_url'))}</label>
-        <input class="action-input" id="fleet-add-url" type="url" autocomplete="off" placeholder="https://agent.example/dashboard" />
-      </div>
-      <div class="action-field">
-        <label class="action-field-label" for="fleet-add-key">${esc(t('fleet_manage.read_key'))}</label>
-        <input class="action-input" id="fleet-add-key" type="password" autocomplete="off" />
-      </div>
-      <div class="action-row">
-        <button class="action-btn" id="fleet-test" type="button">${esc(t('fleet_manage.test'))}</button>
-        <button class="action-btn action-btn-primary" id="fleet-add-save" type="button">${esc(t('fleet_manage.save_agent'))}</button>
-      </div>
-    </section>
+    <div class="manage-panel" data-panel="fleet">
+      <section class="manage-section">
+        <span class="action-group-label">${esc(t('fleet_manage.local_agent'))}</span>
+        <div class="fleet-self-row">
+          <input class="action-input" id="fleet-self-name" type="text" autocomplete="off" />
+          <button class="action-btn action-btn-sm" id="fleet-rename-save" type="button">${esc(t('btn.save'))}</button>
+        </div>
+        <small class="fleet-help">${esc(t('fleet_manage.rename_hint'))}</small>
+      </section>
+      <section class="manage-section">
+        <span class="action-group-label">${esc(t('fleet_manage.remote_agents'))}</span>
+        <div class="fleet-agent-list" id="fleet-agent-list"></div>
+      </section>
+      <section class="manage-section">
+        <span class="action-group-label">${esc(t('fleet_manage.add_agent'))}</span>
+        <small class="fleet-help">${esc(t('fleet_manage.add_key_hint'))}</small>
+        <div class="action-field">
+          <label class="action-field-label" for="fleet-add-name">${esc(t('fleet_manage.name'))}</label>
+          <input class="action-input" id="fleet-add-name" type="text" autocomplete="off" placeholder="zylos01" />
+        </div>
+        <div class="action-field">
+          <label class="action-field-label" for="fleet-add-url">${esc(t('fleet_manage.base_url'))}</label>
+          <input class="action-input" id="fleet-add-url" type="url" autocomplete="off" placeholder="https://agent.example/dashboard" />
+        </div>
+        <div class="action-field">
+          <label class="action-field-label" for="fleet-add-key">${esc(t('fleet_manage.read_key'))}</label>
+          <input class="action-input" id="fleet-add-key" type="password" autocomplete="off" />
+        </div>
+        <div class="action-row">
+          <button class="action-btn" id="fleet-test" type="button">${esc(t('fleet_manage.test'))}</button>
+          <button class="action-btn action-btn-primary" id="fleet-add-save" type="button">${esc(t('fleet_manage.save_agent'))}</button>
+        </div>
+      </section>
+    </div>
+    <div class="manage-panel" data-panel="keys" hidden>
+      <section class="manage-section">
+        <span class="action-group-label">${esc(t('fleet_manage.api_keys'))}</span>
+        <small class="fleet-help">${esc(t('fleet_manage.keys_hint'))}</small>
+        <div class="fleet-agent-list" id="api-key-list"></div>
+      </section>
+      <section class="manage-section">
+        <span class="action-group-label">${esc(t('fleet_manage.create_key'))}</span>
+        <div class="action-field">
+          <label class="action-field-label" for="api-key-name">${esc(t('fleet_manage.name'))}</label>
+          <input class="action-input" id="api-key-name" type="text" autocomplete="off" placeholder="producer-read" />
+        </div>
+        <div class="action-field">
+          <label class="action-field-label" for="api-key-scope">${esc(t('fleet_manage.scope'))}</label>
+          <select class="action-select" id="api-key-scope">
+            <option value="read">${esc(t('fleet_manage.scope_read'))}</option>
+            <option value="admin">${esc(t('fleet_manage.scope_admin'))}</option>
+          </select>
+        </div>
+        <small class="fleet-help api-key-admin-warning" id="api-key-admin-warning" hidden>${esc(t('fleet_manage.admin_key_warning'))}</small>
+        <div class="api-key-created" id="api-key-created" hidden></div>
+        <div class="action-row">
+          <button class="action-btn action-btn-primary" id="api-key-create" type="button">${esc(t('fleet_manage.create_key_button'))}</button>
+        </div>
+      </section>
+    </div>
   </div>
   <div class="modal-status" id="fleet-manage-status" hidden></div>
 </div>`;
@@ -1975,9 +2009,14 @@ function createFleetManageModal() {
   fleetManageModal = overlay;
   overlay.querySelector('.modal-close').addEventListener('click', closeFleetManageModal);
   overlay.addEventListener('click', (e) => { if (e.target === overlay) closeFleetManageModal(); });
+  overlay.querySelectorAll('.modal-tab').forEach(tab => {
+    tab.addEventListener('click', () => switchFleetManageTab(tab.dataset.tab));
+  });
   overlay.querySelector('#fleet-rename-save').addEventListener('click', saveFleetSelfName);
   overlay.querySelector('#fleet-test').addEventListener('click', testFleetAgent);
   overlay.querySelector('#fleet-add-save').addEventListener('click', saveFleetAgent);
+  overlay.querySelector('#api-key-create').addEventListener('click', createApiKey);
+  overlay.querySelector('#api-key-scope').addEventListener('change', updateApiKeyScopeWarning);
   return overlay;
 }
 
@@ -1994,6 +2033,11 @@ function setFleetAddBusy(isBusy) {
   fleetManageModal?.querySelector('#fleet-add-save')?.toggleAttribute('disabled', isBusy);
 }
 
+function setApiKeyBusy(isBusy) {
+  fleetManageModal?.querySelector('#api-key-create')?.toggleAttribute('disabled', isBusy);
+  fleetManageModal?.querySelectorAll('.api-key-revoke').forEach(btn => btn.toggleAttribute('disabled', isBusy));
+}
+
 function fleetFormValues() {
   return {
     name: fleetManageModal.querySelector('#fleet-add-name').value.trim(),
@@ -2002,11 +2046,35 @@ function fleetFormValues() {
   };
 }
 
+function apiKeyFormValues() {
+  return {
+    name: fleetManageModal.querySelector('#api-key-name').value.trim(),
+    scope: fleetManageModal.querySelector('#api-key-scope').value
+  };
+}
+
 function fleetManageError(code, fallback) {
   if (!code) return fallback || t('fleet_manage.save_failed');
   const key = `fleet_manage.${code}`;
   const translated = t(key);
   return translated === key ? (fallback || code) : translated;
+}
+
+function switchFleetManageTab(tabName) {
+  const target = tabName === 'keys' ? 'keys' : 'fleet';
+  fleetManageModal.querySelectorAll('.modal-tab').forEach(tab => {
+    tab.classList.toggle('active', tab.dataset.tab === target);
+  });
+  fleetManageModal.querySelectorAll('.manage-panel').forEach(panel => {
+    panel.hidden = panel.dataset.panel !== target;
+  });
+  if (target === 'keys') loadApiKeys();
+}
+
+function updateApiKeyScopeWarning() {
+  const warning = fleetManageModal?.querySelector('#api-key-admin-warning');
+  const scope = fleetManageModal?.querySelector('#api-key-scope')?.value;
+  if (warning) warning.hidden = scope !== 'admin';
 }
 
 function renderFleetManage(data, draft = null) {
@@ -2033,6 +2101,74 @@ function renderFleetManage(data, draft = null) {
   }));
 }
 
+function renderApiKeys(data) {
+  const list = fleetManageModal.querySelector('#api-key-list');
+  const keys = data?.keys || [];
+  if (!keys.length) {
+    list.innerHTML = `<p class="empty-state">${esc(t('fleet_manage.keys_empty'))}</p>`;
+    return;
+  }
+  list.replaceChildren(...keys.map((key) => {
+    const row = document.createElement('div');
+    row.className = `fleet-agent-row api-key-row ${key.status === 'revoked' ? 'revoked' : ''}`.trim();
+    const status = key.status || (key.revoked_at ? 'revoked' : 'active');
+    row.innerHTML = `
+      <div class="fleet-agent-meta">
+        <strong>${esc(key.name)}</strong>
+        <span>${esc(key.scope || 'read')} · ${esc(t(`fleet_manage.key_${status}`))}</span>
+        <small>${esc(t('fleet_manage.key_created', { date: key.created_at || '-' }))} · ${esc(t('fleet_manage.key_last_used', { date: key.last_used_at || t('value.none') }))}</small>
+      </div>
+      ${status === 'active' ? `<button class="settings-remove-btn api-key-revoke" type="button" title="${esc(t('fleet_manage.revoke_key'))}">&times;</button>` : ''}`;
+    row.querySelector('.api-key-revoke')?.addEventListener('click', () => revokeApiKey(key.name));
+    return row;
+  }));
+}
+
+function renderCreatedApiKey(createdKey) {
+  const panel = fleetManageModal.querySelector('#api-key-created');
+  fleetManageModal._createdKey = createdKey || null;
+  if (!createdKey) {
+    panel.hidden = true;
+    panel.replaceChildren();
+    return;
+  }
+  panel.hidden = false;
+  panel.innerHTML = `
+    <strong>${esc(t('fleet_manage.key_created_once'))}</strong>
+    <div class="api-key-copy-row">
+      <input class="action-input api-key-plaintext" type="text" readonly value="${esc(createdKey.plaintext_key || '')}" />
+      <button class="action-btn action-btn-sm api-key-copy" type="button">${esc(t('fleet_manage.copy_key'))}</button>
+      <button class="settings-remove-btn api-key-dismiss" type="button" title="${esc(t('btn.remove'))}">&times;</button>
+    </div>
+    <small class="fleet-help">${esc(t('fleet_manage.key_once_hint'))}</small>`;
+  panel.querySelector('.api-key-copy').addEventListener('click', copyCreatedApiKey);
+  panel.querySelector('.api-key-dismiss').addEventListener('click', () => renderCreatedApiKey(null));
+}
+
+async function copyCreatedApiKey() {
+  const key = fleetManageModal?._createdKey?.plaintext_key || '';
+  if (!key) return;
+  try {
+    if (!navigator.clipboard?.writeText) throw new Error('clipboard_unavailable');
+    await navigator.clipboard.writeText(key);
+    fleetManageStatus(t('fleet_manage.key_copied'), 'success');
+  } catch {
+    fleetManageModal.querySelector('.api-key-plaintext')?.select();
+    fleetManageStatus(t('fleet_manage.copy_failed'), 'error');
+  }
+}
+
+async function loadApiKeys() {
+  try {
+    const resp = await fetch(api('/api/keys'), { cache: 'no-store' });
+    const data = await resp.json();
+    if (!resp.ok) throw new Error(fleetManageError(data.error, t('fleet_manage.keys_load_failed')));
+    renderApiKeys(data);
+  } catch (err) {
+    fleetManageStatus(err.message, 'error');
+  }
+}
+
 async function openFleetManageModal(draft = null) {
   if (REMOTE_AGENT) return;
   const modal = createFleetManageModal();
@@ -2042,13 +2178,18 @@ async function openFleetManageModal(draft = null) {
     modal.querySelector('#fleet-add-name').value = draft.name || '';
     modal.querySelector('#fleet-add-url').value = draft.baseUrl || '';
     modal.querySelector('#fleet-add-key').value = draft.readKey || '';
+    modal.querySelector('#api-key-name').value = draft.keyName || '';
+    modal.querySelector('#api-key-scope').value = draft.keyScope || 'read';
+    renderCreatedApiKey(draft.createdKey || null);
   }
+  updateApiKeyScopeWarning();
   fleetManageStatus(t('status.loading'), 'running');
   try {
     const resp = await fetch(api('/api/fleet/agents'), { cache: 'no-store' });
     const data = await resp.json();
     if (!resp.ok) throw new Error(data.error || t('fleet_manage.load_failed'));
     renderFleetManage(data, draft);
+    if (draft?.activeTab === 'keys') switchFleetManageTab('keys');
     fleetManageStatus('', '');
   } catch (err) {
     fleetManageStatus(err.message, 'error');
@@ -2120,6 +2261,46 @@ async function removeFleetAgent(name) {
     await refreshFleet();
   } catch (err) {
     fleetManageStatus(err.message, 'error');
+  }
+}
+
+async function createApiKey() {
+  const body = apiKeyFormValues();
+  setApiKeyBusy(true);
+  fleetManageStatus(t('fleet_manage.creating_key'), 'running');
+  try {
+    const resp = await fetch(api('/api/keys'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    });
+    const data = await resp.json();
+    if (!resp.ok) throw new Error(fleetManageError(data.error, t('fleet_manage.key_save_failed')));
+    fleetManageModal.querySelector('#api-key-name').value = '';
+    renderApiKeys(data);
+    renderCreatedApiKey({ name: data.key?.name || body.name, plaintext_key: data.plaintext_key });
+    fleetManageStatus(t('fleet_manage.key_created_status'), 'success');
+  } catch (err) {
+    fleetManageStatus(err.message, 'error');
+  } finally {
+    setApiKeyBusy(false);
+  }
+}
+
+async function revokeApiKey(name) {
+  if (!window.confirm(t('fleet_manage.revoke_confirm', { name }))) return;
+  setApiKeyBusy(true);
+  fleetManageStatus(t('fleet_manage.revoking_key'), 'running');
+  try {
+    const resp = await fetch(api(`/api/keys/${encodeURIComponent(name)}`), { method: 'DELETE' });
+    const data = await resp.json();
+    if (!resp.ok) throw new Error(fleetManageError(data.error, t('fleet_manage.revoke_failed')));
+    renderApiKeys(data);
+    fleetManageStatus(t('fleet_manage.key_revoked_status'), 'success');
+  } catch (err) {
+    fleetManageStatus(err.message, 'error');
+  } finally {
+    setApiKeyBusy(false);
   }
 }
 
