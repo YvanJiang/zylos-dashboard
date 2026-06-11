@@ -693,6 +693,10 @@ test('fleet management entry is local-only and modal is extensible for future ma
   assert.match(app, /fetch\(api\('\/api\/agent\/name'\), \{/);
   assert.doesNotMatch(app, /agentPath\('\/api\/fleet\/agents/);
   assert.doesNotMatch(app, /agentPath\('\/api\/agent\/name/);
+  assert.match(app, /function fleetManageError\(code, fallback\)/);
+  assert.match(app, /fleetManageStatus\(fleetManageError\(data\.error \|\| 'unreachable'/);
+  assert.match(app, /readKey: fleetManageModal\.querySelector\('#fleet-add-key'\)\?\.value \|\| ''/);
+  assert.match(app, /if \(wasOpen\) openFleetManageModal\(draft\);/);
 
   assert.match(app, /class="modal-tabs" role="tablist"/);
   assert.match(app, /class="manage-section"/);
@@ -704,6 +708,7 @@ test('fleet management entry is local-only and modal is extensible for future ma
     assert.equal(typeof pack['fleet_manage.open'], 'string');
     assert.equal(typeof pack['fleet_manage.title'], 'string');
     assert.equal(typeof pack['fleet_manage.tab_fleet'], 'string');
+    assert.equal(typeof pack['fleet_manage.reserved_name'], 'string');
     assert.equal(typeof pack['fleet_manage.auth_failed'], 'string');
   }
 });

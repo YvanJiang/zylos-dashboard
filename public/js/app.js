@@ -1078,9 +1078,15 @@ function renderAll() {
   initFleetManageButton();
   if (fleetManageModal) {
     const wasOpen = !fleetManageModal.hidden;
+    const draft = {
+      selfName: fleetManageModal.querySelector('#fleet-self-name')?.value || '',
+      name: fleetManageModal.querySelector('#fleet-add-name')?.value || '',
+      baseUrl: fleetManageModal.querySelector('#fleet-add-url')?.value || '',
+      readKey: fleetManageModal.querySelector('#fleet-add-key')?.value || ''
+    };
     fleetManageModal.remove();
     fleetManageModal = null;
-    if (wasOpen) openFleetManageModal();
+    if (wasOpen) openFleetManageModal(draft);
   }
   _lastRuntimeApplied = null;
   applyRuntimeVisibility();
@@ -2022,10 +2028,16 @@ function renderFleetManage(data) {
   }));
 }
 
-async function openFleetManageModal() {
+async function openFleetManageModal(draft = null) {
   if (REMOTE_AGENT) return;
   const modal = createFleetManageModal();
   modal.hidden = false;
+  if (draft) {
+    modal.querySelector('#fleet-self-name').value = draft.selfName || '';
+    modal.querySelector('#fleet-add-name').value = draft.name || '';
+    modal.querySelector('#fleet-add-url').value = draft.baseUrl || '';
+    modal.querySelector('#fleet-add-key').value = draft.readKey || '';
+  }
   fleetManageStatus(t('status.loading'), 'running');
   try {
     const resp = await fetch(api('/api/fleet/agents'), { cache: 'no-store' });
@@ -2056,7 +2068,7 @@ async function testFleetAgent() {
     if (data.reachable) {
       fleetManageStatus(t('fleet_manage.test_ok', { scope: data.scope || 'read' }), 'success');
     } else {
-      fleetManageStatus(t(`fleet_manage.${data.error || 'unreachable'}`), 'error');
+      fleetManageStatus(fleetManageError(data.error || 'unreachable', data.error || t('fleet_manage.test_failed')), 'error');
     }
   } catch (err) {
     fleetManageStatus(err.message, 'error');

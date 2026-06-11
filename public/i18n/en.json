@@ -296,6 +296,7 @@
   "fleet_manage.save_failed": "Save failed",
   "fleet_manage.remove_failed": "Remove failed",
   "fleet_manage.invalid_name": "Use 1-32 letters, numbers, underscores, dots, or dashes.",
+  "fleet_manage.reserved_name": "That name is reserved.",
   "fleet_manage.duplicate_name": "That name is already in use.",
   "fleet_manage.invalid_url": "Use a valid http or https URL.",
   "fleet_manage.missing_read_api_key": "Read key is required.",

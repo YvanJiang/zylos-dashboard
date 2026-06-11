@@ -296,6 +296,7 @@
   "fleet_manage.save_failed": "保存失败",
   "fleet_manage.remove_failed": "移除失败",
   "fleet_manage.invalid_name": "名称只能包含 1-32 个字母、数字、下划线、点或短横线。",
+  "fleet_manage.reserved_name": "该名称为保留名。",
   "fleet_manage.duplicate_name": "该名称已被占用。",
   "fleet_manage.invalid_url": "请输入有效的 http 或 https URL。",
   "fleet_manage.missing_read_api_key": "请填写只读密钥。",

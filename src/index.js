@@ -385,6 +385,7 @@ function broadcastFleet(remoteFleet) {
 
 const fleetPoller = new FleetPoller(config, { onPoll: broadcastFleet });
 fleetPollerReady = true;
+const RESERVED_FLEET_AGENT_NAMES = new Set(['test']);
 
 function normalizeAgentName(value) {
   return String(value || '').trim();
@@ -423,6 +424,7 @@ function fleetAgentsPayload() {
 
 function validateAgentName(name, { allowCurrentSelf = false, currentName = null } = {}) {
   if (!/^[\w.-]{1,32}$/.test(name)) return 'invalid_name';
+  if (RESERVED_FLEET_AGENT_NAMES.has(name.toLowerCase())) return 'reserved_name';
   const selfName = config.agent?.name || '';
   if (name === selfName && !(allowCurrentSelf && name === currentName)) return 'duplicate_name';
   if (currentFleetAgents().some(a => a.name === name && a.name !== currentName)) return 'duplicate_name';
@@ -469,7 +471,8 @@ function persistFleetConfig(mutator) {
 
 async function probeFleetAgent(baseUrl, readApiKey) {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), Number(config.fleet?.timeout_ms) || 2500);
+  const timeoutMs = Number(config.fleet?.timeout_ms) || 2500;
+  const timer = setTimeout(() => controller.abort(), timeoutMs * 2);
   timer.unref?.();
   try {
     const tokenResp = await fetch(`${baseUrl}/api/auth/token`, {
@@ -538,13 +541,23 @@ async function handleFleetAgents(req, res) {
   }
   const agent = { name, base_url: baseUrl, read_api_key: readApiKey };
   try {
+    const probe = await probeFleetAgent(baseUrl, readApiKey);
     persistFleetConfig(({ fleet }) => {
       fleet.agents.push(agent);
     });
     fleetPoller.addAgent(config.fleet.agents.find(a => a.name === name));
-    sendJson(res, 200, { ok: true, agent: { name, base_url: baseUrl, key_masked: maskApiKey(readApiKey), access: 'read' } });
+    sendJson(res, 200, {
+      ok: true,
+      agent: {
+        name,
+        base_url: baseUrl,
+        key_masked: maskApiKey(readApiKey),
+        access: probe.reachable ? probe.scope : 'unknown'
+      }
+    });
   } catch (err) {
-    sendJson(res, 500, { error: `failed_to_save_config: ${err.message}` });
+    process.stderr.write(`[fleet-config] Failed to save fleet agent: ${err.message}\n`);
+    sendJson(res, 500, { error: 'failed_to_save_config' });
   }
 }
 
@@ -599,7 +612,8 @@ async function handleFleetAgentDelete(req, res, pathname) {
     fleetPoller.removeAgent(name);
     sendJson(res, 200, { ok: true, ...fleetAgentsPayload() });
   } catch (err) {
-    sendJson(res, 500, { error: `failed_to_save_config: ${err.message}` });
+    process.stderr.write(`[fleet-config] Failed to delete fleet agent: ${err.message}\n`);
+    sendJson(res, 500, { error: 'failed_to_save_config' });
   }
 }
 
@@ -630,7 +644,8 @@ async function handleAgentRename(req, res) {
     broadcastFleet(fleetPoller.getFleet());
     sendJson(res, 200, { ok: true, self: { name } });
   } catch (err) {
-    sendJson(res, 500, { error: `failed_to_save_config: ${err.message}` });
+    process.stderr.write(`[fleet-config] Failed to rename local agent: ${err.message}\n`);
+    sendJson(res, 500, { error: 'failed_to_save_config' });
   }
 }
 

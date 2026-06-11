@@ -552,6 +552,7 @@ test('fleet management API is admin-gated, masks keys, persists atomically, and 
     const addBody = await add.json();
     assert.equal(addBody.agent.name, 'Remote');
     assert.equal(addBody.agent.key_masked, 'zylos_ak_...1234');
+    assert.equal(addBody.agent.access, 'read');
     assert.equal(JSON.stringify(addBody).includes('supersecret'), false);
 
     const duplicate = await fetch(`${origin}/api/fleet/agents`, {
@@ -569,6 +570,21 @@ test('fleet management API is admin-gated, masks keys, persists atomically, and 
     assert.equal(duplicate.status, 400);
     assert.deepEqual(await duplicate.json(), { error: 'duplicate_name' });
 
+    const reserved = await fetch(`${origin}/api/fleet/agents`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${adminToken}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        name: 'test',
+        base_url: remote.origin,
+        read_api_key: 'zylos_ak_other'
+      })
+    });
+    assert.equal(reserved.status, 400);
+    assert.deepEqual(await reserved.json(), { error: 'reserved_name' });
+
     const list = await fetch(`${origin}/api/fleet/agents`, {
       headers: { Authorization: `Bearer ${adminToken}` }
     });
@@ -577,6 +593,7 @@ test('fleet management API is admin-gated, masks keys, persists atomically, and 
     assert.equal(listBody.self.name, 'Local');
     assert.equal(listBody.agents[0].name, 'Remote');
     assert.equal(listBody.agents[0].key_masked, 'zylos_ak_...1234');
+    assert.equal(listBody.agents[0].access, 'read');
     assert.equal(JSON.stringify(listBody).includes('supersecret'), false);
 
     const fleet = await fetch(`${origin}/api/fleet`, {
