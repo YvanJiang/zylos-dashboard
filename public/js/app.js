@@ -57,7 +57,15 @@ const state = {
     mode: 'rendered',
     collapsed: new Set(),
     loading: false,
-    error: null
+    error: null,
+    editing: false,
+    draft: '',
+    draftNotice: false,
+    dirty: false,
+    saving: false,
+    conflict: null,
+    liveNotice: null,
+    liveCheckTimer: null
   }
 };
 
@@ -1141,7 +1149,17 @@ async function fetchJson(path) {
 }
 
 async function fetchAgentJson(path) {
-  const r = await fetch(api(agentPath(path)), { cache: 'no-store' });
+  return requestAgentJson(path, { cache: 'no-store' });
+}
+
+async function requestAgentJson(path, options = {}) {
+  const r = await fetch(api(agentPath(path)), {
+    cache: 'no-store',
+    ...options,
+    headers: {
+      ...(options.headers || {})
+    }
+  });
   if (r.status === 401) {
     window.location.href = api('/login');
     throw new Error('unauthorized');
@@ -1152,12 +1170,14 @@ async function fetchAgentJson(path) {
     const err = new Error(payload.error || `${path} ${r.status}`);
     err.status = r.status;
     err.code = payload.error || null;
+    err.current = payload.current || null;
     throw err;
   }
   return r.json();
 }
 
 function resetMemoryState() {
+  stopMemoryLiveCheck();
   state.memory = {
     tree: null,
     selectedPath: null,
@@ -1166,7 +1186,15 @@ function resetMemoryState() {
     mode: 'rendered',
     collapsed: new Set(),
     loading: false,
-    error: null
+    error: null,
+    editing: false,
+    draft: '',
+    draftNotice: false,
+    dirty: false,
+    saving: false,
+    conflict: null,
+    liveNotice: null,
+    liveCheckTimer: null
   };
 }
 
@@ -1184,7 +1212,73 @@ function memoryStatusMessage(code) {
   if (code === 'unsupported_memory_file') return t('memory.error_unsupported');
   if (code === 'invalid_memory_path') return t('memory.error_invalid_path');
   if (code === 'memory_file_not_found') return t('memory.error_not_found');
+  if (code === 'memory_conflict') return t('memory.error_conflict');
+  if (code === 'invalid_memory_write') return t('memory.error_invalid_write');
   return t('memory.error_generic');
+}
+
+function memoryAgentKey() {
+  return state.remoteAgent || REMOTE_AGENT || 'local';
+}
+
+function memoryDraftKey(filePath = state.memory.selectedPath) {
+  if (!filePath) return null;
+  return `zylos.memoryDraft.${memoryAgentKey()}.${filePath}`;
+}
+
+function saveMemoryDraft() {
+  const key = memoryDraftKey();
+  if (!key) return;
+  try {
+    if (state.memory.dirty) localStorage.setItem(key, state.memory.draft || '');
+    else localStorage.removeItem(key);
+  } catch {
+    // Draft persistence is best-effort.
+  }
+}
+
+function readMemoryDraft(filePath) {
+  const key = memoryDraftKey(filePath);
+  if (!key) return null;
+  try {
+    const value = localStorage.getItem(key);
+    return value == null ? null : value;
+  } catch {
+    return null;
+  }
+}
+
+function clearMemoryDraft(filePath = state.memory.selectedPath) {
+  const key = memoryDraftKey(filePath);
+  if (!key) return;
+  try { localStorage.removeItem(key); } catch { /* best-effort */ }
+}
+
+function stopMemoryLiveCheck() {
+  if (state.memory?.liveCheckTimer) {
+    clearInterval(state.memory.liveCheckTimer);
+    state.memory.liveCheckTimer = null;
+  }
+}
+
+function startMemoryLiveCheck() {
+  stopMemoryLiveCheck();
+  if (!state.memory.editing || !state.memory.file || state.memory.conflict || remoteIsReadOnly()) return;
+  state.memory.liveCheckTimer = setInterval(() => {
+    checkMemoryLiveSha().catch(() => {});
+  }, 20_000);
+}
+
+async function checkMemoryLiveSha() {
+  const file = state.memory.file;
+  if (!state.memory.editing || !file?.path || state.memory.conflict) return;
+  const latest = await fetchAgentJson(`/api/memory/file?path=${encodeURIComponent(file.path)}`);
+  if (latest.sha256 && latest.sha256 !== file.sha256) {
+    state.memory.liveNotice = latest;
+    state.memory.conflict = buildMemoryConflict(latest, state.memory.draft, state.memory.draft);
+    stopMemoryLiveCheck();
+    renderMemory();
+  }
 }
 
 function flattenMemoryFiles(node, files = []) {
@@ -1265,6 +1359,60 @@ function renderMarkdown(text) {
   return md.render(source);
 }
 
+function memoryLineDiff(a, b) {
+  const left = String(a || '').split('\n');
+  const right = String(b || '').split('\n');
+  const dp = Array.from({ length: left.length + 1 }, () => Array(right.length + 1).fill(0));
+  for (let i = left.length - 1; i >= 0; i--) {
+    for (let j = right.length - 1; j >= 0; j--) {
+      dp[i][j] = left[i] === right[j] ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1]);
+    }
+  }
+  const rows = [];
+  let i = 0;
+  let j = 0;
+  while (i < left.length || j < right.length) {
+    if (i < left.length && j < right.length && left[i] === right[j]) {
+      rows.push({ type: 'same', text: left[i] });
+      i++;
+      j++;
+    } else if (j < right.length && (i >= left.length || dp[i][j + 1] >= dp[i + 1][j])) {
+      rows.push({ type: 'theirs', text: right[j++] });
+    } else if (i < left.length) {
+      rows.push({ type: 'mine', text: left[i++] });
+    }
+  }
+  return rows;
+}
+
+function buildMemoryConflict(theirs, mine, manual = mine) {
+  return {
+    theirs,
+    mine: String(mine || ''),
+    manual: String(manual || ''),
+    diff: memoryLineDiff(mine, theirs?.text || '')
+  };
+}
+
+function renderMemoryConflict(conflict) {
+  if (!conflict) return '';
+  const rows = (conflict.diff || []).slice(0, 240).map(row =>
+    `<div class="memory-diff-row ${row.type}"><span>${row.type === 'same' ? ' ' : row.type === 'mine' ? '-' : '+'}</span><code>${esc(row.text)}</code></div>`
+  ).join('');
+  return `<section class="memory-conflict" id="memory-conflict">
+    <div class="memory-conflict-head">
+      <strong>${esc(t('memory.conflict_title'))}</strong>
+      <span>${esc(t('memory.conflict_body'))}</span>
+    </div>
+    <div class="memory-conflict-actions">
+      <button class="memory-action" type="button" data-memory-conflict="mine">${esc(t('memory.use_mine'))}</button>
+      <button class="memory-action" type="button" data-memory-conflict="theirs">${esc(t('memory.take_theirs'))}</button>
+      <button class="memory-action primary" type="button" data-memory-conflict="manual">${esc(t('memory.manual_merge'))}</button>
+    </div>
+    <div class="memory-diff">${rows}</div>
+  </section>`;
+}
+
 function renderMemoryContent() {
   const content = $('#memory-content');
   if (!content) return;
@@ -1273,11 +1421,62 @@ function renderMemoryContent() {
     content.innerHTML = `<p class="empty-state">${esc(t('memory.empty'))}</p>`;
     return;
   }
-  if (state.memory.mode === 'raw' || !file.markdown) {
+  if (state.memory.editing) {
+    const conflict = renderMemoryConflict(state.memory.conflict);
+    const notice = state.memory.draftNotice
+      ? `<div class="memory-notice">${esc(t('memory.draft_restored'))} <button type="button" data-memory-discard-draft>${esc(t('memory.discard_draft'))}</button></div>`
+      : '';
+    const live = state.memory.liveNotice
+      ? `<div class="memory-notice warning">${esc(t('memory.live_changed'))}</div>`
+      : '';
+    content.innerHTML = `${notice}${live}${conflict}<textarea class="memory-editor" id="memory-editor" spellcheck="false">${esc(state.memory.draft)}</textarea>`;
+    const editor = $('#memory-editor');
+    editor?.addEventListener('input', () => {
+      state.memory.draft = editor.value;
+      state.memory.dirty = state.memory.file ? state.memory.draft !== state.memory.file.text : true;
+      state.memory.draftNotice = false;
+      saveMemoryDraft();
+      renderMemoryActions();
+    });
+    content.querySelector('[data-memory-discard-draft]')?.addEventListener('click', () => {
+      clearMemoryDraft();
+      state.memory.draft = state.memory.file?.text || '';
+      state.memory.dirty = false;
+      state.memory.draftNotice = false;
+      saveMemoryDraft();
+      renderMemory();
+    });
+    content.querySelectorAll('[data-memory-conflict]').forEach((btn) => {
+      btn.addEventListener('click', () => resolveMemoryConflict(btn.dataset.memoryConflict).catch(() => {}));
+    });
+  } else if (state.memory.mode === 'raw' || !file.markdown) {
     content.innerHTML = `<pre class="memory-raw"><code>${esc(file.text)}</code></pre>`;
   } else {
     content.innerHTML = `<article class="memory-markdown">${renderMarkdown(file.text)}</article>`;
   }
+}
+
+function renderMemoryActions() {
+  const file = state.memory.file;
+  const editing = !!state.memory.editing;
+  const editBtn = $('#memory-edit-btn');
+  const saveBtn = $('#memory-save-btn');
+  const resetBtn = $('#memory-reset-btn');
+  if (editBtn) {
+    editBtn.hidden = editing || !file || remoteIsReadOnly();
+    editBtn.disabled = !file || state.memory.loading || state.memory.saving;
+  }
+  if (saveBtn) {
+    saveBtn.hidden = !editing;
+    saveBtn.disabled = state.memory.saving || !state.memory.dirty || !!state.memory.conflict;
+    saveBtn.textContent = state.memory.saving ? t('memory.saving') : t('memory.save');
+  }
+  if (resetBtn) {
+    resetBtn.hidden = !editing;
+    resetBtn.disabled = state.memory.saving;
+  }
+  $('#memory-rendered-btn')?.toggleAttribute('disabled', editing);
+  $('#memory-raw-btn')?.toggleAttribute('disabled', editing);
 }
 
 function renderMemory() {
@@ -1298,6 +1497,7 @@ function renderMemory() {
   }
   renderedBtn?.classList.toggle('active', state.memory.mode === 'rendered');
   rawBtn?.classList.toggle('active', state.memory.mode === 'raw');
+  renderMemoryActions();
 
   if (readOnly) {
     tree.innerHTML = '';
@@ -1306,6 +1506,7 @@ function renderMemory() {
     status.textContent = t('memory.remote_read_only');
     status.hidden = false;
     content.innerHTML = '';
+    renderMemoryActions();
     return;
   }
 
@@ -1359,6 +1560,7 @@ function renderMemory() {
     meta.textContent = parts.join(' · ');
   }
   renderMemoryContent();
+  renderMemoryActions();
 }
 
 async function loadMemoryTree({ force = false } = {}) {
@@ -1387,11 +1589,18 @@ async function loadMemoryTree({ force = false } = {}) {
 
 async function openMemoryFile(filePath) {
   if (!filePath || remoteIsReadOnly()) return;
+  stopMemoryLiveCheck();
   state.memory.selectedPath = filePath;
   state.memory.file = null;
   state.memory.git = null;
   state.memory.loading = true;
   state.memory.error = null;
+  state.memory.editing = false;
+  state.memory.draft = '';
+  state.memory.draftNotice = false;
+  state.memory.dirty = false;
+  state.memory.conflict = null;
+  state.memory.liveNotice = null;
   renderMemory();
   try {
     const encoded = encodeURIComponent(filePath);
@@ -1402,12 +1611,92 @@ async function openMemoryFile(filePath) {
     state.memory.file = file;
     state.memory.git = git;
     state.memory.error = null;
+    const draft = readMemoryDraft(file.path);
+    if (draft != null && draft !== file.text) {
+      state.memory.editing = true;
+      state.memory.draft = draft;
+      state.memory.draftNotice = true;
+      state.memory.dirty = true;
+      startMemoryLiveCheck();
+    }
   } catch (err) {
     state.memory.error = err.code || 'memory_browser_failed';
   } finally {
     state.memory.loading = false;
     renderMemory();
   }
+}
+
+function startMemoryEdit() {
+  if (!state.memory.file || remoteIsReadOnly()) return;
+  state.memory.editing = true;
+  state.memory.draft = state.memory.draft || state.memory.file.text || '';
+  state.memory.dirty = state.memory.draft !== state.memory.file.text;
+  state.memory.conflict = null;
+  state.memory.liveNotice = null;
+  startMemoryLiveCheck();
+  renderMemory();
+}
+
+function resetMemoryEdit() {
+  if (!state.memory.file) return;
+  state.memory.editing = false;
+  state.memory.draft = '';
+  state.memory.draftNotice = false;
+  state.memory.dirty = false;
+  state.memory.conflict = null;
+  state.memory.liveNotice = null;
+  clearMemoryDraft();
+  stopMemoryLiveCheck();
+  renderMemory();
+}
+
+async function saveMemoryDraftToServer({ text = state.memory.draft, sha256 = state.memory.file?.sha256 } = {}) {
+  const file = state.memory.file;
+  if (!file?.path || !sha256) return;
+  state.memory.saving = true;
+  state.memory.error = null;
+  renderMemoryActions();
+  try {
+    const saved = await requestAgentJson(`/api/memory/file?path=${encodeURIComponent(file.path)}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text, sha256 })
+    });
+    state.memory.file = saved;
+    state.memory.draft = saved.text;
+    state.memory.dirty = false;
+    state.memory.editing = false;
+    state.memory.conflict = null;
+    state.memory.liveNotice = null;
+    clearMemoryDraft(saved.path);
+    state.memory.git = await fetchAgentJson(`/api/memory/git?path=${encodeURIComponent(saved.path)}`).catch(() => ({ commit: null }));
+    await loadMemoryTree({ force: true });
+  } catch (err) {
+    if (err.code === 'memory_conflict') {
+      const latest = await fetchAgentJson(`/api/memory/file?path=${encodeURIComponent(file.path)}`).catch(() => err.current || null);
+      if (latest) {
+        state.memory.conflict = buildMemoryConflict(latest, text, text);
+        state.memory.liveNotice = latest;
+      }
+    }
+    state.memory.error = err.code || 'memory_browser_failed';
+    renderMemory();
+  } finally {
+    state.memory.saving = false;
+    renderMemory();
+  }
+}
+
+async function resolveMemoryConflict(action) {
+  const conflict = state.memory.conflict;
+  if (!conflict?.theirs) return;
+  if (action === 'theirs') {
+    await saveMemoryDraftToServer({ text: conflict.theirs.text || '', sha256: conflict.theirs.sha256 });
+    return;
+  }
+  const text = action === 'manual' ? state.memory.draft : conflict.mine;
+  await saveMemoryDraftToServer({ text, sha256: conflict.theirs.sha256 });
 }
 
 async function refreshState() {
@@ -1772,6 +2061,9 @@ function initTabs() {
 
 function initMemoryControls() {
   $('#memory-refresh')?.addEventListener('click', () => loadMemoryTree({ force: true }).catch(() => {}));
+  $('#memory-edit-btn')?.addEventListener('click', startMemoryEdit);
+  $('#memory-save-btn')?.addEventListener('click', () => saveMemoryDraftToServer().catch(() => {}));
+  $('#memory-reset-btn')?.addEventListener('click', resetMemoryEdit);
   $('#memory-fold')?.addEventListener('click', () => {
     const dirs = collectMemoryDirPaths(state.memory.tree?.root);
     if (!dirs.length) return;
