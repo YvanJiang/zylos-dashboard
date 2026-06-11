@@ -17,11 +17,12 @@ const TEXT_EXTENSIONS = new Set([
   '.yml'
 ]);
 
-function memoryError(code, status = 400) {
+function memoryError(code, status = 400, details = {}) {
   const err = new Error(code);
   err.code = code;
   err.status = status;
   err.memoryBrowserError = true;
+  Object.assign(err, details);
   return err;
 }
 
@@ -42,6 +43,49 @@ function isValidUtf8Text(buffer) {
   if (text.includes('\uFFFD')) return false;
   if (text.includes('\u0000')) return false;
   return true;
+}
+
+function assertWritableText(value, maxFileBytes) {
+  if (typeof value !== 'string') throw memoryError('invalid_memory_write');
+  if (value.includes('\u0000') || value.includes('\uFFFD')) {
+    throw memoryError('invalid_memory_write');
+  }
+  if (Buffer.byteLength(value, 'utf8') > maxFileBytes) {
+    throw memoryError('memory_file_too_large', 413);
+  }
+}
+
+function assertExpectedSha(value) {
+  if (typeof value !== 'string' || !/^[a-f0-9]{64}$/.test(value)) {
+    throw memoryError('invalid_memory_write');
+  }
+}
+
+function filePayload(rel, stat, buffer) {
+  return {
+    path: rel,
+    name: path.posix.basename(rel),
+    size_bytes: stat.size,
+    mtime: isoMtime(stat),
+    sha256: crypto.createHash('sha256').update(buffer).digest('hex'),
+    markdown: ['.md', '.markdown'].includes(path.posix.extname(rel).toLowerCase())
+  };
+}
+
+async function assertNoSymlinkPath(root, rel) {
+  if (!rel) return;
+  let current = root;
+  for (const part of rel.split('/')) {
+    current = path.join(current, part);
+    let stat;
+    try {
+      stat = await fs.lstat(current);
+    } catch (err) {
+      if (err.code === 'ENOENT') throw memoryError('memory_file_not_found', 404);
+      throw err;
+    }
+    if (stat.isSymbolicLink()) throw memoryError('invalid_memory_path');
+  }
 }
 
 function normalizeRelativeMemoryPath(input, { allowEmpty = false } = {}) {
@@ -74,6 +118,7 @@ export class MemoryBrowser {
     this.memoryRoot = path.join(zylosDir || process.env.ZYLOS_DIR || process.cwd(), 'memory');
     this.maxFileBytes = maxFileBytes;
     this._realRoot = null;
+    this._writeQueues = new Map();
   }
 
   async realRoot() {
@@ -87,6 +132,7 @@ export class MemoryBrowser {
     const rel = normalizeRelativeMemoryPath(relativePath || '', { allowEmpty: allowRoot });
     const root = await this.realRoot();
     const candidate = rel ? path.resolve(root, rel) : root;
+    await assertNoSymlinkPath(root, rel);
     let real;
     try {
       real = await fs.realpath(candidate);
@@ -165,12 +211,71 @@ export class MemoryBrowser {
     if (!isValidUtf8Text(buffer)) throw memoryError('unsupported_memory_file', 415);
     const text = buffer.toString('utf8');
     return {
-      path: rel,
-      name: path.posix.basename(rel),
-      size_bytes: stat.size,
-      mtime: isoMtime(stat),
-      sha256: crypto.createHash('sha256').update(buffer).digest('hex'),
-      markdown: ['.md', '.markdown'].includes(path.posix.extname(rel).toLowerCase()),
+      ...filePayload(rel, stat, buffer),
+      text
+    };
+  }
+
+  async writeFile(relativePath, { text, sha256 } = {}) {
+    assertWritableText(text, this.maxFileBytes);
+    assertExpectedSha(sha256);
+    const { rel, real, stat } = await this.resolvePath(relativePath, { requireFile: true });
+    if (!isTextFileName(rel)) throw memoryError('unsupported_memory_file', 415);
+    if (stat.size > this.maxFileBytes) throw memoryError('memory_file_too_large', 413);
+    return this.withWriteLock(real, () => this.writeResolvedFile({ rel, real, text, sha256 }));
+  }
+
+  async withWriteLock(real, operation) {
+    const previous = this._writeQueues.get(real) || Promise.resolve();
+    let release;
+    const current = new Promise(resolve => {
+      release = resolve;
+    });
+    const tail = previous.then(() => current, () => current);
+    this._writeQueues.set(real, tail);
+    await previous.catch(() => {});
+    try {
+      return await operation();
+    } finally {
+      release();
+      if (this._writeQueues.get(real) === tail) {
+        this._writeQueues.delete(real);
+      }
+    }
+  }
+
+  async writeResolvedFile({ rel, real, text, sha256 }) {
+    const currentStat = await fs.lstat(real);
+    if (!currentStat.isFile() || currentStat.isSymbolicLink()) {
+      throw memoryError('invalid_memory_path');
+    }
+    if (currentStat.size > this.maxFileBytes) throw memoryError('memory_file_too_large', 413);
+    const currentBuffer = await fs.readFile(real);
+    if (!isValidUtf8Text(currentBuffer)) throw memoryError('unsupported_memory_file', 415);
+    const current = filePayload(rel, currentStat, currentBuffer);
+    if (current.sha256 !== sha256) {
+      throw memoryError('memory_conflict', 409, { current });
+    }
+
+    const nextBuffer = Buffer.from(text, 'utf8');
+    const dir = path.dirname(real);
+    const base = path.basename(real);
+    const temp = path.join(dir, `.${base}.${process.pid}.${Date.now()}.${crypto.randomBytes(6).toString('hex')}.tmp`);
+    try {
+      await fs.writeFile(temp, nextBuffer, { mode: currentStat.mode & 0o777 });
+      await fs.rename(temp, real);
+    } catch (err) {
+      try {
+        await fs.unlink(temp);
+      } catch {
+        // Best-effort cleanup for interrupted writes.
+      }
+      throw err;
+    }
+
+    const nextStat = await fs.lstat(real);
+    return {
+      ...filePayload(rel, nextStat, nextBuffer),
       text
     };
   }
@@ -217,6 +322,9 @@ export function memoryErrorPayload(err) {
   }
   return {
     status: err.status,
-    body: { error: err.code }
+    body: {
+      error: err.code,
+      ...(err.current ? { current: err.current } : {})
+    }
   };
 }

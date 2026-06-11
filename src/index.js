@@ -1335,11 +1335,16 @@ async function handleStatuslineIngest(req, res) {
 }
 
 async function handleMemoryApi(req, res, pathname, url) {
-  if (req.method !== 'GET' && req.method !== 'HEAD') {
+  if (req.method !== 'GET' && req.method !== 'HEAD' && !(req.method === 'PUT' && pathname === '/api/memory/file')) {
     sendText(res, 405, 'method not allowed');
     return true;
   }
   try {
+    if (req.method === 'PUT' && pathname === '/api/memory/file') {
+      const body = await readJsonBody(req, memoryBrowser.maxFileBytes + 64 * 1024);
+      sendJson(res, 200, await memoryBrowser.writeFile(url.searchParams.get('path') || '', body));
+      return true;
+    }
     if (pathname === '/api/memory/tree') {
       sendJson(res, 200, await memoryBrowser.tree());
       return true;
@@ -1355,6 +1360,10 @@ async function handleMemoryApi(req, res, pathname, url) {
     return false;
   } catch (err) {
     const payload = memoryErrorPayload(err);
+    if (!err?.memoryBrowserError && err?.status && (err.message === 'invalid_json' || err.message === 'payload_too_large')) {
+      sendJson(res, err.status, { error: err.message });
+      return true;
+    }
     sendJson(res, payload.status, payload.body);
     return true;
   }

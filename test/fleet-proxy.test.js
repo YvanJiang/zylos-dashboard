@@ -433,9 +433,9 @@ test('fleet proxy fail-closes consumer-local fleet management endpoints without 
 test('fleet proxy allows admin memory GETs and validates memory query paths consumer-side', async () => {
   const seen = [];
   const remote = await listen((req, res) => {
-    seen.push(req.url);
+    seen.push({ method: req.method, url: req.url });
     res.writeHead(200, { 'content-type': 'application/json' });
-    res.end(JSON.stringify({ ok: true, url: req.url }));
+    res.end(JSON.stringify({ ok: true, method: req.method, url: req.url }));
   });
   const proxy = new FleetProxy({
     config: { fleet: { agents: [{ name: 'Remote', base_url: remote.origin, read_api_key: 'zylos_ak_secret' }] } },
@@ -449,15 +449,31 @@ test('fleet proxy allows admin memory GETs and validates memory query paths cons
   try {
     const tree = await fetch(`${hub.origin}/fleet/Remote/api/memory/tree`);
     assert.equal(tree.status, 200);
-    assert.deepEqual(await tree.json(), { ok: true, url: '/api/memory/tree' });
+    assert.deepEqual(await tree.json(), { ok: true, method: 'GET', url: '/api/memory/tree' });
 
     const nested = await fetch(`${hub.origin}/fleet/Remote/api/memory/file?path=reference%2Fprojects.md`);
     assert.equal(nested.status, 200);
-    assert.deepEqual(await nested.json(), { ok: true, url: '/api/memory/file?path=reference%2Fprojects.md' });
+    assert.deepEqual(await nested.json(), { ok: true, method: 'GET', url: '/api/memory/file?path=reference%2Fprojects.md' });
+
+    const put = await fetch(`${hub.origin}/fleet/Remote/api/memory/file?path=identity.md`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text: '# Identity\n', sha256: 'a'.repeat(64) })
+    });
+    assert.equal(put.status, 200);
+    assert.deepEqual(await put.json(), { ok: true, method: 'PUT', url: '/api/memory/file?path=identity.md' });
 
     const unsafe = await fetch(`${hub.origin}/fleet/Remote/api/memory/file?path=..%2Fstate.md`);
     assert.equal(unsafe.status, 400);
     assert.deepEqual(await unsafe.json(), { error: 'invalid_memory_path' });
+
+    const unsafePut = await fetch(`${hub.origin}/fleet/Remote/api/memory/file?path=..%2Fstate.md`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: '{}'
+    });
+    assert.equal(unsafePut.status, 400);
+    assert.deepEqual(await unsafePut.json(), { error: 'invalid_memory_path' });
 
     const write = await fetch(`${hub.origin}/fleet/Remote/api/memory/file?path=identity.md`, {
       method: 'POST',
@@ -467,8 +483,9 @@ test('fleet proxy allows admin memory GETs and validates memory query paths cons
     assert.deepEqual(await write.json(), { error: 'read_only_proxy' });
 
     assert.deepEqual(seen, [
-      '/api/memory/tree',
-      '/api/memory/file?path=reference%2Fprojects.md'
+      { method: 'GET', url: '/api/memory/tree' },
+      { method: 'GET', url: '/api/memory/file?path=reference%2Fprojects.md' },
+      { method: 'PUT', url: '/api/memory/file?path=identity.md' }
     ]);
   } finally {
     await hub.close();
