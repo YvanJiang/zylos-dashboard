@@ -31,7 +31,7 @@ Consumer-local routes:
     - `name`: trim, `[\w.-]{1,64}`. Reject empty / invalid as `invalid_name`.
     - duplicate any existing key name, active or revoked, as `duplicate_name` (matches CLI; users can choose a new name).
     - `scope`: `read` or `admin`; reject otherwise as `invalid_scope`.
-  - Generate key with `generateApiKey()`, store `hashApiKey(key)`, return `{ ok: true, key: { name, scope, created_at, status: "active" }, plaintext_key }`.
+  - Generate key with `generateApiKey()`, store `hashApiKey(key)`, return `{ ok: true, key: { name, scope, created_at, status: "active" }, plaintext_key, keys: [...] }`.
   - Plaintext appears exactly once in this response. Follow-up GET must not contain it.
 - `DELETE /api/keys/<name>`
   - Revokes an active key by name using `store.revokeApiKey(name)`.
@@ -48,6 +48,7 @@ Consumer-local routes:
   - `/api/keys`, `/api/keys/<name>`, and encoded/normalized variants must return `403 local_endpoint_not_proxyable` before token exchange or upstream fetch.
   - Keep the #210 fail-closed behavior: decode failure or `%2f` variants are rejected.
 - No key management data should appear in `/api/state`, `/api/fleet`, SSE fleet payloads, or remote proxy responses.
+- Revocation must immediately invalidate both future exchanges and already-issued session tokens. The mechanism already exists through `validateApiSession` joining `api_sessions` to `api_keys` and rejecting rows with `key_revoked_at`; #212 should lock this with regression coverage so revoked keys cannot keep using a 24h token until TTL expiry.
 
 ## Frontend Design
 
@@ -63,6 +64,7 @@ Consumer-local routes:
     - copy button,
     - clear/dismiss button,
     - explicit text that it will not be shown again.
+  - Locale switching must not destroy an undismissed show-once plaintext panel. #210's `renderAll()` rebuilds the manage modal and currently carries draft form state; #212 should carry the plaintext panel state in the same in-memory draft path until the user copies/dismisses it. Never refetch plaintext from the server.
 - Cross-link hints:
   - In API Keys: "Use a read key when adding this dashboard from another agent."
   - In Fleet add form: "Paste a read key created on the remote dashboard."
@@ -83,7 +85,8 @@ Consumer-local routes:
    - tabs/section switching,
    - load API keys on modal open or tab activation,
    - create/revoke handlers,
-   - show-once copy panel.
+   - show-once copy panel,
+   - locale-switch rebuild draft state for the undismissed plaintext panel.
 5. Add i18n strings and CSS using existing modal/list/button patterns.
 6. Keep CLI behavior unchanged.
 
@@ -98,12 +101,14 @@ Consumer-local routes:
   - admin key creation works and records scope `admin`.
   - `DELETE /api/keys/<name>` revokes active keys; second delete returns 404.
   - revoked key can no longer exchange for a session token.
+  - an already-issued session token for a key fails immediately after that key is revoked (`token -> revoke key -> /api/state` returns 401).
 - Proxy:
   - `/fleet/<agent>/api/keys`, `/fleet/<agent>/api/keys/<name>`, and encoded slash variants fail closed with `local_endpoint_not_proxyable` and remote hit count stays zero.
 - Frontend static/behavior:
   - modal contains API Keys section/tab.
   - create scope control and admin warning are present.
   - plaintext panel is populated only from POST response, never from list payload.
+  - undismissed plaintext panel survives `renderAll()` locale-switch modal rebuild via draft state.
   - copy button uses clipboard API with fallback/status.
   - in-flight create/revoke buttons disable and restore.
   - en/zh strings exist.
@@ -119,10 +124,11 @@ Consumer-local routes:
 - Use the read key from another dashboard's add-agent form; test connection reports reachable/read.
 - Create an admin key and confirm the warning is visible before/while creating it.
 - Revoke a key; list updates to revoked, and token exchange with that key fails.
+- Revoke a key after exchanging it for a session token; the previously issued session token immediately fails on `/api/state` instead of remaining valid until TTL expiry.
 - Read-scope API session cannot access `/api/keys`.
 - `/fleet/<remote>/api/keys` never reaches the remote.
 
-## Open Questions
+## V1 Decisions
 
-- Should revoked keys stay visible by default, or should the UI default to active-only with a "show revoked" toggle? The CLI lists both, so the conservative v1 plan is to show both with revoked visually dimmed.
-- Should duplicate names be blocked forever, matching CLI, or allow reuse after revoke? The plan keeps CLI-compatible "blocked forever" semantics for now.
+- Revoked keys stay visible by default, visually dimmed. This matches the CLI and keeps v1 simple; add filtering only if the list becomes noisy.
+- Duplicate names remain permanently occupied, including after revoke. This matches the CLI and avoids name-reuse ambiguity in v1.
