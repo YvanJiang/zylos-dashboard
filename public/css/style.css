@@ -1036,7 +1036,10 @@ main { padding: var(--space-md) var(--space-lg) var(--space-xl); }
   background: var(--bg-secondary);
   border: 1px solid var(--border);
 }
-.agent-activity span:last-child {
+/* Legacy single-line activity only. Must be a direct-child selector: the
+   descendant form also matched the last .fleet-feed-row, replacing its flex
+   layout with -webkit-box and breaking the right-aligned elapsed time (#233). */
+.agent-activity > span:last-child {
   min-width: 0;
   overflow: hidden;
   display: -webkit-box;

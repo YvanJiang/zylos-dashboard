@@ -385,6 +385,15 @@ test('fleet tile activity feed mirrors running tools with single-line rows', () 
   assert.match(html, /class="fleet-feed-age">\d+s</);
 });
 
+test('legacy activity line-clamp does not break the last feed row flex layout (#233)', () => {
+  const css = fs.readFileSync(path.resolve('public/css/style.css'), 'utf8');
+  // The clamp rule must target only the legacy direct-child activity span.
+  // The descendant form also matched the last .fleet-feed-row and replaced
+  // its display:flex with -webkit-box, un-aligning the elapsed-time label.
+  assert.match(css, /\.agent-activity > span:last-child \{/);
+  assert.doesNotMatch(css, /\.agent-activity span:last-child \{/);
+});
+
 test('fleet tile activity feed falls back to legacy single-line activity', () => {
   const html = renderAgentFleetHtml({
     agents: [{ name: 'a', state: 'IDLE', activity: 'Prompt from lark', activity_feed: [] }]
@@ -691,7 +700,7 @@ test('memory browser is admin-scoped, agent-routed, and cache-busted', () => {
   assert.match(index, /id="memory-tree"/);
   assert.match(index, /id="memory-content"/);
   assert.match(index, /app\.js\?v=49/);
-  assert.match(index, /style\.css\?v=37/);
+  assert.match(index, /style\.css\?v=38/);
 
   assert.match(app, /fetchAgentJson\('\/api\/memory\/tree'\)/);
   assert.match(app, /fetchAgentJson\(`\/api\/memory\/file\?path=\$\{encoded\}`\)/);
