@@ -34,6 +34,7 @@ import { SseHub } from './lib/sse.js';
 import { FleetPoller, stateToFleetRecord } from './lib/fleet-poller.js';
 import { buildFleetPayload } from './lib/fleet-payload.js';
 import { FleetProxy } from './lib/fleet-proxy.js';
+import { MemoryBrowser, memoryErrorPayload } from './lib/memory-browser.js';
 import { agentColor } from './lib/agent-color.js';
 import { C4Reader } from './lib/c4-reader.js';
 import { consumeZylosUpgradeMarker, handleAction, getActionsMeta, readCodexModels, readCodexRootString } from './lib/actions.js';
@@ -102,6 +103,7 @@ try {
 }
 
 const auth = new AuthGate(config, store);
+const memoryBrowser = new MemoryBrowser({ zylosDir: config.zylosDir });
 
 // 3. Sanitizer
 const sanitizer = new Sanitizer(config.zylosDir);
@@ -1330,6 +1332,32 @@ async function handleStatuslineIngest(req, res) {
   sendJson(res, 200, { ok: true, written });
 }
 
+async function handleMemoryApi(req, res, pathname, url) {
+  if (req.method !== 'GET' && req.method !== 'HEAD') {
+    sendText(res, 405, 'method not allowed');
+    return true;
+  }
+  try {
+    if (pathname === '/api/memory/tree') {
+      sendJson(res, 200, await memoryBrowser.tree());
+      return true;
+    }
+    if (pathname === '/api/memory/file') {
+      sendJson(res, 200, await memoryBrowser.file(url.searchParams.get('path') || ''));
+      return true;
+    }
+    if (pathname === '/api/memory/git') {
+      sendJson(res, 200, await memoryBrowser.git(url.searchParams.get('path') || ''));
+      return true;
+    }
+    return false;
+  } catch (err) {
+    const payload = memoryErrorPayload(err);
+    sendJson(res, payload.status, payload.body);
+    return true;
+  }
+}
+
 export function createServer() {
   const rootDir = publicDir();
   const fleetProxy = new FleetProxy({ config, rootDir, poller: fleetPoller });
@@ -1450,6 +1478,11 @@ export function createServer() {
       return;
     }
 
+    if (pathname === '/api/memory/tree' || pathname === '/api/memory/file' || pathname === '/api/memory/git') {
+      await handleMemoryApi(req, res, pathname, url);
+      return;
+    }
+
     if (req.method !== 'GET' && req.method !== 'HEAD') {
       sendText(res, 405, 'method not allowed');
       return;
@@ -1461,7 +1494,7 @@ export function createServer() {
       return;
     }
 
-    if (pathname === '/' || pathname === '/index.html' || pathname === '/trends') {
+    if (pathname === '/' || pathname === '/index.html' || pathname === '/trends' || pathname === '/memory') {
       renderIndex(req, res);
       return;
     }

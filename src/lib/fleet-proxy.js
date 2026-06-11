@@ -3,6 +3,7 @@ import path from 'node:path';
 import { Readable, Transform } from 'node:stream';
 import { browserPath, browserBaseFromRequest } from './browser-base.js';
 import { sendHtml, sendJson, sendText, serveStatic } from './http.js';
+import { validateMemoryQueryPath } from './memory-browser.js';
 
 const SECRET_PATTERN = /\b(?:Bearer\s+zylos_st_[A-Za-z0-9_-]+|zylos_st_[A-Za-z0-9_-]+|zylos_ak_[A-Za-z0-9_-]+|read_api_key|read_session_token)\b/i;
 const STREAM_GUARD_TAIL_CHARS = 128;
@@ -75,6 +76,17 @@ function normalizeProxySuffix(suffix) {
     return normalized.startsWith('/') ? normalized : `/${normalized}`;
   } catch {
     return null;
+  }
+}
+
+function validateMemoryProxyQuery(suffix, search) {
+  if (suffix !== '/api/memory/file' && suffix !== '/api/memory/git') return true;
+  try {
+    const params = new URLSearchParams(search || '');
+    validateMemoryQueryPath(params.get('path') || '');
+    return true;
+  } catch {
+    return false;
   }
 }
 
@@ -178,6 +190,11 @@ export class FleetProxy {
       return true;
     }
 
+    if (!validateMemoryProxyQuery(normalizedSuffix, url.search)) {
+      sendJson(res, 400, { error: 'invalid_memory_path' });
+      return true;
+    }
+
     if (suffix === '/api/stream' || suffix.startsWith('/api/')) {
       await this.proxyApi(req, res, agent, suffix, url.search);
       return true;
@@ -188,7 +205,7 @@ export class FleetProxy {
       return true;
     }
 
-    if (suffix === '/' || suffix === '/index.html') {
+    if (suffix === '/' || suffix === '/index.html' || suffix === '/trends' || suffix === '/memory') {
       // Include the reverse-proxy base path (X-Forwarded-Prefix, e.g. /dashboard)
       // so the browser requests assets/API under it. Caddy forwards everything
       // under /dashboard/* and strips the prefix before this handler runs, so

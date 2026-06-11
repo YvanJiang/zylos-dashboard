@@ -343,6 +343,67 @@ test('/api/stream accepts Bearer API session and emits initial fleet_state', asy
   }
 });
 
+test('/api/memory is admin-gated and browser sessions can read tree', async () => {
+  const zylosDir = fs.mkdtempSync(path.join(os.tmpdir(), 'zylos-dashboard-test-'));
+  writeConfig(zylosDir, 'secret', { auth: { enabled: true, password: 'secret' } });
+  fs.mkdirSync(path.join(zylosDir, 'memory'), { recursive: true });
+  fs.writeFileSync(path.join(zylosDir, 'memory', 'identity.md'), '# Identity\n');
+
+  const { origin, server } = await makeServerWithDir(zylosDir);
+  try {
+    const dbPath = path.join(zylosDir, 'components', 'dashboard', 'dashboard.db');
+    const store = new Store(dbPath);
+    const readKey = generateApiKey();
+    const adminKey = generateApiKey();
+    store.insertApiKey({ name: 'read-key', keyHash: hashApiKey(readKey), scope: 'read' });
+    store.insertApiKey({ name: 'admin-key', keyHash: hashApiKey(adminKey), scope: 'admin' });
+    store.close();
+
+    const readTokenResp = await fetch(`${origin}/api/auth/token`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${readKey}` }
+    });
+    const adminTokenResp = await fetch(`${origin}/api/auth/token`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${adminKey}` }
+    });
+    const { token: readToken } = await readTokenResp.json();
+    const { token: adminToken } = await adminTokenResp.json();
+
+    const readResp = await fetch(`${origin}/api/memory/tree`, {
+      headers: { Authorization: `Bearer ${readToken}` }
+    });
+    assert.equal(readResp.status, 403);
+    assert.deepEqual(await readResp.json(), { error: 'insufficient_scope', required: 'admin' });
+
+    const adminResp = await fetch(`${origin}/api/memory/tree`, {
+      headers: { Authorization: `Bearer ${adminToken}` }
+    });
+    assert.equal(adminResp.status, 200);
+    const adminBody = await adminResp.json();
+    assert.equal(JSON.stringify(adminBody).includes('sha256'), false);
+    assert.equal(adminBody.root.children.some(node => node.path === 'identity.md'), true);
+
+    const login = await fetch(`${origin}/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: form({ password: 'secret', next: '/' }),
+      redirect: 'manual'
+    });
+    const cookie = login.headers.get('set-cookie');
+    const browserResp = await fetch(`${origin}/api/memory/file?path=identity.md`, {
+      headers: { Cookie: cookie }
+    });
+    assert.equal(browserResp.status, 200);
+    const browserBody = await browserResp.json();
+    assert.equal(browserBody.text, '# Identity\n');
+    assert.match(browserBody.sha256, /^[a-f0-9]{64}$/);
+  } finally {
+    await closeServer(server);
+    fs.rmSync(zylosDir, { recursive: true, force: true });
+  }
+});
+
 test('proxied remote writes require consumer admin API scope or browser session', async () => {
   let actionHits = 0;
   const remote = await listen((req, res) => {
