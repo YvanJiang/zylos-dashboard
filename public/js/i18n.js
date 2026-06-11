@@ -124,4 +124,7 @@ export function renderI18n() {
   document.querySelectorAll('[data-i18n]').forEach((el) => {
     el.textContent = t(el.dataset.i18n);
   });
+  document.querySelectorAll('[data-i18n-title]').forEach((el) => {
+    el.title = t(el.dataset.i18nTitle);
+  });
 }

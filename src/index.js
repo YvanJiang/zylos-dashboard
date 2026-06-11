@@ -385,6 +385,274 @@ function broadcastFleet(remoteFleet) {
 
 const fleetPoller = new FleetPoller(config, { onPoll: broadcastFleet });
 fleetPollerReady = true;
+const RESERVED_FLEET_AGENT_NAMES = new Set(['test']);
+
+function normalizeAgentName(value) {
+  return String(value || '').trim();
+}
+
+function normalizeAgentUrl(value) {
+  const raw = String(value || '').trim();
+  const parsed = new URL(raw);
+  if (!['http:', 'https:'].includes(parsed.protocol)) throw new Error('invalid_url');
+  parsed.hash = '';
+  return parsed.toString().replace(/\/+$/, '');
+}
+
+function maskApiKey(value) {
+  const key = String(value || '');
+  if (!key) return '';
+  const suffix = key.slice(-4);
+  return key.startsWith('zylos_ak_') ? `zylos_ak_...${suffix}` : `...${suffix}`;
+}
+
+function currentFleetAgents() {
+  return Array.isArray(config.fleet?.agents) ? config.fleet.agents : [];
+}
+
+function fleetAgentsPayload() {
+  return {
+    self: { name: config.agent?.name || '' },
+    agents: currentFleetAgents().map(agent => ({
+      name: agent.name,
+      base_url: agent.base_url,
+      key_masked: maskApiKey(agent.read_api_key),
+      access: fleetPoller.getAgentAccess?.(agent.name) || 'read'
+    }))
+  };
+}
+
+function validateAgentName(name, { allowCurrentSelf = false, currentName = null } = {}) {
+  if (!/^[\w.-]{1,32}$/.test(name)) return 'invalid_name';
+  if (RESERVED_FLEET_AGENT_NAMES.has(name.toLowerCase())) return 'reserved_name';
+  const selfName = config.agent?.name || '';
+  if (name === selfName && !(allowCurrentSelf && name === currentName)) return 'duplicate_name';
+  if (currentFleetAgents().some(a => a.name === name && a.name !== currentName)) return 'duplicate_name';
+  return null;
+}
+
+function readConfigFileForUpdate() {
+  try {
+    if (fs.existsSync(config.configPath)) return JSON.parse(fs.readFileSync(config.configPath, 'utf8'));
+  } catch {
+    return {};
+  }
+  return {};
+}
+
+function writeConfigFileAtomic(nextConfig) {
+  const tmpPath = config.configPath + '.tmp';
+  fs.writeFileSync(tmpPath, JSON.stringify(nextConfig, null, 2) + '\n', { mode: 0o600 });
+  fs.renameSync(tmpPath, config.configPath);
+}
+
+function persistFleetConfig(mutator) {
+  const existing = readConfigFileForUpdate();
+  const nextFleet = {
+    ...(existing.fleet || {}),
+    agents: Array.isArray(existing.fleet?.agents) ? existing.fleet.agents.map(a => ({ ...a })) : currentFleetAgents().map(a => ({ ...a }))
+  };
+  const nextAgent = {
+    ...(existing.agent || {}),
+    ...(config.agent || {})
+  };
+  const result = mutator({ existing, fleet: nextFleet, agent: nextAgent });
+  existing.fleet = nextFleet;
+  existing.agent = nextAgent;
+  writeConfigFileAtomic(existing);
+  config.fleet = {
+    ...(config.fleet || {}),
+    ...nextFleet,
+    agents: nextFleet.agents.map(a => ({ ...a }))
+  };
+  config.agent = { ...(config.agent || {}), ...nextAgent };
+  return result;
+}
+
+async function probeFleetAgent(baseUrl, readApiKey) {
+  const controller = new AbortController();
+  const timeoutMs = Number(config.fleet?.timeout_ms) || 2500;
+  const timer = setTimeout(() => controller.abort(), timeoutMs * 2);
+  timer.unref?.();
+  try {
+    const tokenResp = await fetch(`${baseUrl}/api/auth/token`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${readApiKey}` },
+      signal: controller.signal
+    });
+    if (tokenResp.status === 401 || tokenResp.status === 403) return { reachable: false, error: 'auth_failed' };
+    if (tokenResp.status === 404) return { reachable: false, error: 'version_unsupported' };
+    if (!tokenResp.ok) return { reachable: false, error: 'unreachable' };
+    const tokenBody = await tokenResp.json();
+    if (!tokenBody?.token) return { reachable: false, error: 'auth_failed' };
+    const scope = tokenBody.scope === 'admin' ? 'admin' : 'read';
+    const stateResp = await fetch(`${baseUrl}/api/state`, {
+      headers: { Authorization: `Bearer ${tokenBody.token}` },
+      signal: controller.signal
+    });
+    if (stateResp.status === 401 || stateResp.status === 403) return { reachable: false, error: 'auth_failed' };
+    if (!stateResp.ok) return { reachable: false, error: 'unreachable', scope };
+    const stateBody = await stateResp.json();
+    return {
+      reachable: true,
+      scope,
+      version: stateBody?.runtime_info?.zylos_version || stateBody?.runtime_info?.version || null
+    };
+  } catch {
+    return { reachable: false, error: 'unreachable' };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function handleFleetAgents(req, res) {
+  if (req.method === 'GET') {
+    sendJson(res, 200, fleetAgentsPayload());
+    return;
+  }
+  if (req.method !== 'POST') {
+    sendJson(res, 405, { error: 'method_not_allowed' });
+    return;
+  }
+  let body;
+  try {
+    body = await readJsonBody(req, 16 * 1024);
+  } catch (err) {
+    sendJson(res, err.status || 400, { error: err.message });
+    return;
+  }
+  const name = normalizeAgentName(body.name);
+  const nameError = validateAgentName(name);
+  if (nameError) {
+    sendJson(res, 400, { error: nameError });
+    return;
+  }
+  let baseUrl;
+  try {
+    baseUrl = normalizeAgentUrl(body.base_url);
+  } catch {
+    sendJson(res, 400, { error: 'invalid_url' });
+    return;
+  }
+  const readApiKey = String(body.read_api_key || '').trim();
+  if (!readApiKey) {
+    sendJson(res, 400, { error: 'missing_read_api_key' });
+    return;
+  }
+  const agent = { name, base_url: baseUrl, read_api_key: readApiKey };
+  try {
+    const probe = await probeFleetAgent(baseUrl, readApiKey);
+    const postProbeNameError = validateAgentName(name);
+    if (postProbeNameError) {
+      sendJson(res, 400, { error: postProbeNameError });
+      return;
+    }
+    persistFleetConfig(({ fleet }) => {
+      fleet.agents.push(agent);
+    });
+    fleetPoller.addAgent(config.fleet.agents.find(a => a.name === name));
+    sendJson(res, 200, {
+      ok: true,
+      agent: {
+        name,
+        base_url: baseUrl,
+        key_masked: maskApiKey(readApiKey),
+        access: probe.reachable ? probe.scope : 'unknown'
+      }
+    });
+  } catch (err) {
+    process.stderr.write(`[fleet-config] Failed to save fleet agent: ${err.message}\n`);
+    sendJson(res, 500, { error: 'failed_to_save_config' });
+  }
+}
+
+async function handleFleetAgentTest(req, res) {
+  if (req.method !== 'POST') {
+    sendJson(res, 405, { error: 'method_not_allowed' });
+    return;
+  }
+  let body;
+  try {
+    body = await readJsonBody(req, 16 * 1024);
+  } catch (err) {
+    sendJson(res, err.status || 400, { error: err.message });
+    return;
+  }
+  let baseUrl;
+  try {
+    baseUrl = normalizeAgentUrl(body.base_url);
+  } catch {
+    sendJson(res, 400, { error: 'invalid_url' });
+    return;
+  }
+  const readApiKey = String(body.read_api_key || '').trim();
+  if (!readApiKey) {
+    sendJson(res, 400, { error: 'missing_read_api_key' });
+    return;
+  }
+  sendJson(res, 200, await probeFleetAgent(baseUrl, readApiKey));
+}
+
+async function handleFleetAgentDelete(req, res, pathname) {
+  if (req.method !== 'DELETE') {
+    sendJson(res, 405, { error: 'method_not_allowed' });
+    return;
+  }
+  const encodedName = pathname.slice('/api/fleet/agents/'.length);
+  let name = '';
+  try {
+    name = decodeURIComponent(encodedName);
+  } catch {
+    sendJson(res, 400, { error: 'invalid_name' });
+    return;
+  }
+  if (!currentFleetAgents().some(a => a.name === name)) {
+    sendJson(res, 404, { error: 'unknown_agent' });
+    return;
+  }
+  try {
+    persistFleetConfig(({ fleet }) => {
+      fleet.agents = fleet.agents.filter(a => a.name !== name);
+    });
+    fleetPoller.removeAgent(name);
+    sendJson(res, 200, { ok: true, ...fleetAgentsPayload() });
+  } catch (err) {
+    process.stderr.write(`[fleet-config] Failed to delete fleet agent: ${err.message}\n`);
+    sendJson(res, 500, { error: 'failed_to_save_config' });
+  }
+}
+
+async function handleAgentRename(req, res) {
+  if (req.method !== 'PUT') {
+    sendJson(res, 405, { error: 'method_not_allowed' });
+    return;
+  }
+  let body;
+  try {
+    body = await readJsonBody(req, 4096);
+  } catch (err) {
+    sendJson(res, err.status || 400, { error: err.message });
+    return;
+  }
+  const currentName = config.agent?.name || '';
+  const name = normalizeAgentName(body.name);
+  const nameError = validateAgentName(name, { allowCurrentSelf: true, currentName });
+  if (nameError) {
+    sendJson(res, 400, { error: nameError });
+    return;
+  }
+  try {
+    persistFleetConfig(({ agent }) => {
+      agent.name = name;
+    });
+    scheduleFleetStateBroadcast();
+    broadcastFleet(fleetPoller.getFleet());
+    sendJson(res, 200, { ok: true, self: { name } });
+  } catch (err) {
+    process.stderr.write(`[fleet-config] Failed to rename local agent: ${err.message}\n`);
+    sendJson(res, 500, { error: 'failed_to_save_config' });
+  }
+}
 
 async function startupSequence() {
   // Initial collector runs
@@ -1051,6 +1319,26 @@ export function createServer() {
 
     if (pathname === '/api/settings' && req.method === 'PUT') {
       await handleSettingsUpdate(req, res);
+      return;
+    }
+
+    if (pathname === '/api/fleet/agents/test') {
+      await handleFleetAgentTest(req, res);
+      return;
+    }
+
+    if (pathname === '/api/fleet/agents') {
+      await handleFleetAgents(req, res);
+      return;
+    }
+
+    if (pathname.startsWith('/api/fleet/agents/')) {
+      await handleFleetAgentDelete(req, res, pathname);
+      return;
+    }
+
+    if (pathname === '/api/agent/name') {
+      await handleAgentRename(req, res);
       return;
     }
 

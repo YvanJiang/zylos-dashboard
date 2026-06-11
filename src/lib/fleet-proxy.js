@@ -58,6 +58,24 @@ function isAllowedProxyWrite(method, suffix) {
     method === 'PUT' && suffix === '/api/settings';
 }
 
+function isLocalOnlyEndpoint(suffix) {
+  return suffix === '/api/fleet/agents' ||
+    suffix.startsWith('/api/fleet/agents/') ||
+    suffix === '/api/agent/name';
+}
+
+function normalizeProxySuffix(suffix) {
+  const value = String(suffix || '/');
+  if (/%2f/i.test(value)) return null;
+  try {
+    const decoded = decodeURIComponent(value);
+    const normalized = path.posix.normalize(decoded);
+    return normalized.startsWith('/') ? normalized : `/${normalized}`;
+  } catch {
+    return null;
+  }
+}
+
 async function readBodyBuffer(req, maxBytes = MAX_WRITE_BODY_BYTES) {
   const chunks = [];
   let total = 0;
@@ -149,6 +167,12 @@ export class FleetProxy {
     const agent = this.config.fleet?.agents?.find(a => a.name === agentName);
     if (!agent) {
       sendJson(res, 404, { error: 'unknown_agent' });
+      return true;
+    }
+
+    const normalizedSuffix = normalizeProxySuffix(suffix);
+    if (!normalizedSuffix || isLocalOnlyEndpoint(normalizedSuffix)) {
+      sendJson(res, 403, { error: 'local_endpoint_not_proxyable' });
       return true;
     }
 

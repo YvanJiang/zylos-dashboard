@@ -673,6 +673,52 @@ test('remote Actions/Settings are gated by access and routed through the viewed 
   assert.match(reset, /closeSettingsModal\(\);/);
 });
 
+test('fleet management entry is local-only and modal is extensible for future management sections', () => {
+  const index = fs.readFileSync(path.resolve('public/index.html'), 'utf8');
+  const app = fs.readFileSync(path.resolve('public/js/app.js'), 'utf8');
+  const css = fs.readFileSync(path.resolve('public/css/style.css'), 'utf8');
+  const en = JSON.parse(fs.readFileSync(path.resolve('public/i18n/en.json'), 'utf8'));
+  const zh = JSON.parse(fs.readFileSync(path.resolve('public/i18n/zh.json'), 'utf8'));
+
+  assert.match(index, /id="fleet-manage-btn"/);
+  assert.match(index, /data-i18n-title="fleet_manage\.open"/);
+  assert.match(index, /app\.js\?v=42/);
+  assert.match(app, /function initFleetManageButton\(\)[\s\S]*btn\.hidden = !!REMOTE_AGENT/);
+  assert.match(app, /if \(e\.target\.closest\('#fleet-manage-btn'\)\) \{ e\.preventDefault\(\); openFleetManageModal\(\); return; \}/);
+
+  // Fleet management configures the local consumer even while viewing a remote
+  // agent in-page, so these calls intentionally avoid agentPath().
+  assert.match(app, /fetch\(api\('\/api\/fleet\/agents'\), \{ cache: 'no-store' \}\)/);
+  assert.match(app, /fetch\(api\('\/api\/fleet\/agents\/test'\), \{/);
+  assert.match(app, /fetch\(api\('\/api\/agent\/name'\), \{/);
+  assert.doesNotMatch(app, /agentPath\('\/api\/fleet\/agents/);
+  assert.doesNotMatch(app, /agentPath\('\/api\/agent\/name/);
+  assert.match(app, /function fleetManageError\(code, fallback\)/);
+  assert.match(app, /fleetManageStatus\(fleetManageError\(data\.error \|\| 'unreachable'/);
+  assert.match(app, /readKey: fleetManageModal\.querySelector\('#fleet-add-key'\)\?\.value \|\| ''/);
+  assert.match(app, /if \(wasOpen\) openFleetManageModal\(draft\);/);
+  assert.match(app, /function renderFleetManage\(data, draft = null\)/);
+  assert.match(app, /if \(!draft\) selfInput\.value = data\?\.self\?\.name \|\| viewedAgentName\(\);/);
+  assert.match(app, /renderFleetManage\(data, draft\);/);
+  assert.match(app, /function setFleetAddBusy\(isBusy\)/);
+  assert.match(app, /fleetManageModal\?\.querySelector\('#fleet-test'\)\?\.toggleAttribute\('disabled', isBusy\);/);
+  assert.match(app, /finally \{\s*setFleetAddBusy\(false\);\s*\}/);
+
+  assert.match(app, /class="modal-tabs" role="tablist"/);
+  assert.match(app, /class="manage-section"/);
+  assert.match(app, /id="fleet-add-key" type="password"/);
+  assert.match(css, /\.manage-modal/);
+  assert.match(css, /\.modal-tabs/);
+
+  for (const pack of [en, zh]) {
+    assert.equal(typeof pack['fleet_manage.open'], 'string');
+    assert.equal(typeof pack['fleet_manage.title'], 'string');
+    assert.equal(typeof pack['fleet_manage.tab_fleet'], 'string');
+    assert.equal(typeof pack['fleet_manage.reserved_name'], 'string');
+    assert.equal(typeof pack['fleet_manage.auth_failed'], 'string');
+  }
+});
+
 test('i18n loader survives flaky pack fetches (#208)', async () => {
   const { isValidPack } = await import('../public/js/i18n.js');
 

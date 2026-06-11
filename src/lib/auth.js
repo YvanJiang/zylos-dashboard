@@ -273,6 +273,8 @@ function nextTarget(req, base) {
 function needsAdminApiAccess(pathname, method) {
   if (pathname.startsWith('/api/actions')) return true;
   if (pathname === '/api/settings' && method === 'PUT') return true;
+  if (pathname === '/api/fleet/agents' || pathname.startsWith('/api/fleet/agents/')) return true;
+  if (pathname === '/api/agent/name') return true;
   const proxiedWrite = pathname.match(/^\/fleet\/[^/]+\/api\/(.+)$/);
   if (!proxiedWrite) return false;
   const remotePath = `/api/${proxiedWrite[1]}`;

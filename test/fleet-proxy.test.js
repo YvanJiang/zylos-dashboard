@@ -387,6 +387,44 @@ test('fleet proxy keeps non-whitelisted writes read-only', async () => {
   }
 });
 
+test('fleet proxy fail-closes consumer-local fleet management endpoints without touching upstream', async () => {
+  let remoteHit = false;
+  const remote = await listen((_req, res) => {
+    remoteHit = true;
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end('{}');
+  });
+  const proxy = new FleetProxy({
+    config: { fleet: { agents: [{ name: 'Remote', base_url: remote.origin, read_api_key: 'zylos_ak_secret' }] } },
+    rootDir: publicDir(),
+    poller: { getSessionToken: async () => 'zylos_st_secret' }
+  });
+  const hub = await listen((req, res) => {
+    const url = new URL(req.url, 'http://hub.test');
+    proxy.handle(req, res, url);
+  });
+  try {
+    const cases = [
+      [`${hub.origin}/fleet/Remote/api/fleet/agents`, { method: 'GET' }],
+      [`${hub.origin}/fleet/Remote/api/fleet/agents`, { method: 'POST', body: '{}' }],
+      [`${hub.origin}/fleet/Remote/api/fleet/agents/test`, { method: 'POST', body: '{}' }],
+      [`${hub.origin}/fleet/Remote/api/agent/name`, { method: 'PUT', body: '{}' }],
+      [`${hub.origin}/fleet/Remote/api/fleet/agents%2Ftest`, { method: 'POST', body: '{}' }],
+      [`${hub.origin}/fleet/Remote/api/fleet%2Fagents`, { method: 'GET' }],
+      [`${hub.origin}/fleet/Remote/api%2Fagent%2Fname`, { method: 'PUT', body: '{}' }]
+    ];
+    for (const [url, init] of cases) {
+      const resp = await fetch(url, init);
+      assert.equal(resp.status, 403);
+      assert.deepEqual(await resp.json(), { error: 'local_endpoint_not_proxyable' });
+    }
+    assert.equal(remoteHit, false);
+  } finally {
+    await hub.close();
+    await remote.close();
+  }
+});
+
 test('fleet proxy passes through upstream insufficient_scope for whitelisted writes', async () => {
   const remote = await listen((_req, res) => {
     res.writeHead(403, { 'content-type': 'application/json' });
