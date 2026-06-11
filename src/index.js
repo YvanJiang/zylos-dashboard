@@ -44,6 +44,7 @@ import { applyVersionUpdateFields } from './lib/runtime-info.js';
 import Database from 'better-sqlite3';
 
 const startedAt = new Date();
+const MEMORY_WRITE_BODY_MAX_BYTES = 2 * 1024 * 1024 + 64 * 1024;
 
 let zylosVersion = null;
 let ccInstalledVersion = null;
@@ -1341,7 +1342,11 @@ async function handleMemoryApi(req, res, pathname, url) {
   }
   try {
     if (req.method === 'PUT' && pathname === '/api/memory/file') {
-      const body = await readJsonBody(req, memoryBrowser.maxFileBytes + 64 * 1024);
+      const body = await readJsonBody(req, MEMORY_WRITE_BODY_MAX_BYTES);
+      if (!body || typeof body !== 'object' || Array.isArray(body)) {
+        sendJson(res, 400, { error: 'invalid_memory_write' });
+        return true;
+      }
       sendJson(res, 200, await memoryBrowser.writeFile(url.searchParams.get('path') || '', body));
       return true;
     }

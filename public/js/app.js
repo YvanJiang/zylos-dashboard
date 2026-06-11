@@ -64,7 +64,9 @@ const state = {
     dirty: false,
     saving: false,
     conflict: null,
+    conflictRetryText: '',
     liveNotice: null,
+    draftTimer: null,
     liveCheckTimer: null
   }
 };
@@ -1177,6 +1179,7 @@ async function requestAgentJson(path, options = {}) {
 }
 
 function resetMemoryState() {
+  if (state.memory?.draftTimer) clearTimeout(state.memory.draftTimer);
   stopMemoryLiveCheck();
   state.memory = {
     tree: null,
@@ -1193,7 +1196,9 @@ function resetMemoryState() {
     dirty: false,
     saving: false,
     conflict: null,
+    conflictRetryText: '',
     liveNotice: null,
+    draftTimer: null,
     liveCheckTimer: null
   };
 }
@@ -1213,6 +1218,7 @@ function memoryStatusMessage(code) {
   if (code === 'invalid_memory_path') return t('memory.error_invalid_path');
   if (code === 'memory_file_not_found') return t('memory.error_not_found');
   if (code === 'memory_conflict') return t('memory.error_conflict');
+  if (code === 'memory_conflict_latest_failed') return t('memory.error_conflict_latest_failed');
   if (code === 'invalid_memory_write') return t('memory.error_invalid_write');
   return t('memory.error_generic');
 }
@@ -1237,6 +1243,22 @@ function saveMemoryDraft() {
   }
 }
 
+function scheduleMemoryDraftSave() {
+  if (state.memory.draftTimer) clearTimeout(state.memory.draftTimer);
+  state.memory.draftTimer = setTimeout(() => {
+    state.memory.draftTimer = null;
+    saveMemoryDraft();
+  }, 500);
+}
+
+function flushMemoryDraftSave() {
+  if (state.memory?.draftTimer) {
+    clearTimeout(state.memory.draftTimer);
+    state.memory.draftTimer = null;
+    saveMemoryDraft();
+  }
+}
+
 function readMemoryDraft(filePath) {
   const key = memoryDraftKey(filePath);
   if (!key) return null;
@@ -1249,6 +1271,10 @@ function readMemoryDraft(filePath) {
 }
 
 function clearMemoryDraft(filePath = state.memory.selectedPath) {
+  if (state.memory?.draftTimer) {
+    clearTimeout(state.memory.draftTimer);
+    state.memory.draftTimer = null;
+  }
   const key = memoryDraftKey(filePath);
   if (!key) return;
   try { localStorage.removeItem(key); } catch { /* best-effort */ }
@@ -1271,9 +1297,9 @@ function startMemoryLiveCheck() {
 
 async function checkMemoryLiveSha() {
   const file = state.memory.file;
-  if (!state.memory.editing || !file?.path || state.memory.conflict) return;
+  if (!state.memory.editing || !file?.path || state.memory.conflict || state.memory.saving || document.hidden) return;
   const latest = await fetchAgentJson(`/api/memory/file?path=${encodeURIComponent(file.path)}`);
-  if (latest.sha256 && latest.sha256 !== file.sha256) {
+  if (isCompleteMemoryFile(latest) && latest.sha256 !== file.sha256) {
     state.memory.liveNotice = latest;
     state.memory.conflict = buildMemoryConflict(latest, state.memory.draft, state.memory.draft);
     stopMemoryLiveCheck();
@@ -1359,30 +1385,67 @@ function renderMarkdown(text) {
   return md.render(source);
 }
 
+function isCompleteMemoryFile(value) {
+  return !!value &&
+    typeof value === 'object' &&
+    typeof value.path === 'string' &&
+    typeof value.sha256 === 'string' &&
+    typeof value.text === 'string';
+}
+
 function memoryLineDiff(a, b) {
   const left = String(a || '').split('\n');
   const right = String(b || '').split('\n');
-  const dp = Array.from({ length: left.length + 1 }, () => Array(right.length + 1).fill(0));
-  for (let i = left.length - 1; i >= 0; i--) {
-    for (let j = right.length - 1; j >= 0; j--) {
-      dp[i][j] = left[i] === right[j] ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1]);
+  const rows = [];
+  let prefix = 0;
+  while (prefix < left.length && prefix < right.length && left[prefix] === right[prefix]) {
+    rows.push({ type: 'same', text: left[prefix] });
+    prefix++;
+  }
+
+  let leftEnd = left.length - 1;
+  let rightEnd = right.length - 1;
+  const suffix = [];
+  while (leftEnd >= prefix && rightEnd >= prefix && left[leftEnd] === right[rightEnd]) {
+    suffix.unshift({ type: 'same', text: left[leftEnd] });
+    leftEnd--;
+    rightEnd--;
+  }
+
+  const leftMid = left.slice(prefix, leftEnd + 1);
+  const rightMid = right.slice(prefix, rightEnd + 1);
+  if (leftMid.length * rightMid.length > 1_000_000) {
+    if (leftMid.length || rightMid.length) {
+      rows.push({
+        type: 'summary',
+        text: t('memory.diff_degraded', { mine: leftMid.length, theirs: rightMid.length })
+      });
+      for (const line of leftMid.slice(0, 80)) rows.push({ type: 'mine', text: line });
+      for (const line of rightMid.slice(0, 80)) rows.push({ type: 'theirs', text: line });
+    }
+    return rows.concat(suffix);
+  }
+
+  const dp = Array.from({ length: leftMid.length + 1 }, () => Array(rightMid.length + 1).fill(0));
+  for (let i = leftMid.length - 1; i >= 0; i--) {
+    for (let j = rightMid.length - 1; j >= 0; j--) {
+      dp[i][j] = leftMid[i] === rightMid[j] ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1]);
     }
   }
-  const rows = [];
   let i = 0;
   let j = 0;
-  while (i < left.length || j < right.length) {
-    if (i < left.length && j < right.length && left[i] === right[j]) {
-      rows.push({ type: 'same', text: left[i] });
+  while (i < leftMid.length || j < rightMid.length) {
+    if (i < leftMid.length && j < rightMid.length && leftMid[i] === rightMid[j]) {
+      rows.push({ type: 'same', text: leftMid[i] });
       i++;
       j++;
-    } else if (j < right.length && (i >= left.length || dp[i][j + 1] >= dp[i + 1][j])) {
-      rows.push({ type: 'theirs', text: right[j++] });
-    } else if (i < left.length) {
-      rows.push({ type: 'mine', text: left[i++] });
+    } else if (j < rightMid.length && (i >= leftMid.length || dp[i][j + 1] >= dp[i + 1][j])) {
+      rows.push({ type: 'theirs', text: rightMid[j++] });
+    } else if (i < leftMid.length) {
+      rows.push({ type: 'mine', text: leftMid[i++] });
     }
   }
-  return rows;
+  return rows.concat(suffix);
 }
 
 function buildMemoryConflict(theirs, mine, manual = mine) {
@@ -1396,9 +1459,12 @@ function buildMemoryConflict(theirs, mine, manual = mine) {
 
 function renderMemoryConflict(conflict) {
   if (!conflict) return '';
-  const rows = (conflict.diff || []).slice(0, 240).map(row =>
-    `<div class="memory-diff-row ${row.type}"><span>${row.type === 'same' ? ' ' : row.type === 'mine' ? '-' : '+'}</span><code>${esc(row.text)}</code></div>`
+  const diff = conflict.diff || [];
+  const truncated = diff.length > 240;
+  const rows = diff.slice(0, 240).map(row =>
+    `<div class="memory-diff-row ${row.type}"><span>${row.type === 'same' ? ' ' : row.type === 'mine' ? '-' : row.type === 'theirs' ? '+' : '!'}</span><code>${esc(row.text)}</code></div>`
   ).join('');
+  const notice = truncated ? `<div class="memory-diff-note">${esc(t('memory.diff_truncated', { count: diff.length - 240 }))}</div>` : '';
   return `<section class="memory-conflict" id="memory-conflict">
     <div class="memory-conflict-head">
       <strong>${esc(t('memory.conflict_title'))}</strong>
@@ -1409,7 +1475,7 @@ function renderMemoryConflict(conflict) {
       <button class="memory-action" type="button" data-memory-conflict="theirs">${esc(t('memory.take_theirs'))}</button>
       <button class="memory-action primary" type="button" data-memory-conflict="manual">${esc(t('memory.manual_merge'))}</button>
     </div>
-    <div class="memory-diff">${rows}</div>
+    <div class="memory-diff">${rows}${notice}</div>
   </section>`;
 }
 
@@ -1429,13 +1495,16 @@ function renderMemoryContent() {
     const live = state.memory.liveNotice
       ? `<div class="memory-notice warning">${esc(t('memory.live_changed'))}</div>`
       : '';
-    content.innerHTML = `${notice}${live}${conflict}<textarea class="memory-editor" id="memory-editor" spellcheck="false">${esc(state.memory.draft)}</textarea>`;
+    const retry = state.memory.error === 'memory_conflict_latest_failed'
+      ? `<div class="memory-notice warning">${esc(t('memory.conflict_retry_body'))} <button type="button" data-memory-retry-conflict>${esc(t('memory.retry'))}</button></div>`
+      : '';
+    content.innerHTML = `${notice}${live}${retry}${conflict}<textarea class="memory-editor" id="memory-editor" spellcheck="false">${esc(state.memory.draft)}</textarea>`;
     const editor = $('#memory-editor');
     editor?.addEventListener('input', () => {
       state.memory.draft = editor.value;
       state.memory.dirty = state.memory.file ? state.memory.draft !== state.memory.file.text : true;
       state.memory.draftNotice = false;
-      saveMemoryDraft();
+      scheduleMemoryDraftSave();
       renderMemoryActions();
     });
     content.querySelector('[data-memory-discard-draft]')?.addEventListener('click', () => {
@@ -1443,8 +1512,11 @@ function renderMemoryContent() {
       state.memory.draft = state.memory.file?.text || '';
       state.memory.dirty = false;
       state.memory.draftNotice = false;
-      saveMemoryDraft();
+      clearMemoryDraft();
       renderMemory();
+    });
+    content.querySelector('[data-memory-retry-conflict]')?.addEventListener('click', () => {
+      saveMemoryDraftToServer({ text: state.memory.conflictRetryText || state.memory.draft }).catch(() => {});
     });
     content.querySelectorAll('[data-memory-conflict]').forEach((btn) => {
       btn.addEventListener('click', () => resolveMemoryConflict(btn.dataset.memoryConflict).catch(() => {}));
@@ -1589,6 +1661,7 @@ async function loadMemoryTree({ force = false } = {}) {
 
 async function openMemoryFile(filePath) {
   if (!filePath || remoteIsReadOnly()) return;
+  flushMemoryDraftSave();
   stopMemoryLiveCheck();
   state.memory.selectedPath = filePath;
   state.memory.file = null;
@@ -1600,6 +1673,7 @@ async function openMemoryFile(filePath) {
   state.memory.draftNotice = false;
   state.memory.dirty = false;
   state.memory.conflict = null;
+  state.memory.conflictRetryText = '';
   state.memory.liveNotice = null;
   renderMemory();
   try {
@@ -1618,6 +1692,8 @@ async function openMemoryFile(filePath) {
       state.memory.draftNotice = true;
       state.memory.dirty = true;
       startMemoryLiveCheck();
+    } else if (draft != null) {
+      clearMemoryDraft(file.path);
     }
   } catch (err) {
     state.memory.error = err.code || 'memory_browser_failed';
@@ -1645,6 +1721,7 @@ function resetMemoryEdit() {
   state.memory.draftNotice = false;
   state.memory.dirty = false;
   state.memory.conflict = null;
+  state.memory.conflictRetryText = '';
   state.memory.liveNotice = null;
   clearMemoryDraft();
   stopMemoryLiveCheck();
@@ -1654,6 +1731,7 @@ function resetMemoryEdit() {
 async function saveMemoryDraftToServer({ text = state.memory.draft, sha256 = state.memory.file?.sha256 } = {}) {
   const file = state.memory.file;
   if (!file?.path || !sha256) return;
+  flushMemoryDraftSave();
   state.memory.saving = true;
   state.memory.error = null;
   renderMemoryActions();
@@ -1668,16 +1746,24 @@ async function saveMemoryDraftToServer({ text = state.memory.draft, sha256 = sta
     state.memory.dirty = false;
     state.memory.editing = false;
     state.memory.conflict = null;
+    state.memory.conflictRetryText = '';
     state.memory.liveNotice = null;
     clearMemoryDraft(saved.path);
     state.memory.git = await fetchAgentJson(`/api/memory/git?path=${encodeURIComponent(saved.path)}`).catch(() => ({ commit: null }));
     await loadMemoryTree({ force: true });
   } catch (err) {
     if (err.code === 'memory_conflict') {
-      const latest = await fetchAgentJson(`/api/memory/file?path=${encodeURIComponent(file.path)}`).catch(() => err.current || null);
-      if (latest) {
+      const latest = await fetchAgentJson(`/api/memory/file?path=${encodeURIComponent(file.path)}`).catch(() => null);
+      if (isCompleteMemoryFile(latest)) {
         state.memory.conflict = buildMemoryConflict(latest, text, text);
         state.memory.liveNotice = latest;
+        state.memory.conflictRetryText = '';
+      } else {
+        state.memory.conflict = null;
+        state.memory.conflictRetryText = String(text || '');
+        state.memory.error = 'memory_conflict_latest_failed';
+        renderMemory();
+        return;
       }
     }
     state.memory.error = err.code || 'memory_browser_failed';
@@ -1690,9 +1776,18 @@ async function saveMemoryDraftToServer({ text = state.memory.draft, sha256 = sta
 
 async function resolveMemoryConflict(action) {
   const conflict = state.memory.conflict;
-  if (!conflict?.theirs) return;
+  if (!isCompleteMemoryFile(conflict?.theirs)) return;
   if (action === 'theirs') {
-    await saveMemoryDraftToServer({ text: conflict.theirs.text || '', sha256: conflict.theirs.sha256 });
+    state.memory.file = conflict.theirs;
+    state.memory.draft = conflict.theirs.text;
+    state.memory.dirty = false;
+    state.memory.editing = false;
+    state.memory.conflict = null;
+    state.memory.conflictRetryText = '';
+    state.memory.liveNotice = null;
+    clearMemoryDraft(conflict.theirs.path);
+    state.memory.git = await fetchAgentJson(`/api/memory/git?path=${encodeURIComponent(conflict.theirs.path)}`).catch(() => ({ commit: null }));
+    renderMemory();
     return;
   }
   const text = action === 'manual' ? state.memory.draft : conflict.mine;

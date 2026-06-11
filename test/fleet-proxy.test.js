@@ -463,6 +463,14 @@ test('fleet proxy allows admin memory GETs and validates memory query paths cons
     assert.equal(put.status, 200);
     assert.deepEqual(await put.json(), { ok: true, method: 'PUT', url: '/api/memory/file?path=identity.md' });
 
+    const expandedPut = await fetch(`${hub.origin}/fleet/Remote/api/memory/file?path=identity.md`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text: '\n'.repeat(1024 * 1024), sha256: 'a'.repeat(64) })
+    });
+    assert.equal(expandedPut.status, 200);
+    assert.deepEqual(await expandedPut.json(), { ok: true, method: 'PUT', url: '/api/memory/file?path=identity.md' });
+
     const unsafe = await fetch(`${hub.origin}/fleet/Remote/api/memory/file?path=..%2Fstate.md`);
     assert.equal(unsafe.status, 400);
     assert.deepEqual(await unsafe.json(), { error: 'invalid_memory_path' });
@@ -485,6 +493,7 @@ test('fleet proxy allows admin memory GETs and validates memory query paths cons
     assert.deepEqual(seen, [
       { method: 'GET', url: '/api/memory/tree' },
       { method: 'GET', url: '/api/memory/file?path=reference%2Fprojects.md' },
+      { method: 'PUT', url: '/api/memory/file?path=identity.md' },
       { method: 'PUT', url: '/api/memory/file?path=identity.md' }
     ]);
   } finally {

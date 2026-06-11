@@ -40,6 +40,8 @@ function isTextFileName(name) {
 
 function isValidUtf8Text(buffer) {
   const text = buffer.toString('utf8');
+  // Reject replacement characters so mojibake cannot be saved back as if it
+  // were a clean UTF-8 memory file.
   if (text.includes('\uFFFD')) return false;
   if (text.includes('\u0000')) return false;
   return true;
@@ -47,6 +49,8 @@ function isValidUtf8Text(buffer) {
 
 function assertWritableText(value, maxFileBytes) {
   if (typeof value !== 'string') throw memoryError('invalid_memory_write');
+  // Keep write-side validation symmetric with reads: U+FFFD usually means a
+  // previous decode already lost information, so do not persist it.
   if (value.includes('\u0000') || value.includes('\uFFFD')) {
     throw memoryError('invalid_memory_write');
   }

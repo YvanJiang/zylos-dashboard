@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import http from 'node:http';
 import os from 'node:os';
@@ -348,6 +349,8 @@ test('/api/memory is admin-gated and browser sessions can read tree', async () =
   writeConfig(zylosDir, 'secret', { auth: { enabled: true, password: 'secret' } });
   fs.mkdirSync(path.join(zylosDir, 'memory'), { recursive: true });
   fs.writeFileSync(path.join(zylosDir, 'memory', 'identity.md'), '# Identity\n');
+  const newlineText = '\n'.repeat(1024 * 1024);
+  fs.writeFileSync(path.join(zylosDir, 'memory', 'large.txt'), newlineText);
 
   const { origin, server } = await makeServerWithDir(zylosDir);
   try {
@@ -409,6 +412,33 @@ test('/api/memory is admin-gated and browser sessions can read tree', async () =
     });
     assert.equal(readWriteResp.status, 403);
     assert.deepEqual(await readWriteResp.json(), { error: 'insufficient_scope', required: 'admin' });
+
+    const nullWriteResp = await fetch(`${origin}/api/memory/file?path=identity.md`, {
+      method: 'PUT',
+      headers: {
+        Authorization: `Bearer ${adminToken}`,
+        'Content-Type': 'application/json'
+      },
+      body: 'null'
+    });
+    assert.equal(nullWriteResp.status, 400);
+    assert.deepEqual(await nullWriteResp.json(), { error: 'invalid_memory_write' });
+
+    const largeWriteResp = await fetch(`${origin}/api/memory/file?path=large.txt`, {
+      method: 'PUT',
+      headers: {
+        Authorization: `Bearer ${adminToken}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        text: newlineText,
+        sha256: crypto.createHash('sha256').update(newlineText).digest('hex')
+      })
+    });
+    assert.equal(largeWriteResp.status, 200);
+    const largeWriteBody = await largeWriteResp.json();
+    assert.equal(largeWriteBody.text.length, 1024 * 1024);
+    assert.equal(fs.readFileSync(path.join(zylosDir, 'memory', 'large.txt'), 'utf8'), newlineText);
 
     const adminWriteResp = await fetch(`${origin}/api/memory/file?path=identity.md`, {
       method: 'PUT',
