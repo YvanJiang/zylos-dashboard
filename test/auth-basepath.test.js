@@ -478,6 +478,200 @@ test('/api/fleet exposes safe records without registry secrets', async () => {
   }
 });
 
+test('fleet management API is admin-gated, masks keys, persists atomically, and hot-applies config', async () => {
+  const remote = await listen((req, res) => {
+    if (req.url === '/api/auth/token') {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({
+        token: 'zylos_st_remote_read',
+        expires_at: new Date(Date.now() + 3600_000).toISOString(),
+        scope: 'read'
+      }));
+      return;
+    }
+    if (req.url === '/api/state') {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ state: 'IDLE', runtime_info: { zylos_version: '0.3.0' } }));
+      return;
+    }
+    if (req.url === '/api/stream') {
+      res.writeHead(200, { 'content-type': 'text/event-stream' });
+      res.end('event: fleet_state\ndata: {"state":"IDLE"}\n\n');
+      return;
+    }
+    res.writeHead(404, { 'content-type': 'application/json' });
+    res.end('{}');
+  });
+  const zylosDir = fs.mkdtempSync(path.join(os.tmpdir(), 'zylos-dashboard-test-'));
+  writeConfig(zylosDir, 'secret', {
+    auth: { enabled: true, password: 'secret' },
+    agent: { name: 'Local' },
+    preserved: { keep: true }
+  });
+
+  const { origin, server } = await makeServerWithDir(zylosDir);
+  try {
+    const dbPath = path.join(zylosDir, 'components', 'dashboard', 'dashboard.db');
+    const store = new Store(dbPath);
+    const readKey = generateApiKey();
+    const adminKey = generateApiKey();
+    store.insertApiKey({ name: 'read-key', keyHash: hashApiKey(readKey), scope: 'read' });
+    store.insertApiKey({ name: 'admin-key', keyHash: hashApiKey(adminKey), scope: 'admin' });
+    store.close();
+
+    const readTokenResp = await fetch(`${origin}/api/auth/token`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${readKey}` }
+    });
+    const adminTokenResp = await fetch(`${origin}/api/auth/token`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${adminKey}` }
+    });
+    const { token: readToken } = await readTokenResp.json();
+    const { token: adminToken } = await adminTokenResp.json();
+
+    const readList = await fetch(`${origin}/api/fleet/agents`, {
+      headers: { Authorization: `Bearer ${readToken}` }
+    });
+    assert.equal(readList.status, 403);
+    assert.deepEqual(await readList.json(), { error: 'insufficient_scope', required: 'admin' });
+
+    const add = await fetch(`${origin}/api/fleet/agents`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${adminToken}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        name: 'Remote',
+        base_url: remote.origin,
+        read_api_key: 'zylos_ak_supersecret1234'
+      })
+    });
+    assert.equal(add.status, 200);
+    const addBody = await add.json();
+    assert.equal(addBody.agent.name, 'Remote');
+    assert.equal(addBody.agent.key_masked, 'zylos_ak_...1234');
+    assert.equal(JSON.stringify(addBody).includes('supersecret'), false);
+
+    const duplicate = await fetch(`${origin}/api/fleet/agents`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${adminToken}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        name: 'Remote',
+        base_url: remote.origin,
+        read_api_key: 'zylos_ak_other'
+      })
+    });
+    assert.equal(duplicate.status, 400);
+    assert.deepEqual(await duplicate.json(), { error: 'duplicate_name' });
+
+    const list = await fetch(`${origin}/api/fleet/agents`, {
+      headers: { Authorization: `Bearer ${adminToken}` }
+    });
+    assert.equal(list.status, 200);
+    const listBody = await list.json();
+    assert.equal(listBody.self.name, 'Local');
+    assert.equal(listBody.agents[0].name, 'Remote');
+    assert.equal(listBody.agents[0].key_masked, 'zylos_ak_...1234');
+    assert.equal(JSON.stringify(listBody).includes('supersecret'), false);
+
+    const fleet = await fetch(`${origin}/api/fleet`, {
+      headers: { Authorization: `Bearer ${adminToken}` }
+    });
+    assert.equal(fleet.status, 200);
+    const fleetBody = await fleet.json();
+    assert.equal(fleetBody.agents.some(a => a.name === 'Remote'), true, 'hot-added agent should appear without restart');
+
+    const rename = await fetch(`${origin}/api/agent/name`, {
+      method: 'PUT',
+      headers: {
+        Authorization: `Bearer ${adminToken}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({ name: 'LocalRenamed' })
+    });
+    assert.equal(rename.status, 200);
+    assert.deepEqual(await rename.json(), { ok: true, self: { name: 'LocalRenamed' } });
+
+    const del = await fetch(`${origin}/api/fleet/agents/Remote`, {
+      method: 'DELETE',
+      headers: { Authorization: `Bearer ${adminToken}` }
+    });
+    assert.equal(del.status, 200);
+    const delBody = await del.json();
+    assert.equal(delBody.agents.length, 0);
+
+    const configPath = path.join(zylosDir, 'components', 'dashboard', 'config.json');
+    const saved = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+    assert.deepEqual(saved.preserved, { keep: true });
+    assert.equal(saved.agent.name, 'LocalRenamed');
+    assert.deepEqual(saved.fleet.agents, []);
+    assert.equal(fs.statSync(configPath).mode & 0o777, 0o600);
+  } finally {
+    await closeServer(server);
+    await remote.close();
+    fs.rmSync(zylosDir, { recursive: true, force: true });
+  }
+});
+
+test('fleet test-connection API reports auth failures and reachable read scope without persisting secrets', async () => {
+  const remote = await listen((req, res) => {
+    if (req.url === '/api/auth/token') {
+      if (req.headers.authorization !== 'Bearer zylos_ak_good') {
+        res.writeHead(401, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ error: 'invalid_api_key' }));
+        return;
+      }
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({
+        token: 'zylos_st_remote_read',
+        expires_at: new Date(Date.now() + 3600_000).toISOString(),
+        scope: 'read'
+      }));
+      return;
+    }
+    if (req.url === '/api/state') {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ state: 'IDLE', runtime_info: { zylos_version: '0.3.0' } }));
+      return;
+    }
+    res.writeHead(404, { 'content-type': 'application/json' });
+    res.end('{}');
+  });
+  const zylosDir = fs.mkdtempSync(path.join(os.tmpdir(), 'zylos-dashboard-test-'));
+  writeConfig(zylosDir, 'secret', { auth: { enabled: false } });
+
+  const { origin, server } = await makeServerWithDir(zylosDir);
+  try {
+    const bad = await fetch(`${origin}/api/fleet/agents/test`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ base_url: remote.origin, read_api_key: 'zylos_ak_bad' })
+    });
+    assert.equal(bad.status, 200);
+    assert.deepEqual(await bad.json(), { reachable: false, error: 'auth_failed' });
+
+    const good = await fetch(`${origin}/api/fleet/agents/test`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ base_url: remote.origin, read_api_key: 'zylos_ak_good' })
+    });
+    assert.equal(good.status, 200);
+    assert.deepEqual(await good.json(), { reachable: true, scope: 'read', version: '0.3.0' });
+
+    const saved = JSON.parse(fs.readFileSync(path.join(zylosDir, 'components', 'dashboard', 'config.json'), 'utf8'));
+    assert.equal(saved.fleet, undefined, 'test-connection must not persist the submitted key');
+  } finally {
+    await closeServer(server);
+    await remote.close();
+    fs.rmSync(zylosDir, { recursive: true, force: true });
+  }
+});
+
 test('ingest endpoints reject proxied requests', async () => {
   const { origin, server } = await makeServer();
   try {

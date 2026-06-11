@@ -281,6 +281,7 @@ export class FleetPoller {
     this.records = new Map();
     this.tokens = new Map();
     this.streams = new Map();
+    this.agentGenerations = new Map();
     this.running = false;
     this.timer = null;
 
@@ -316,8 +317,9 @@ export class FleetPoller {
   }
 
   start() {
-    if (this.running || this.agents.length === 0) return;
+    if (this.running) return;
     this.running = true;
+    if (this.agents.length === 0) return;
     this.pollOnce().finally(() => {
       if (!this.running) return;
       for (const agent of this.agents) this._connectSse(agent);
@@ -338,6 +340,62 @@ export class FleetPoller {
     this.streams.clear();
   }
 
+  addAgent(agent) {
+    const existingIndex = this.agents.findIndex(a => a.name === agent.name);
+    if (existingIndex >= 0) this.removeAgent(agent.name);
+    const normalized = { ...agent };
+    this.agents.push(normalized);
+    this.agentGenerations.set(normalized.name, (this.agentGenerations.get(normalized.name) || 0) + 1);
+    const color = agentColor(normalized.name);
+    this.records.set(normalized.name, sanitizeRecord({
+      name: normalized.name,
+      base_url: normalized.base_url,
+      color: color.color,
+      hue: color.hue,
+      state: 'UNKNOWN',
+      activity: null,
+      context_pct: null,
+      cost: null,
+      session_cost: null,
+      daily_cost: null,
+      weekly_cost: null,
+      model: null,
+      effort: null,
+      new_session_threshold: null,
+      cpu_pct: null,
+      mem_pct: null,
+      disk_pct: null,
+      has_upgrade: false,
+      has_subagent: false,
+      last_seen: null,
+      pulse_rate: null,
+      health_reason: 'not_polled',
+      updated_at: nowIso(this.now()),
+      access: 'read'
+    }));
+    if (!this.running) this.running = true;
+    this._pollAgentAndNotify(normalized);
+    this._connectSse(normalized);
+    this.onPoll?.(this.getFleet());
+  }
+
+  removeAgent(name) {
+    this.agents = this.agents.filter(a => a.name !== name);
+    this.agentGenerations.set(name, (this.agentGenerations.get(name) || 0) + 1);
+    const stream = this.streams.get(name);
+    if (stream) {
+      if (stream.compatibilityTimer) this.clearTimeout(stream.compatibilityTimer);
+      if (stream.pollTimer) this.clearTimeout(stream.pollTimer);
+      if (stream.reconnectTimer) this.clearTimeout(stream.reconnectTimer);
+      if (stream.idleTimer) this.clearTimeout(stream.idleTimer);
+      stream.controller?.abort();
+    }
+    this.streams.delete(name);
+    this.tokens.delete(name);
+    this.records.delete(name);
+    this.onPoll?.(this.getFleet());
+  }
+
   getFleet() {
     return {
       agents: Array.from(this.records.values()).map(sanitizeRecord),
@@ -354,6 +412,18 @@ export class FleetPoller {
       throw err;
     }
     return this._ensureToken(agent, { force: Boolean(options.force) });
+  }
+
+  _agentGeneration(agent) {
+    return this.agentGenerations.get(agent.name) || 0;
+  }
+
+  _isCurrentAgent(agent, generation = this._agentGeneration(agent), stream = null) {
+    const current = this.agents.find(a => a.name === agent.name);
+    if (!current || current !== agent) return false;
+    if ((this.agentGenerations.get(agent.name) || 0) !== generation) return false;
+    if (stream && this.streams.get(agent.name) !== stream) return false;
+    return true;
   }
 
   getAgentAccess(agentName) {
@@ -443,13 +513,19 @@ export class FleetPoller {
   }
 
   async _pollAgent(agent) {
+    const generation = this._agentGeneration(agent);
+    if (!this._isCurrentAgent(agent, generation)) return;
     try {
       let token = await this._ensureToken(agent);
+      if (!this._isCurrentAgent(agent, generation)) return;
       let resp = await this._fetchState(agent, token);
+      if (!this._isCurrentAgent(agent, generation)) return;
       if (resp.status === 401) {
         this.tokens.delete(agent.name);
         token = await this._ensureToken(agent, { force: true });
+        if (!this._isCurrentAgent(agent, generation)) return;
         resp = await this._fetchState(agent, token);
+        if (!this._isCurrentAgent(agent, generation)) return;
       }
       if (resp.status === 401 || resp.status === 403) {
         this._setFailure(agent, 'auth_failed');
@@ -460,8 +536,10 @@ export class FleetPoller {
         return;
       }
       const state = await resp.json();
+      if (!this._isCurrentAgent(agent, generation)) return;
       this._setSuccess(agent, state);
     } catch (err) {
+      if (!this._isCurrentAgent(agent, generation)) return;
       this._setFailure(agent, err.reason || 'unreachable');
     }
   }
@@ -497,6 +575,8 @@ export class FleetPoller {
 
   _connectSse(agent) {
     if (!this.running) return;
+    const generation = this._agentGeneration(agent);
+    if (!this._isCurrentAgent(agent, generation)) return;
     const stream = this._streamState(agent);
     if (stream.connecting) return;
     stream.connecting = true;
@@ -504,22 +584,27 @@ export class FleetPoller {
     stream.controller = new AbortController();
     this._runSse(agent, stream, stream.controller.signal)
       .catch((err) => {
-        if (!this.running || err?.name === 'AbortError') return;
+        if (!this.running || err?.name === 'AbortError' || !this._isCurrentAgent(agent, generation, stream)) return;
         this._startFallbackPolling(agent);
         this._scheduleReconnect(agent);
       })
       .finally(() => {
-        stream.connecting = false;
+        if (this._isCurrentAgent(agent, generation, stream)) stream.connecting = false;
       });
   }
 
   async _runSse(agent, stream, signal) {
+    const generation = this._agentGeneration(agent);
     let token = await this._ensureToken(agent);
+    if (!this._isCurrentAgent(agent, generation, stream)) return;
     let resp = await this._fetchStream(agent, token, signal);
+    if (!this._isCurrentAgent(agent, generation, stream)) return;
     if (resp.status === 401) {
       this.tokens.delete(agent.name);
       token = await this._ensureToken(agent, { force: true });
+      if (!this._isCurrentAgent(agent, generation, stream)) return;
       resp = await this._fetchStream(agent, token, signal);
+      if (!this._isCurrentAgent(agent, generation, stream)) return;
     }
     if (resp.status === 401 || resp.status === 403) {
       this._setFailure(agent, 'auth_failed');
@@ -537,7 +622,7 @@ export class FleetPoller {
     if (stream.compatibilityTimer) this.clearTimeout(stream.compatibilityTimer);
     stream.compatibilityTimer = this.setTimeout(() => {
       const current = this.streams.get(agent.name);
-      if (this.running && current && !current.seenFleetState) this._startFallbackPolling(agent);
+      if (this.running && current === stream && !current.seenFleetState) this._startFallbackPolling(agent);
     }, this.pollIntervalMs);
     stream.compatibilityTimer.unref?.();
     try {
@@ -576,6 +661,7 @@ export class FleetPoller {
   }
 
   _handleSseEvent(agent, event) {
+    if (!this._isCurrentAgent(agent)) return;
     if (event.event === 'auth_expired') {
       this.tokens.delete(agent.name);
       const err = new Error('auth_expired');
@@ -604,13 +690,15 @@ export class FleetPoller {
 
   _startFallbackPolling(agent) {
     if (!this.running) return;
+    const generation = this._agentGeneration(agent);
+    if (!this._isCurrentAgent(agent, generation)) return;
     const stream = this._streamState(agent);
     if (stream.pollTimer) return;
     const run = () => {
-      if (!this.running || !this.streams.has(agent.name)) return;
+      if (!this.running || !this._isCurrentAgent(agent, generation, stream)) return;
       this._pollAgentAndNotify(agent).finally(() => {
         const current = this.streams.get(agent.name);
-        if (!this.running || !current || !current.pollTimer) return;
+        if (!this.running || !this._isCurrentAgent(agent, generation, stream) || current !== stream || !current.pollTimer) return;
         current.pollTimer = this.setTimeout(run, this.pollIntervalMs);
         current.pollTimer.unref?.();
       });
@@ -628,11 +716,14 @@ export class FleetPoller {
 
   _scheduleReconnect(agent) {
     if (!this.running) return;
+    const generation = this._agentGeneration(agent);
+    if (!this._isCurrentAgent(agent, generation)) return;
     const stream = this._streamState(agent);
     if (stream.reconnectTimer) this.clearTimeout(stream.reconnectTimer);
     const delay = stream.backoffMs;
     stream.backoffMs = Math.min(stream.backoffMs * 2, this.reconnectMaxMs);
     stream.reconnectTimer = this.setTimeout(() => {
+      if (!this._isCurrentAgent(agent, generation, stream)) return;
       stream.reconnectTimer = null;
       this._connectSse(agent);
     }, delay);
@@ -679,7 +770,7 @@ export class FleetPoller {
     if (stream.idleTimer) this.clearTimeout(stream.idleTimer);
     stream.idleTimer = this.setTimeout(() => {
       stream.idleTimer = null;
-      if (!this.running) return;
+      if (!this.running || !this._isCurrentAgent(agent, this._agentGeneration(agent), stream)) return;
       stream.controller?.abort();
       this._startFallbackPolling(agent);
       this._scheduleReconnect(agent);

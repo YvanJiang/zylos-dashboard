@@ -596,6 +596,91 @@ test('fleet poller onPoll receives safe remote fleet after poll cycle completion
   assert.equal(JSON.stringify(onPollFleet).includes('zylos_st_ok'), false);
 });
 
+test('fleet poller first add from empty fleet starts live polling and streaming', async () => {
+  const calls = [];
+  let streamSignal = null;
+  const fetchImpl = async (url, options = {}) => {
+    calls.push(url);
+    if (url.endsWith('/api/auth/token')) {
+      return jsonResponse({ token: 'zylos_st_added', expires_at: new Date(120000).toISOString(), scope: 'read' });
+    }
+    if (url.endsWith('/api/state')) return jsonResponse({ state: 'IDLE', context_pct: 12 });
+    if (url.endsWith('/api/stream')) {
+      streamSignal = options.signal;
+      return new Promise(() => {});
+    }
+    throw new Error(`unexpected URL ${url}`);
+  };
+  let pushedFleet = null;
+  const poller = new FleetPoller(makeConfig([]), {
+    fetch: fetchImpl,
+    now: () => 0,
+    onPoll: (fleet) => { pushedFleet = fleet; }
+  });
+
+  poller.start();
+  assert.equal(poller.running, true);
+  assert.equal(poller.getFleet().count, 0);
+  poller.addAgent({ name: 'Remote', base_url: 'https://remote.example.test', read_api_key: 'zylos_ak_secret' });
+  await new Promise(resolve => setTimeout(resolve, 10));
+
+  assert.equal(poller.running, true);
+  assert.equal(poller.getFleet().agents[0].name, 'Remote');
+  assert.equal(poller.getFleet().agents[0].context_pct, 12);
+  assert.ok(calls.some(url => url.endsWith('/api/state')));
+  assert.ok(calls.some(url => url.endsWith('/api/stream')));
+  assert.ok(streamSignal, 'SSE stream should be opened for the first added agent');
+  assert.equal(pushedFleet.agents.some(a => a.name === 'Remote'), true);
+  poller.stop();
+});
+
+test('fleet poller remove prevents late SSE failures and stale reconnect timers from resurrecting agents', async () => {
+  const timers = [];
+  let rejectStream;
+  let tokenCalls = 0;
+  const fetchImpl = async (url) => {
+    if (url.endsWith('/api/auth/token')) {
+      tokenCalls += 1;
+      return jsonResponse({ token: 'zylos_st_removed', expires_at: new Date(120000).toISOString() });
+    }
+    if (url.endsWith('/api/state')) return jsonResponse({ state: 'IDLE' });
+    if (url.endsWith('/api/stream')) {
+      return new Promise((_resolve, reject) => { rejectStream = reject; });
+    }
+    throw new Error(`unexpected URL ${url}`);
+  };
+  const poller = new FleetPoller(makeConfig([
+    { name: 'Remote', base_url: 'https://remote.example.test', read_api_key: 'zylos_ak_secret' }
+  ]), {
+    fetch: fetchImpl,
+    now: () => 0,
+    setTimeout: (fn, ms) => {
+      const timer = { fn, ms, unref() {} };
+      timers.push(timer);
+      return timer;
+    },
+    clearTimeout: (timer) => { timer.cleared = true; }
+  });
+  const agent = poller.agents[0];
+  poller.running = true;
+  poller._connectSse(agent);
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.ok(poller.streams.has('Remote'));
+
+  poller._scheduleReconnect(agent);
+  const staleReconnect = poller.streams.get('Remote').reconnectTimer;
+  poller.removeAgent('Remote');
+  rejectStream(new Error('late network failure'));
+  await new Promise(resolve => setTimeout(resolve, 0));
+  staleReconnect.fn();
+  await new Promise(resolve => setTimeout(resolve, 0));
+
+  assert.equal(poller.streams.has('Remote'), false);
+  assert.equal(poller.tokens.has('Remote'), false);
+  assert.equal(poller.getFleet().agents.some(a => a.name === 'Remote'), false);
+  assert.equal(tokenCalls, 1, 'late paths must not exchange a fresh token after removal');
+});
+
 test('fleet poller reads top-level context_pct when metrics object is absent (#171)', async () => {
   const fetchImpl = async (url) => {
     if (url.endsWith('/api/auth/token')) {

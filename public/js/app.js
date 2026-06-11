@@ -1075,6 +1075,13 @@ function renderConnection(mode) {
 
 function renderAll() {
   renderI18n();
+  initFleetManageButton();
+  if (fleetManageModal) {
+    const wasOpen = !fleetManageModal.hidden;
+    fleetManageModal.remove();
+    fleetManageModal = null;
+    if (wasOpen) openFleetManageModal();
+  }
   _lastRuntimeApplied = null;
   applyRuntimeVisibility();
   updateChartLabels();
@@ -1906,6 +1913,212 @@ function initTrendControls() {
 }
 
 // ─── Settings Modal ───
+let fleetManageModal = null;
+
+function createFleetManageModal() {
+  if (fleetManageModal) return fleetManageModal;
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.id = 'fleet-manage-modal';
+  overlay.hidden = true;
+  overlay.innerHTML = `
+<div class="modal manage-modal">
+  <div class="modal-head">
+    <h2>${esc(t('fleet_manage.title'))}</h2>
+    <button class="modal-close" type="button" aria-label="Close">&times;</button>
+  </div>
+  <div class="modal-tabs" role="tablist">
+    <button class="modal-tab active" type="button">${esc(t('fleet_manage.tab_fleet'))}</button>
+  </div>
+  <div class="modal-body">
+    <section class="manage-section">
+      <span class="action-group-label">${esc(t('fleet_manage.local_agent'))}</span>
+      <div class="fleet-self-row">
+        <input class="action-input" id="fleet-self-name" type="text" autocomplete="off" />
+        <button class="action-btn action-btn-sm" id="fleet-rename-save" type="button">${esc(t('btn.save'))}</button>
+      </div>
+      <small class="fleet-help">${esc(t('fleet_manage.rename_hint'))}</small>
+    </section>
+    <section class="manage-section">
+      <span class="action-group-label">${esc(t('fleet_manage.remote_agents'))}</span>
+      <div class="fleet-agent-list" id="fleet-agent-list"></div>
+    </section>
+    <section class="manage-section">
+      <span class="action-group-label">${esc(t('fleet_manage.add_agent'))}</span>
+      <div class="action-field">
+        <label class="action-field-label" for="fleet-add-name">${esc(t('fleet_manage.name'))}</label>
+        <input class="action-input" id="fleet-add-name" type="text" autocomplete="off" placeholder="zylos01" />
+      </div>
+      <div class="action-field">
+        <label class="action-field-label" for="fleet-add-url">${esc(t('fleet_manage.base_url'))}</label>
+        <input class="action-input" id="fleet-add-url" type="url" autocomplete="off" placeholder="https://agent.example/dashboard" />
+      </div>
+      <div class="action-field">
+        <label class="action-field-label" for="fleet-add-key">${esc(t('fleet_manage.read_key'))}</label>
+        <input class="action-input" id="fleet-add-key" type="password" autocomplete="off" />
+      </div>
+      <div class="action-row">
+        <button class="action-btn" id="fleet-test" type="button">${esc(t('fleet_manage.test'))}</button>
+        <button class="action-btn action-btn-primary" id="fleet-add-save" type="button">${esc(t('fleet_manage.save_agent'))}</button>
+      </div>
+    </section>
+  </div>
+  <div class="modal-status" id="fleet-manage-status" hidden></div>
+</div>`;
+  document.body.appendChild(overlay);
+  fleetManageModal = overlay;
+  overlay.querySelector('.modal-close').addEventListener('click', closeFleetManageModal);
+  overlay.addEventListener('click', (e) => { if (e.target === overlay) closeFleetManageModal(); });
+  overlay.querySelector('#fleet-rename-save').addEventListener('click', saveFleetSelfName);
+  overlay.querySelector('#fleet-test').addEventListener('click', testFleetAgent);
+  overlay.querySelector('#fleet-add-save').addEventListener('click', saveFleetAgent);
+  return overlay;
+}
+
+function fleetManageStatus(message, kind = '') {
+  const status = fleetManageModal?.querySelector('#fleet-manage-status');
+  if (!status) return;
+  status.textContent = message;
+  status.className = `modal-status ${kind}`.trim();
+  status.hidden = !message;
+}
+
+function fleetFormValues() {
+  return {
+    name: fleetManageModal.querySelector('#fleet-add-name').value.trim(),
+    base_url: fleetManageModal.querySelector('#fleet-add-url').value.trim(),
+    read_api_key: fleetManageModal.querySelector('#fleet-add-key').value.trim()
+  };
+}
+
+function fleetManageError(code, fallback) {
+  if (!code) return fallback || t('fleet_manage.save_failed');
+  const key = `fleet_manage.${code}`;
+  const translated = t(key);
+  return translated === key ? (fallback || code) : translated;
+}
+
+function renderFleetManage(data) {
+  const selfInput = fleetManageModal.querySelector('#fleet-self-name');
+  selfInput.value = data?.self?.name || viewedAgentName();
+  const list = fleetManageModal.querySelector('#fleet-agent-list');
+  const agents = data?.agents || [];
+  if (!agents.length) {
+    list.innerHTML = `<p class="empty-state">${esc(t('fleet_manage.empty'))}</p>`;
+    return;
+  }
+  list.replaceChildren(...agents.map((agent) => {
+    const row = document.createElement('div');
+    row.className = 'fleet-agent-row';
+    row.innerHTML = `
+      <div class="fleet-agent-meta">
+        <strong>${esc(agent.name)}</strong>
+        <span>${esc(agent.base_url || '')}</span>
+        <small>${esc(agent.key_masked || '')} · ${esc(agent.access || 'read')}</small>
+      </div>
+      <button class="settings-remove-btn fleet-agent-remove" type="button" title="${esc(t('btn.remove'))}">&times;</button>`;
+    row.querySelector('.fleet-agent-remove').addEventListener('click', () => removeFleetAgent(agent.name));
+    return row;
+  }));
+}
+
+async function openFleetManageModal() {
+  if (REMOTE_AGENT) return;
+  const modal = createFleetManageModal();
+  modal.hidden = false;
+  fleetManageStatus(t('status.loading'), 'running');
+  try {
+    const resp = await fetch(api('/api/fleet/agents'), { cache: 'no-store' });
+    const data = await resp.json();
+    if (!resp.ok) throw new Error(data.error || t('fleet_manage.load_failed'));
+    renderFleetManage(data);
+    fleetManageStatus('', '');
+  } catch (err) {
+    fleetManageStatus(err.message, 'error');
+  }
+}
+
+function closeFleetManageModal() {
+  if (fleetManageModal) fleetManageModal.hidden = true;
+}
+
+async function testFleetAgent() {
+  const body = fleetFormValues();
+  fleetManageStatus(t('fleet_manage.testing'), 'running');
+  try {
+    const resp = await fetch(api('/api/fleet/agents/test'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ base_url: body.base_url, read_api_key: body.read_api_key })
+    });
+    const data = await resp.json();
+    if (!resp.ok) throw new Error(data.error || t('fleet_manage.test_failed'));
+    if (data.reachable) {
+      fleetManageStatus(t('fleet_manage.test_ok', { scope: data.scope || 'read' }), 'success');
+    } else {
+      fleetManageStatus(t(`fleet_manage.${data.error || 'unreachable'}`), 'error');
+    }
+  } catch (err) {
+    fleetManageStatus(err.message, 'error');
+  }
+}
+
+async function saveFleetAgent() {
+  const body = fleetFormValues();
+  fleetManageStatus(t('fleet_manage.saving'), 'running');
+  try {
+    const resp = await fetch(api('/api/fleet/agents'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    });
+    const data = await resp.json();
+    if (!resp.ok) throw new Error(fleetManageError(data.error, t('fleet_manage.save_failed')));
+    fleetManageModal.querySelector('#fleet-add-name').value = '';
+    fleetManageModal.querySelector('#fleet-add-url').value = '';
+    fleetManageModal.querySelector('#fleet-add-key').value = '';
+    renderFleetManage(data.agents ? data : await (await fetch(api('/api/fleet/agents'), { cache: 'no-store' })).json());
+    fleetManageStatus(t('fleet_manage.saved'), 'success');
+    await refreshFleet();
+  } catch (err) {
+    fleetManageStatus(err.message, 'error');
+  }
+}
+
+async function removeFleetAgent(name) {
+  if (!window.confirm(t('fleet_manage.remove_confirm', { name }))) return;
+  fleetManageStatus(t('fleet_manage.removing'), 'running');
+  try {
+    const resp = await fetch(api(`/api/fleet/agents/${encodeURIComponent(name)}`), { method: 'DELETE' });
+    const data = await resp.json();
+    if (!resp.ok) throw new Error(data.error || t('fleet_manage.remove_failed'));
+    renderFleetManage(data);
+    fleetManageStatus(t('fleet_manage.removed'), 'success');
+    await refreshFleet();
+  } catch (err) {
+    fleetManageStatus(err.message, 'error');
+  }
+}
+
+async function saveFleetSelfName() {
+  const name = fleetManageModal.querySelector('#fleet-self-name').value.trim();
+  fleetManageStatus(t('fleet_manage.saving'), 'running');
+  try {
+    const resp = await fetch(api('/api/agent/name'), {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name })
+    });
+    const data = await resp.json();
+    if (!resp.ok) throw new Error(fleetManageError(data.error, t('fleet_manage.save_failed')));
+    fleetManageStatus(t('fleet_manage.saved'), 'success');
+    await refreshState();
+    await refreshFleet();
+  } catch (err) {
+    fleetManageStatus(err.message, 'error');
+  }
+}
+
 let settingsModal = null;
 let settingsBuiltInModels = new Set();
 let settingsBuiltInPriorityModels = new Set();
@@ -2592,12 +2805,20 @@ async function execAction(action, body) {
 
 function initInfoBarButtons() {
   document.addEventListener('click', (e) => {
+    if (e.target.closest('#fleet-manage-btn')) { e.preventDefault(); openFleetManageModal(); return; }
     if (e.target.closest('#settings-btn')) { e.preventDefault(); openSettingsModal(); return; }
     if (e.target.closest('#actions-btn, .info-bar-update')) {
       e.preventDefault();
       if (!remoteIsReadOnly()) openActionsModal();
     }
   });
+}
+
+function initFleetManageButton() {
+  const btn = $('#fleet-manage-btn');
+  if (!btn) return;
+  btn.hidden = !!REMOTE_AGENT;
+  btn.setAttribute('aria-label', t('fleet_manage.open'));
 }
 
 // ─── Timers ───
@@ -2624,6 +2845,7 @@ initLocaleToggle();
 initLogout();
 initTips();
 initInfoBarButtons();
+initFleetManageButton();
 initFleetHoverPause();
 initFleetSounds();
 renderAll();

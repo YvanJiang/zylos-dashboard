@@ -58,6 +58,12 @@ function isAllowedProxyWrite(method, suffix) {
     method === 'PUT' && suffix === '/api/settings';
 }
 
+function isLocalOnlyEndpoint(suffix) {
+  return suffix === '/api/fleet/agents' ||
+    suffix.startsWith('/api/fleet/agents/') ||
+    suffix === '/api/agent/name';
+}
+
 async function readBodyBuffer(req, maxBytes = MAX_WRITE_BODY_BYTES) {
   const chunks = [];
   let total = 0;
@@ -198,6 +204,11 @@ export class FleetProxy {
   }
 
   async proxyApi(req, res, agent, suffix, search) {
+    if (isLocalOnlyEndpoint(suffix)) {
+      sendJson(res, 403, { error: 'local_endpoint_not_proxyable' });
+      return;
+    }
+
     if (!['GET', 'HEAD'].includes(req.method) && !isAllowedProxyWrite(req.method, suffix)) {
       sendJson(res, 403, { error: 'read_only_proxy' });
       return;
