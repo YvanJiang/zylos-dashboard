@@ -318,6 +318,7 @@
   "fleet_manage.key_created_status": "Key created",
   "fleet_manage.key_created_once": "Copy this key now",
   "fleet_manage.key_once_hint": "This plaintext key is shown once and cannot be retrieved later.",
+  "fleet_manage.replace_created_key_confirm": "The plaintext for {name} is still visible. Create another key and replace this one-time display?",
   "fleet_manage.copy_key": "Copy",
   "fleet_manage.key_copied": "Key copied",
   "fleet_manage.copy_failed": "Copy failed; select the key manually.",

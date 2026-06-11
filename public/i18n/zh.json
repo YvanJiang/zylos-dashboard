@@ -318,6 +318,7 @@
   "fleet_manage.key_created_status": "密钥已创建",
   "fleet_manage.key_created_once": "请立即复制此密钥",
   "fleet_manage.key_once_hint": "明文密钥只显示一次，之后无法再次查看。",
+  "fleet_manage.replace_created_key_confirm": "{name} 的明文密钥仍在显示。继续创建新密钥并替换这个一次性显示？",
   "fleet_manage.copy_key": "复制",
   "fleet_manage.key_copied": "密钥已复制",
   "fleet_manage.copy_failed": "复制失败，请手动选中密钥。",

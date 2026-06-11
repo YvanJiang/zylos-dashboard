@@ -2266,6 +2266,8 @@ async function removeFleetAgent(name) {
 
 async function createApiKey() {
   const body = apiKeyFormValues();
+  const pendingKeyName = fleetManageModal?._createdKey?.name;
+  if (pendingKeyName && !window.confirm(t('fleet_manage.replace_created_key_confirm', { name: pendingKeyName }))) return;
   setApiKeyBusy(true);
   fleetManageStatus(t('fleet_manage.creating_key'), 'running');
   try {
@@ -2296,6 +2298,7 @@ async function revokeApiKey(name) {
     const data = await resp.json();
     if (!resp.ok) throw new Error(fleetManageError(data.error, t('fleet_manage.revoke_failed')));
     renderApiKeys(data);
+    if (fleetManageModal?._createdKey?.name === name) renderCreatedApiKey(null);
     fleetManageStatus(t('fleet_manage.key_revoked_status'), 'success');
   } catch (err) {
     fleetManageStatus(err.message, 'error');

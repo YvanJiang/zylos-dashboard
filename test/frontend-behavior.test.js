@@ -710,6 +710,9 @@ test('fleet management entry is local-only and modal is extensible for future ma
   assert.match(app, /function setApiKeyBusy\(isBusy\)/);
   assert.match(app, /function renderCreatedApiKey\(createdKey\)/);
   assert.match(app, /renderCreatedApiKey\(draft\.createdKey \|\| null\);/);
+  assert.match(app, /replace_created_key_confirm/);
+  assert.match(app, /if \(pendingKeyName && !window\.confirm/);
+  assert.match(app, /if \(fleetManageModal\?\._createdKey\?\.name === name\) renderCreatedApiKey\(null\);/);
   assert.match(app, /navigator\.clipboard\?\.writeText/);
   assert.match(app, /navigator\.clipboard\.writeText\(key\)/);
   assert.match(app, /id="api-key-admin-warning" hidden/);
@@ -732,6 +735,7 @@ test('fleet management entry is local-only and modal is extensible for future ma
     assert.equal(typeof pack['fleet_manage.tab_fleet'], 'string');
     assert.equal(typeof pack['fleet_manage.tab_keys'], 'string');
     assert.equal(typeof pack['fleet_manage.key_created_once'], 'string');
+    assert.equal(typeof pack['fleet_manage.replace_created_key_confirm'], 'string');
     assert.equal(typeof pack['fleet_manage.admin_key_warning'], 'string');
     assert.equal(typeof pack['fleet_manage.reserved_name'], 'string');
     assert.equal(typeof pack['fleet_manage.auth_failed'], 'string');
