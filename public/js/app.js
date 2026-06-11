@@ -47,6 +47,7 @@ const state = {
   lastCpuPct: null,
   multiAgent: false,
   fleetViewActive: false,
+  fleetModeInitialized: false,
   remoteAgent: null
 };
 
@@ -1022,11 +1023,12 @@ function setFleet(payload) {
   // while hover-pause defers rendering. Re-applying a pending payload after
   // mouseleave is a no-op here (the mood map is already up to date).
   fleetSounds?.handleFleet(payload);
-  if (state.fleetHoverPaused) {
+  state.fleet = payload;
+  const modeChanged = state.fleetModeInitialized ? syncLiveFleetMode(payload) : false;
+  if (state.fleetHoverPaused && !modeChanged) {
     state.pendingFleet = payload;
     return;
   }
-  state.fleet = payload;
   renderFleet();
 }
 
@@ -1464,11 +1466,32 @@ function initTabs() {
 // ─── Fleet mode init ───
 // Decide landing view based on fleet size. The self record is always present,
 // so length >= 2 means at least one external agent is configured.
+function hasFleetWall(fleet) {
+  return !REMOTE_AGENT && (fleet?.agents?.length || 0) >= 2;
+}
+
+function syncLiveFleetMode(fleet) {
+  const nextMultiAgent = hasFleetWall(fleet);
+  if (nextMultiAgent === state.multiAgent) return false;
+  state.multiAgent = nextMultiAgent;
+  const backBtn = $('#back-to-fleet');
+  if (nextMultiAgent) {
+    if (backBtn) backBtn.hidden = false;
+    showFleetView({ animate: !prefersReducedMotion() });
+  } else {
+    if (backBtn) backBtn.hidden = !REMOTE_AGENT;
+    if (state.remoteAgent) exitRemoteAgent({ push: true });
+    else showAgentDetail({ animate: !prefersReducedMotion() });
+  }
+  syncFleetSubscription();
+  return true;
+}
+
 function applyFleetMode(fleet) {
   // Remote context: always the agent-detail view (the remote's own fleet
   // size is irrelevant here), with the back control returning to the wall
   // the viewer drilled down from.
-  state.multiAgent = !REMOTE_AGENT && (fleet?.agents?.length || 0) >= 2;
+  state.multiAgent = hasFleetWall(fleet);
   const backBtn = $('#back-to-fleet');
   const fleetView = $('#fleet-view');
   const agentDetail = $('#agent-detail');
@@ -1480,6 +1503,7 @@ function applyFleetMode(fleet) {
     if (fleetView) fleetView.hidden = true;
     if (agentDetail) agentDetail.hidden = false;
     syncFleetSubscription();
+    state.fleetModeInitialized = true;
     return;
   }
   // Multi-agent mode: Agent Fleet is the landing view. The first paint shows
@@ -1496,6 +1520,7 @@ function applyFleetMode(fleet) {
   } else {
     setTimeout(() => showFleetView({ animate: true }), 380);
   }
+  state.fleetModeInitialized = true;
 }
 
 // Clear all per-agent data and incremental DOM so two agents' panels never

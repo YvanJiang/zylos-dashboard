@@ -124,21 +124,20 @@ export function createFleetSounds({ button, labels, mediaDevices, doc } = {}) {
     }).catch(() => {});
   }
 
-  // Volume tuned with Howard on external speakers: 0.06 -> 0.18 -> 0.54.
-  // A single sine still has headroom; only a rare simultaneous start+finish
-  // pair could brush the ceiling, and then only for the ~20ms attack overlap.
-  function tone(ctx, { from, to, at, duration, peak = 0.54 }) {
+  // Short triangle tones read brighter and crisper than the previous longer
+  // sine blips without increasing peak loudness.
+  function tone(ctx, { from, to, at, duration, peak = 0.36 }) {
     const osc = ctx.createOscillator();
     const gain = ctx.createGain();
-    osc.type = 'sine';
+    osc.type = 'triangle';
     osc.frequency.setValueAtTime(from, at);
     osc.frequency.exponentialRampToValueAtTime(to, at + duration);
     gain.gain.setValueAtTime(0.0001, at);
-    gain.gain.exponentialRampToValueAtTime(peak, at + 0.02);
+    gain.gain.exponentialRampToValueAtTime(peak, at + 0.008);
     gain.gain.exponentialRampToValueAtTime(0.0001, at + duration);
     osc.connect(gain).connect(ctx.destination);
     osc.start(at);
-    osc.stop(at + duration + 0.05);
+    osc.stop(at + duration + 0.03);
   }
 
   // Cues scheduled at exactly currentTime start mid-render-quantum, so a
@@ -149,19 +148,22 @@ export function createFleetSounds({ button, labels, mediaDevices, doc } = {}) {
   // threshold where a cue would feel detached from the event.
   const SCHEDULE_LEAD = 0.08;
 
-  // Start: short rising blip. Finish: two-note falling chime. Distinct shapes
+  // Start: two short rising notes. Finish: three short falling notes. Distinct shapes
   // so they're tellable apart without looking at the wall.
   function playStart() {
     playWhenRunning((ctx) => {
-      tone(ctx, { from: 587, to: 880, at: ctx.currentTime + SCHEDULE_LEAD, duration: 0.16 });
+      const at = ctx.currentTime + SCHEDULE_LEAD;
+      tone(ctx, { from: 660, to: 880, at, duration: 0.09 });
+      tone(ctx, { from: 784, to: 1175, at: at + 0.09, duration: 0.09 });
     });
   }
 
   function playFinish() {
     playWhenRunning((ctx) => {
       const at = ctx.currentTime + SCHEDULE_LEAD;
-      tone(ctx, { from: 880, to: 660, at, duration: 0.14 });
-      tone(ctx, { from: 660, to: 440, at: at + 0.16, duration: 0.2 });
+      tone(ctx, { from: 1175, to: 880, at, duration: 0.08 });
+      tone(ctx, { from: 880, to: 659, at: at + 0.08, duration: 0.08 });
+      tone(ctx, { from: 659, to: 494, at: at + 0.16, duration: 0.1 });
     });
   }
 
