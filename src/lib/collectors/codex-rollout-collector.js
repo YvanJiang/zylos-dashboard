@@ -74,10 +74,19 @@ export class CodexRolloutCollector {
         metrics_written: backfilled,
         last_checked: now
       });
+      this.store.upsertSourceHealth('jsonl_usage', 'runtime_progress', 'healthy', {
+        transcript_path: mapping.transcript_path,
+        session_id: mapping.session_id,
+        byte_offset: offset,
+        metrics_written: backfilled,
+        last_success: now
+      });
       return backfilled;
     }
 
-    const length = stat.size - offset;
+    const maxBytes = Math.max(4096, Number(this.config.codexRolloutMaxBytesPerCollect) || 256 * 1024);
+    const maxLines = Math.max(1, Number(this.config.codexRolloutMaxLinesPerCollect) || 200);
+    const length = Math.min(stat.size - offset, maxBytes);
     const buf = Buffer.alloc(length);
     const fd = fs.openSync(mapping.transcript_path, 'r');
     try {
@@ -100,17 +109,23 @@ export class CodexRolloutCollector {
     }
 
     const complete = chunk.slice(0, lastNewline + 1);
-    const nextOffset = offset + Buffer.byteLength(complete, 'utf8');
 
     let written = 0;
     let currentOffset = offset;
     let lineIndex = 0;
-    for (const rawLine of complete.split('\n')) {
+    let processedLines = 0;
+    const rawLines = complete.split('\n');
+    for (const rawLine of rawLines.slice(0, -1)) {
       const line = rawLine.trim();
       const lineOffset = currentOffset;
       currentOffset += Buffer.byteLength(`${rawLine}\n`, 'utf8');
       lineIndex++;
       if (!line) continue;
+      if (processedLines >= maxLines) {
+        currentOffset = lineOffset;
+        break;
+      }
+      processedLines++;
       let event;
       try {
         event = JSON.parse(line);
@@ -125,14 +140,21 @@ export class CodexRolloutCollector {
 
     this.store.upsertCodexRolloutCursor?.({
       transcriptPath: mapping.transcript_path,
-      byteOffset: nextOffset,
+      byteOffset: currentOffset,
       sessionId: mapping.session_id
     });
 
     this.store.upsertSourceHealth('codex_rollout', 'collector_liveness', 'healthy', {
       transcript_path: mapping.transcript_path,
       session_id: mapping.session_id,
-      byte_offset: nextOffset,
+      byte_offset: currentOffset,
+      metrics_written: written,
+      last_success: now
+    });
+    this.store.upsertSourceHealth('jsonl_usage', 'runtime_progress', 'healthy', {
+      transcript_path: mapping.transcript_path,
+      session_id: mapping.session_id,
+      byte_offset: currentOffset,
       metrics_written: written,
       last_success: now
     });
@@ -142,7 +164,6 @@ export class CodexRolloutCollector {
 
   start(intervalMs = 5_000) {
     this.stop();
-    this.collect();
     this._timer = setInterval(() => this.collect(), intervalMs);
     this._timer.unref();
   }
