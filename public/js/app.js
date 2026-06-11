@@ -1989,6 +1989,11 @@ function fleetManageStatus(message, kind = '') {
   status.hidden = !message;
 }
 
+function setFleetAddBusy(isBusy) {
+  fleetManageModal?.querySelector('#fleet-test')?.toggleAttribute('disabled', isBusy);
+  fleetManageModal?.querySelector('#fleet-add-save')?.toggleAttribute('disabled', isBusy);
+}
+
 function fleetFormValues() {
   return {
     name: fleetManageModal.querySelector('#fleet-add-name').value.trim(),
@@ -2004,9 +2009,9 @@ function fleetManageError(code, fallback) {
   return translated === key ? (fallback || code) : translated;
 }
 
-function renderFleetManage(data) {
+function renderFleetManage(data, draft = null) {
   const selfInput = fleetManageModal.querySelector('#fleet-self-name');
-  selfInput.value = data?.self?.name || viewedAgentName();
+  if (!draft) selfInput.value = data?.self?.name || viewedAgentName();
   const list = fleetManageModal.querySelector('#fleet-agent-list');
   const agents = data?.agents || [];
   if (!agents.length) {
@@ -2043,7 +2048,7 @@ async function openFleetManageModal(draft = null) {
     const resp = await fetch(api('/api/fleet/agents'), { cache: 'no-store' });
     const data = await resp.json();
     if (!resp.ok) throw new Error(data.error || t('fleet_manage.load_failed'));
-    renderFleetManage(data);
+    renderFleetManage(data, draft);
     fleetManageStatus('', '');
   } catch (err) {
     fleetManageStatus(err.message, 'error');
@@ -2056,6 +2061,7 @@ function closeFleetManageModal() {
 
 async function testFleetAgent() {
   const body = fleetFormValues();
+  setFleetAddBusy(true);
   fleetManageStatus(t('fleet_manage.testing'), 'running');
   try {
     const resp = await fetch(api('/api/fleet/agents/test'), {
@@ -2072,11 +2078,14 @@ async function testFleetAgent() {
     }
   } catch (err) {
     fleetManageStatus(err.message, 'error');
+  } finally {
+    setFleetAddBusy(false);
   }
 }
 
 async function saveFleetAgent() {
   const body = fleetFormValues();
+  setFleetAddBusy(true);
   fleetManageStatus(t('fleet_manage.saving'), 'running');
   try {
     const resp = await fetch(api('/api/fleet/agents'), {
@@ -2094,6 +2103,8 @@ async function saveFleetAgent() {
     await refreshFleet();
   } catch (err) {
     fleetManageStatus(err.message, 'error');
+  } finally {
+    setFleetAddBusy(false);
   }
 }
 

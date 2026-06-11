@@ -542,6 +542,11 @@ async function handleFleetAgents(req, res) {
   const agent = { name, base_url: baseUrl, read_api_key: readApiKey };
   try {
     const probe = await probeFleetAgent(baseUrl, readApiKey);
+    const postProbeNameError = validateAgentName(name);
+    if (postProbeNameError) {
+      sendJson(res, 400, { error: postProbeNameError });
+      return;
+    }
     persistFleetConfig(({ fleet }) => {
       fleet.agents.push(agent);
     });

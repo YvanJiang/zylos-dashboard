@@ -106,6 +106,47 @@ test('fleet poller captures token exchange scope as agent access', async () => {
   assert.equal(poller.getFleet().agents[0].access, 'admin');
 });
 
+test('fleet poller does not cache stale tokens after same-name remove and re-add', async () => {
+  const tokenRequests = [];
+  const fetchImpl = async (url) => {
+    if (url.endsWith('/api/auth/token')) {
+      return new Promise(resolve => tokenRequests.push(resolve));
+    }
+    return jsonResponse({ state: 'IDLE' });
+  };
+
+  const poller = new FleetPoller(makeConfig([
+    { name: 'Remote', base_url: 'https://remote.example.test', read_api_key: 'zylos_ak_admin' }
+  ]), { fetch: fetchImpl, now: () => 0 });
+
+  const staleExchange = poller.getSessionToken('Remote');
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.equal(tokenRequests.length, 1);
+
+  poller.removeAgent('Remote');
+  const currentAgent = { name: 'Remote', base_url: 'https://remote.example.test', read_api_key: 'zylos_ak_read' };
+  poller.agents.push(currentAgent);
+  poller.agentGenerations.set('Remote', (poller.agentGenerations.get('Remote') || 0) + 1);
+  tokenRequests[0](jsonResponse({
+    token: 'zylos_st_admin',
+    expires_at: new Date(120000).toISOString(),
+    scope: 'admin'
+  }));
+  assert.equal(await staleExchange, 'zylos_st_admin');
+  assert.equal(poller.getAgentAccess('Remote'), 'read');
+
+  const currentExchange = poller.getSessionToken('Remote');
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.equal(tokenRequests.length, 2);
+  tokenRequests[1](jsonResponse({
+    token: 'zylos_st_read',
+    expires_at: new Date(120000).toISOString(),
+    scope: 'read'
+  }));
+  assert.equal(await currentExchange, 'zylos_st_read');
+  assert.equal(poller.getAgentAccess('Remote'), 'read');
+});
+
 test('fleet poller treats missing or unknown scope as read access', async () => {
   const fetchImpl = async (url) => {
     if (url.endsWith('/api/auth/token')) {

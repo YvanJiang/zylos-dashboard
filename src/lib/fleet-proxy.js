@@ -64,6 +64,18 @@ function isLocalOnlyEndpoint(suffix) {
     suffix === '/api/agent/name';
 }
 
+function normalizeProxySuffix(suffix) {
+  const value = String(suffix || '/');
+  if (/%2f/i.test(value)) return null;
+  try {
+    const decoded = decodeURIComponent(value);
+    const normalized = path.posix.normalize(decoded);
+    return normalized.startsWith('/') ? normalized : `/${normalized}`;
+  } catch {
+    return null;
+  }
+}
+
 async function readBodyBuffer(req, maxBytes = MAX_WRITE_BODY_BYTES) {
   const chunks = [];
   let total = 0;
@@ -158,6 +170,12 @@ export class FleetProxy {
       return true;
     }
 
+    const normalizedSuffix = normalizeProxySuffix(suffix);
+    if (!normalizedSuffix || isLocalOnlyEndpoint(normalizedSuffix)) {
+      sendJson(res, 403, { error: 'local_endpoint_not_proxyable' });
+      return true;
+    }
+
     if (suffix === '/api/stream' || suffix.startsWith('/api/')) {
       await this.proxyApi(req, res, agent, suffix, url.search);
       return true;
@@ -204,11 +222,6 @@ export class FleetProxy {
   }
 
   async proxyApi(req, res, agent, suffix, search) {
-    if (isLocalOnlyEndpoint(suffix)) {
-      sendJson(res, 403, { error: 'local_endpoint_not_proxyable' });
-      return;
-    }
-
     if (!['GET', 'HEAD'].includes(req.method) && !isAllowedProxyWrite(req.method, suffix)) {
       sendJson(res, 403, { error: 'read_only_proxy' });
       return;

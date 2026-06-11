@@ -466,6 +466,7 @@ export class FleetPoller {
   }
 
   async _ensureToken(agent, { force = false } = {}) {
+    const generation = this._agentGeneration(agent);
     const cached = this.tokens.get(agent.name);
     const now = this.now();
     if (!force && cached?.token && cached.expiresAtMs - TOKEN_REFRESH_SKEW_MS > now) {
@@ -508,6 +509,7 @@ export class FleetPoller {
       ? parsedExpiresAtMs
       : now + toNumber(body.ttl_seconds, 86400) * 1000;
     const scope = body.scope === 'admin' ? 'admin' : 'read';
+    if (!this._isCurrentAgent(agent, generation)) return body.token;
     this.tokens.set(agent.name, { token: body.token, expiresAtMs, scope });
     return body.token;
   }

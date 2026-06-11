@@ -408,7 +408,10 @@ test('fleet proxy fail-closes consumer-local fleet management endpoints without 
       [`${hub.origin}/fleet/Remote/api/fleet/agents`, { method: 'GET' }],
       [`${hub.origin}/fleet/Remote/api/fleet/agents`, { method: 'POST', body: '{}' }],
       [`${hub.origin}/fleet/Remote/api/fleet/agents/test`, { method: 'POST', body: '{}' }],
-      [`${hub.origin}/fleet/Remote/api/agent/name`, { method: 'PUT', body: '{}' }]
+      [`${hub.origin}/fleet/Remote/api/agent/name`, { method: 'PUT', body: '{}' }],
+      [`${hub.origin}/fleet/Remote/api/fleet/agents%2Ftest`, { method: 'POST', body: '{}' }],
+      [`${hub.origin}/fleet/Remote/api/fleet%2Fagents`, { method: 'GET' }],
+      [`${hub.origin}/fleet/Remote/api%2Fagent%2Fname`, { method: 'PUT', body: '{}' }]
     ];
     for (const [url, init] of cases) {
       const resp = await fetch(url, init);

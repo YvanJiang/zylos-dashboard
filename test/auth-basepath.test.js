@@ -635,6 +635,64 @@ test('fleet management API is admin-gated, masks keys, persists atomically, and 
   }
 });
 
+test('fleet management add rechecks duplicate names after slow probe', async () => {
+  let tokenHits = 0;
+  const remote = await listen((req, res) => {
+    if (req.url === '/api/auth/token') {
+      tokenHits += 1;
+      setTimeout(() => {
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({
+          token: `zylos_st_remote_read_${tokenHits}`,
+          expires_at: new Date(Date.now() + 3600_000).toISOString(),
+          scope: 'read'
+        }));
+      }, 75);
+      return;
+    }
+    if (req.url === '/api/state') {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ state: 'IDLE', runtime_info: { zylos_version: '0.3.0' } }));
+      return;
+    }
+    res.writeHead(404, { 'content-type': 'application/json' });
+    res.end('{}');
+  });
+  const zylosDir = fs.mkdtempSync(path.join(os.tmpdir(), 'zylos-dashboard-test-'));
+  writeConfig(zylosDir, 'secret', { auth: { enabled: false } });
+
+  const { origin, server } = await makeServerWithDir(zylosDir);
+  try {
+    const request = () => fetch(`${origin}/api/fleet/agents`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name: 'Remote',
+        base_url: remote.origin,
+        read_api_key: 'zylos_ak_supersecret1234'
+      })
+    });
+
+    const responses = await Promise.all([request(), request()]);
+    const statuses = responses.map(resp => resp.status).sort();
+    assert.deepEqual(statuses, [200, 400]);
+
+    const bodies = await Promise.all(responses.map(resp => resp.json()));
+    assert.equal(bodies.some(body => body.ok === true && body.agent?.name === 'Remote'), true);
+    assert.equal(bodies.some(body => body.error === 'duplicate_name'), true);
+
+    const saved = JSON.parse(fs.readFileSync(path.join(zylosDir, 'components', 'dashboard', 'config.json'), 'utf8'));
+    assert.equal(saved.fleet.agents.filter(agent => agent.name === 'Remote').length, 1);
+
+    const del = await fetch(`${origin}/api/fleet/agents/Remote`, { method: 'DELETE' });
+    assert.equal(del.status, 200);
+  } finally {
+    await closeServer(server);
+    await remote.close();
+    fs.rmSync(zylosDir, { recursive: true, force: true });
+  }
+});
+
 test('fleet test-connection API reports auth failures and reachable read scope without persisting secrets', async () => {
   const remote = await listen((req, res) => {
     if (req.url === '/api/auth/token') {

@@ -697,6 +697,12 @@ test('fleet management entry is local-only and modal is extensible for future ma
   assert.match(app, /fleetManageStatus\(fleetManageError\(data\.error \|\| 'unreachable'/);
   assert.match(app, /readKey: fleetManageModal\.querySelector\('#fleet-add-key'\)\?\.value \|\| ''/);
   assert.match(app, /if \(wasOpen\) openFleetManageModal\(draft\);/);
+  assert.match(app, /function renderFleetManage\(data, draft = null\)/);
+  assert.match(app, /if \(!draft\) selfInput\.value = data\?\.self\?\.name \|\| viewedAgentName\(\);/);
+  assert.match(app, /renderFleetManage\(data, draft\);/);
+  assert.match(app, /function setFleetAddBusy\(isBusy\)/);
+  assert.match(app, /fleetManageModal\?\.querySelector\('#fleet-test'\)\?\.toggleAttribute\('disabled', isBusy\);/);
+  assert.match(app, /finally \{\s*setFleetAddBusy\(false\);\s*\}/);
 
   assert.match(app, /class="modal-tabs" role="tablist"/);
   assert.match(app, /class="manage-section"/);
