@@ -61,7 +61,9 @@ function isAllowedProxyWrite(method, suffix) {
 function isLocalOnlyEndpoint(suffix) {
   return suffix === '/api/fleet/agents' ||
     suffix.startsWith('/api/fleet/agents/') ||
-    suffix === '/api/agent/name';
+    suffix === '/api/agent/name' ||
+    suffix === '/api/keys' ||
+    suffix.startsWith('/api/keys/');
 }
 
 function normalizeProxySuffix(suffix) {

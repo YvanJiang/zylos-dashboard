@@ -682,7 +682,7 @@ test('fleet management entry is local-only and modal is extensible for future ma
 
   assert.match(index, /id="fleet-manage-btn"/);
   assert.match(index, /data-i18n-title="fleet_manage\.open"/);
-  assert.match(index, /app\.js\?v=42/);
+  assert.match(index, /app\.js\?v=43/);
   assert.match(app, /function initFleetManageButton\(\)[\s\S]*btn\.hidden = !!REMOTE_AGENT/);
   assert.match(app, /if \(e\.target\.closest\('#fleet-manage-btn'\)\) \{ e\.preventDefault\(\); openFleetManageModal\(\); return; \}/);
 
@@ -691,31 +691,56 @@ test('fleet management entry is local-only and modal is extensible for future ma
   assert.match(app, /fetch\(api\('\/api\/fleet\/agents'\), \{ cache: 'no-store' \}\)/);
   assert.match(app, /fetch\(api\('\/api\/fleet\/agents\/test'\), \{/);
   assert.match(app, /fetch\(api\('\/api\/agent\/name'\), \{/);
+  assert.match(app, /fetch\(api\('\/api\/keys'\), \{ cache: 'no-store' \}\)/);
+  assert.match(app, /fetch\(api\('\/api\/keys'\), \{/);
+  assert.match(app, /fetch\(api\(`\/api\/keys\/\$\{encodeURIComponent\(name\)\}`\), \{ method: 'DELETE' \}\)/);
   assert.doesNotMatch(app, /agentPath\('\/api\/fleet\/agents/);
   assert.doesNotMatch(app, /agentPath\('\/api\/agent\/name/);
+  assert.doesNotMatch(app, /agentPath\('\/api\/keys/);
   assert.match(app, /function fleetManageError\(code, fallback\)/);
   assert.match(app, /fleetManageStatus\(fleetManageError\(data\.error \|\| 'unreachable'/);
   assert.match(app, /readKey: fleetManageModal\.querySelector\('#fleet-add-key'\)\?\.value \|\| ''/);
+  assert.match(app, /createdKey: fleetManageModal\._createdKey \|\| null/);
   assert.match(app, /if \(wasOpen\) openFleetManageModal\(draft\);/);
   assert.match(app, /function renderFleetManage\(data, draft = null\)/);
   assert.match(app, /if \(!draft\) selfInput\.value = data\?\.self\?\.name \|\| viewedAgentName\(\);/);
   assert.match(app, /renderFleetManage\(data, draft\);/);
   assert.match(app, /function setFleetAddBusy\(isBusy\)/);
   assert.match(app, /fleetManageModal\?\.querySelector\('#fleet-test'\)\?\.toggleAttribute\('disabled', isBusy\);/);
+  assert.match(app, /function setApiKeyBusy\(isBusy\)/);
+  assert.match(app, /function renderCreatedApiKey\(createdKey\)/);
+  assert.match(app, /renderCreatedApiKey\(draft\.createdKey \|\| null\);/);
+  assert.match(app, /replace_created_key_confirm/);
+  assert.match(app, /if \(pendingKeyName && !window\.confirm/);
+  assert.match(app, /if \(fleetManageModal\?\._createdKey\?\.name === name\) renderCreatedApiKey\(null\);/);
+  assert.match(app, /navigator\.clipboard\?\.writeText/);
+  assert.match(app, /navigator\.clipboard\.writeText\(key\)/);
+  assert.match(app, /id="api-key-admin-warning" hidden/);
   assert.match(app, /finally \{\s*setFleetAddBusy\(false\);\s*\}/);
 
   assert.match(app, /class="modal-tabs" role="tablist"/);
+  assert.match(app, /data-tab="keys"/);
+  assert.match(app, /data-panel="keys" hidden/);
   assert.match(app, /class="manage-section"/);
   assert.match(app, /id="fleet-add-key" type="password"/);
+  assert.match(app, /id="api-key-scope"/);
   assert.match(css, /\.manage-modal/);
   assert.match(css, /\.modal-tabs/);
+  assert.match(css, /\.fleet-help\[hidden\]\s*\{\s*display:\s*none;\s*\}/);
+  assert.match(css, /\.api-key-created/);
+  assert.match(css, /\.api-key-admin-warning/);
 
   for (const pack of [en, zh]) {
     assert.equal(typeof pack['fleet_manage.open'], 'string');
     assert.equal(typeof pack['fleet_manage.title'], 'string');
     assert.equal(typeof pack['fleet_manage.tab_fleet'], 'string');
+    assert.equal(typeof pack['fleet_manage.tab_keys'], 'string');
+    assert.equal(typeof pack['fleet_manage.key_created_once'], 'string');
+    assert.equal(typeof pack['fleet_manage.replace_created_key_confirm'], 'string');
+    assert.equal(typeof pack['fleet_manage.admin_key_warning'], 'string');
     assert.equal(typeof pack['fleet_manage.reserved_name'], 'string');
     assert.equal(typeof pack['fleet_manage.auth_failed'], 'string');
+    assert.equal(typeof pack['fleet_manage.invalid_scope'], 'string');
   }
 });
 

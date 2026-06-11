@@ -2164,7 +2164,7 @@ main { padding: var(--space-md) var(--space-lg) var(--space-xl); }
   color: var(--text-muted);
   font-size: 12px;
   font-weight: 600;
-  cursor: default;
+  cursor: pointer;
 }
 .modal-tab.active {
   color: var(--accent);
@@ -2180,6 +2180,7 @@ main { padding: var(--space-md) var(--space-lg) var(--space-xl); }
   padding-bottom: 0;
   border-bottom: none;
 }
+.manage-panel[hidden] { display: none; }
 .fleet-self-row {
   display: flex;
   gap: var(--space-sm);
@@ -2192,6 +2193,7 @@ main { padding: var(--space-md) var(--space-lg) var(--space-xl); }
   color: var(--text-muted);
   font-size: 11px;
 }
+.fleet-help[hidden] { display: none; }
 .fleet-agent-list {
   display: grid;
   gap: var(--space-sm);
@@ -2232,6 +2234,34 @@ main { padding: var(--space-md) var(--space-lg) var(--space-xl); }
 }
 .fleet-agent-remove {
   flex: 0 0 auto;
+}
+.api-key-row.revoked {
+  opacity: 0.62;
+}
+.api-key-created {
+  display: grid;
+  gap: var(--space-xs);
+  margin: var(--space-sm) 0;
+  padding: var(--space-sm);
+  border: 1px solid var(--border-focus);
+  border-radius: var(--radius-sm);
+  background: var(--bg-secondary);
+}
+.api-key-created[hidden] { display: none; }
+.api-key-copy-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+}
+.api-key-copy-row .api-key-plaintext {
+  min-width: 0;
+  font-family: var(--font-mono);
+}
+.api-key-copy-row .action-btn {
+  flex: 0 0 auto;
+}
+.api-key-admin-warning {
+  color: var(--state-possibly-stuck);
 }
 
 .action-group {
