@@ -57,7 +57,17 @@ const state = {
     mode: 'rendered',
     collapsed: new Set(),
     loading: false,
-    error: null
+    error: null,
+    editing: false,
+    draft: '',
+    draftNotice: false,
+    dirty: false,
+    saving: false,
+    conflict: null,
+    conflictRetryText: '',
+    liveNotice: null,
+    draftTimer: null,
+    liveCheckTimer: null
   }
 };
 
@@ -1141,7 +1151,17 @@ async function fetchJson(path) {
 }
 
 async function fetchAgentJson(path) {
-  const r = await fetch(api(agentPath(path)), { cache: 'no-store' });
+  return requestAgentJson(path, { cache: 'no-store' });
+}
+
+async function requestAgentJson(path, options = {}) {
+  const r = await fetch(api(agentPath(path)), {
+    cache: 'no-store',
+    ...options,
+    headers: {
+      ...(options.headers || {})
+    }
+  });
   if (r.status === 401) {
     window.location.href = api('/login');
     throw new Error('unauthorized');
@@ -1152,12 +1172,15 @@ async function fetchAgentJson(path) {
     const err = new Error(payload.error || `${path} ${r.status}`);
     err.status = r.status;
     err.code = payload.error || null;
+    err.current = payload.current || null;
     throw err;
   }
   return r.json();
 }
 
 function resetMemoryState() {
+  if (state.memory?.draftTimer) clearTimeout(state.memory.draftTimer);
+  stopMemoryLiveCheck();
   state.memory = {
     tree: null,
     selectedPath: null,
@@ -1166,7 +1189,17 @@ function resetMemoryState() {
     mode: 'rendered',
     collapsed: new Set(),
     loading: false,
-    error: null
+    error: null,
+    editing: false,
+    draft: '',
+    draftNotice: false,
+    dirty: false,
+    saving: false,
+    conflict: null,
+    conflictRetryText: '',
+    liveNotice: null,
+    draftTimer: null,
+    liveCheckTimer: null
   };
 }
 
@@ -1184,7 +1217,94 @@ function memoryStatusMessage(code) {
   if (code === 'unsupported_memory_file') return t('memory.error_unsupported');
   if (code === 'invalid_memory_path') return t('memory.error_invalid_path');
   if (code === 'memory_file_not_found') return t('memory.error_not_found');
+  if (code === 'memory_conflict') return t('memory.error_conflict');
+  if (code === 'memory_conflict_latest_failed') return t('memory.error_conflict_latest_failed');
+  if (code === 'invalid_memory_write') return t('memory.error_invalid_write');
   return t('memory.error_generic');
+}
+
+function memoryAgentKey() {
+  return state.remoteAgent || REMOTE_AGENT || 'local';
+}
+
+function memoryDraftKey(filePath = state.memory.selectedPath) {
+  if (!filePath) return null;
+  return `zylos.memoryDraft.${memoryAgentKey()}.${filePath}`;
+}
+
+function saveMemoryDraft() {
+  const key = memoryDraftKey();
+  if (!key) return;
+  try {
+    if (state.memory.dirty) localStorage.setItem(key, state.memory.draft || '');
+    else localStorage.removeItem(key);
+  } catch {
+    // Draft persistence is best-effort.
+  }
+}
+
+function scheduleMemoryDraftSave() {
+  if (state.memory.draftTimer) clearTimeout(state.memory.draftTimer);
+  state.memory.draftTimer = setTimeout(() => {
+    state.memory.draftTimer = null;
+    saveMemoryDraft();
+  }, 500);
+}
+
+function flushMemoryDraftSave() {
+  if (state.memory?.draftTimer) {
+    clearTimeout(state.memory.draftTimer);
+    state.memory.draftTimer = null;
+    saveMemoryDraft();
+  }
+}
+
+function readMemoryDraft(filePath) {
+  const key = memoryDraftKey(filePath);
+  if (!key) return null;
+  try {
+    const value = localStorage.getItem(key);
+    return value == null ? null : value;
+  } catch {
+    return null;
+  }
+}
+
+function clearMemoryDraft(filePath = state.memory.selectedPath) {
+  if (state.memory?.draftTimer) {
+    clearTimeout(state.memory.draftTimer);
+    state.memory.draftTimer = null;
+  }
+  const key = memoryDraftKey(filePath);
+  if (!key) return;
+  try { localStorage.removeItem(key); } catch { /* best-effort */ }
+}
+
+function stopMemoryLiveCheck() {
+  if (state.memory?.liveCheckTimer) {
+    clearInterval(state.memory.liveCheckTimer);
+    state.memory.liveCheckTimer = null;
+  }
+}
+
+function startMemoryLiveCheck() {
+  stopMemoryLiveCheck();
+  if (!state.memory.editing || !state.memory.file || state.memory.conflict || remoteIsReadOnly()) return;
+  state.memory.liveCheckTimer = setInterval(() => {
+    checkMemoryLiveSha().catch(() => {});
+  }, 20_000);
+}
+
+async function checkMemoryLiveSha() {
+  const file = state.memory.file;
+  if (!state.memory.editing || !file?.path || state.memory.conflict || state.memory.saving || document.hidden) return;
+  const latest = await fetchAgentJson(`/api/memory/file?path=${encodeURIComponent(file.path)}`);
+  if (isCompleteMemoryFile(latest) && latest.sha256 !== file.sha256) {
+    state.memory.liveNotice = latest;
+    state.memory.conflict = buildMemoryConflict(latest, state.memory.draft, state.memory.draft);
+    stopMemoryLiveCheck();
+    renderMemory();
+  }
 }
 
 function flattenMemoryFiles(node, files = []) {
@@ -1265,6 +1385,100 @@ function renderMarkdown(text) {
   return md.render(source);
 }
 
+function isCompleteMemoryFile(value) {
+  return !!value &&
+    typeof value === 'object' &&
+    typeof value.path === 'string' &&
+    typeof value.sha256 === 'string' &&
+    typeof value.text === 'string';
+}
+
+function memoryLineDiff(a, b) {
+  const left = String(a || '').split('\n');
+  const right = String(b || '').split('\n');
+  const rows = [];
+  let prefix = 0;
+  while (prefix < left.length && prefix < right.length && left[prefix] === right[prefix]) {
+    rows.push({ type: 'same', text: left[prefix] });
+    prefix++;
+  }
+
+  let leftEnd = left.length - 1;
+  let rightEnd = right.length - 1;
+  const suffix = [];
+  while (leftEnd >= prefix && rightEnd >= prefix && left[leftEnd] === right[rightEnd]) {
+    suffix.unshift({ type: 'same', text: left[leftEnd] });
+    leftEnd--;
+    rightEnd--;
+  }
+
+  const leftMid = left.slice(prefix, leftEnd + 1);
+  const rightMid = right.slice(prefix, rightEnd + 1);
+  if (leftMid.length * rightMid.length > 1_000_000) {
+    if (leftMid.length || rightMid.length) {
+      rows.push({
+        type: 'summary',
+        text: t('memory.diff_degraded', { mine: leftMid.length, theirs: rightMid.length })
+      });
+      for (const line of leftMid.slice(0, 80)) rows.push({ type: 'mine', text: line });
+      for (const line of rightMid.slice(0, 80)) rows.push({ type: 'theirs', text: line });
+    }
+    return rows.concat(suffix);
+  }
+
+  const dp = Array.from({ length: leftMid.length + 1 }, () => Array(rightMid.length + 1).fill(0));
+  for (let i = leftMid.length - 1; i >= 0; i--) {
+    for (let j = rightMid.length - 1; j >= 0; j--) {
+      dp[i][j] = leftMid[i] === rightMid[j] ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1]);
+    }
+  }
+  let i = 0;
+  let j = 0;
+  while (i < leftMid.length || j < rightMid.length) {
+    if (i < leftMid.length && j < rightMid.length && leftMid[i] === rightMid[j]) {
+      rows.push({ type: 'same', text: leftMid[i] });
+      i++;
+      j++;
+    } else if (j < rightMid.length && (i >= leftMid.length || dp[i][j + 1] >= dp[i + 1][j])) {
+      rows.push({ type: 'theirs', text: rightMid[j++] });
+    } else if (i < leftMid.length) {
+      rows.push({ type: 'mine', text: leftMid[i++] });
+    }
+  }
+  return rows.concat(suffix);
+}
+
+function buildMemoryConflict(theirs, mine, manual = mine) {
+  return {
+    theirs,
+    mine: String(mine || ''),
+    manual: String(manual || ''),
+    diff: memoryLineDiff(mine, theirs?.text || '')
+  };
+}
+
+function renderMemoryConflict(conflict) {
+  if (!conflict) return '';
+  const diff = conflict.diff || [];
+  const truncated = diff.length > 240;
+  const rows = diff.slice(0, 240).map(row =>
+    `<div class="memory-diff-row ${row.type}"><span>${row.type === 'same' ? ' ' : row.type === 'mine' ? '-' : row.type === 'theirs' ? '+' : '!'}</span><code>${esc(row.text)}</code></div>`
+  ).join('');
+  const notice = truncated ? `<div class="memory-diff-note">${esc(t('memory.diff_truncated', { count: diff.length - 240 }))}</div>` : '';
+  return `<section class="memory-conflict" id="memory-conflict">
+    <div class="memory-conflict-head">
+      <strong>${esc(t('memory.conflict_title'))}</strong>
+      <span>${esc(t('memory.conflict_body'))}</span>
+    </div>
+    <div class="memory-conflict-actions">
+      <button class="memory-action" type="button" data-memory-conflict="mine">${esc(t('memory.use_mine'))}</button>
+      <button class="memory-action" type="button" data-memory-conflict="theirs">${esc(t('memory.take_theirs'))}</button>
+      <button class="memory-action primary" type="button" data-memory-conflict="manual">${esc(t('memory.manual_merge'))}</button>
+    </div>
+    <div class="memory-diff">${rows}${notice}</div>
+  </section>`;
+}
+
 function renderMemoryContent() {
   const content = $('#memory-content');
   if (!content) return;
@@ -1273,11 +1487,68 @@ function renderMemoryContent() {
     content.innerHTML = `<p class="empty-state">${esc(t('memory.empty'))}</p>`;
     return;
   }
-  if (state.memory.mode === 'raw' || !file.markdown) {
+  if (state.memory.editing) {
+    const conflict = renderMemoryConflict(state.memory.conflict);
+    const notice = state.memory.draftNotice
+      ? `<div class="memory-notice">${esc(t('memory.draft_restored'))} <button type="button" data-memory-discard-draft>${esc(t('memory.discard_draft'))}</button></div>`
+      : '';
+    const live = state.memory.liveNotice
+      ? `<div class="memory-notice warning">${esc(t('memory.live_changed'))}</div>`
+      : '';
+    const retry = state.memory.error === 'memory_conflict_latest_failed'
+      ? `<div class="memory-notice warning">${esc(t('memory.conflict_retry_body'))} <button type="button" data-memory-retry-conflict>${esc(t('memory.retry'))}</button></div>`
+      : '';
+    content.innerHTML = `${notice}${live}${retry}${conflict}<textarea class="memory-editor" id="memory-editor" spellcheck="false">${esc(state.memory.draft)}</textarea>`;
+    const editor = $('#memory-editor');
+    editor?.addEventListener('input', () => {
+      state.memory.draft = editor.value;
+      state.memory.dirty = state.memory.file ? state.memory.draft !== state.memory.file.text : true;
+      state.memory.draftNotice = false;
+      scheduleMemoryDraftSave();
+      renderMemoryActions();
+    });
+    content.querySelector('[data-memory-discard-draft]')?.addEventListener('click', () => {
+      clearMemoryDraft();
+      state.memory.draft = state.memory.file?.text || '';
+      state.memory.dirty = false;
+      state.memory.draftNotice = false;
+      clearMemoryDraft();
+      renderMemory();
+    });
+    content.querySelector('[data-memory-retry-conflict]')?.addEventListener('click', () => {
+      saveMemoryDraftToServer({ text: state.memory.conflictRetryText || state.memory.draft }).catch(() => {});
+    });
+    content.querySelectorAll('[data-memory-conflict]').forEach((btn) => {
+      btn.addEventListener('click', () => resolveMemoryConflict(btn.dataset.memoryConflict).catch(() => {}));
+    });
+  } else if (state.memory.mode === 'raw' || !file.markdown) {
     content.innerHTML = `<pre class="memory-raw"><code>${esc(file.text)}</code></pre>`;
   } else {
     content.innerHTML = `<article class="memory-markdown">${renderMarkdown(file.text)}</article>`;
   }
+}
+
+function renderMemoryActions() {
+  const file = state.memory.file;
+  const editing = !!state.memory.editing;
+  const editBtn = $('#memory-edit-btn');
+  const saveBtn = $('#memory-save-btn');
+  const resetBtn = $('#memory-reset-btn');
+  if (editBtn) {
+    editBtn.hidden = editing || !file || remoteIsReadOnly();
+    editBtn.disabled = !file || state.memory.loading || state.memory.saving;
+  }
+  if (saveBtn) {
+    saveBtn.hidden = !editing;
+    saveBtn.disabled = state.memory.saving || !state.memory.dirty || !!state.memory.conflict;
+    saveBtn.textContent = state.memory.saving ? t('memory.saving') : t('memory.save');
+  }
+  if (resetBtn) {
+    resetBtn.hidden = !editing;
+    resetBtn.disabled = state.memory.saving;
+  }
+  $('#memory-rendered-btn')?.toggleAttribute('disabled', editing);
+  $('#memory-raw-btn')?.toggleAttribute('disabled', editing);
 }
 
 function renderMemory() {
@@ -1298,6 +1569,7 @@ function renderMemory() {
   }
   renderedBtn?.classList.toggle('active', state.memory.mode === 'rendered');
   rawBtn?.classList.toggle('active', state.memory.mode === 'raw');
+  renderMemoryActions();
 
   if (readOnly) {
     tree.innerHTML = '';
@@ -1306,6 +1578,7 @@ function renderMemory() {
     status.textContent = t('memory.remote_read_only');
     status.hidden = false;
     content.innerHTML = '';
+    renderMemoryActions();
     return;
   }
 
@@ -1359,6 +1632,7 @@ function renderMemory() {
     meta.textContent = parts.join(' · ');
   }
   renderMemoryContent();
+  renderMemoryActions();
 }
 
 async function loadMemoryTree({ force = false } = {}) {
@@ -1387,11 +1661,20 @@ async function loadMemoryTree({ force = false } = {}) {
 
 async function openMemoryFile(filePath) {
   if (!filePath || remoteIsReadOnly()) return;
+  flushMemoryDraftSave();
+  stopMemoryLiveCheck();
   state.memory.selectedPath = filePath;
   state.memory.file = null;
   state.memory.git = null;
   state.memory.loading = true;
   state.memory.error = null;
+  state.memory.editing = false;
+  state.memory.draft = '';
+  state.memory.draftNotice = false;
+  state.memory.dirty = false;
+  state.memory.conflict = null;
+  state.memory.conflictRetryText = '';
+  state.memory.liveNotice = null;
   renderMemory();
   try {
     const encoded = encodeURIComponent(filePath);
@@ -1402,12 +1685,113 @@ async function openMemoryFile(filePath) {
     state.memory.file = file;
     state.memory.git = git;
     state.memory.error = null;
+    const draft = readMemoryDraft(file.path);
+    if (draft != null && draft !== file.text) {
+      state.memory.editing = true;
+      state.memory.draft = draft;
+      state.memory.draftNotice = true;
+      state.memory.dirty = true;
+      startMemoryLiveCheck();
+    } else if (draft != null) {
+      clearMemoryDraft(file.path);
+    }
   } catch (err) {
     state.memory.error = err.code || 'memory_browser_failed';
   } finally {
     state.memory.loading = false;
     renderMemory();
   }
+}
+
+function startMemoryEdit() {
+  if (!state.memory.file || remoteIsReadOnly()) return;
+  state.memory.editing = true;
+  state.memory.draft = state.memory.draft || state.memory.file.text || '';
+  state.memory.dirty = state.memory.draft !== state.memory.file.text;
+  state.memory.conflict = null;
+  state.memory.liveNotice = null;
+  startMemoryLiveCheck();
+  renderMemory();
+}
+
+function resetMemoryEdit() {
+  if (!state.memory.file) return;
+  state.memory.editing = false;
+  state.memory.draft = '';
+  state.memory.draftNotice = false;
+  state.memory.dirty = false;
+  state.memory.conflict = null;
+  state.memory.conflictRetryText = '';
+  state.memory.liveNotice = null;
+  clearMemoryDraft();
+  stopMemoryLiveCheck();
+  renderMemory();
+}
+
+async function saveMemoryDraftToServer({ text = state.memory.draft, sha256 = state.memory.file?.sha256 } = {}) {
+  const file = state.memory.file;
+  if (!file?.path || !sha256) return;
+  flushMemoryDraftSave();
+  state.memory.saving = true;
+  state.memory.error = null;
+  renderMemoryActions();
+  try {
+    const saved = await requestAgentJson(`/api/memory/file?path=${encodeURIComponent(file.path)}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text, sha256 })
+    });
+    state.memory.file = saved;
+    state.memory.draft = saved.text;
+    state.memory.dirty = false;
+    state.memory.editing = false;
+    state.memory.conflict = null;
+    state.memory.conflictRetryText = '';
+    state.memory.liveNotice = null;
+    clearMemoryDraft(saved.path);
+    state.memory.git = await fetchAgentJson(`/api/memory/git?path=${encodeURIComponent(saved.path)}`).catch(() => ({ commit: null }));
+    await loadMemoryTree({ force: true });
+  } catch (err) {
+    if (err.code === 'memory_conflict') {
+      const latest = await fetchAgentJson(`/api/memory/file?path=${encodeURIComponent(file.path)}`).catch(() => null);
+      if (isCompleteMemoryFile(latest)) {
+        state.memory.conflict = buildMemoryConflict(latest, text, text);
+        state.memory.liveNotice = latest;
+        state.memory.conflictRetryText = '';
+      } else {
+        state.memory.conflict = null;
+        state.memory.conflictRetryText = String(text || '');
+        state.memory.error = 'memory_conflict_latest_failed';
+        renderMemory();
+        return;
+      }
+    }
+    state.memory.error = err.code || 'memory_browser_failed';
+    renderMemory();
+  } finally {
+    state.memory.saving = false;
+    renderMemory();
+  }
+}
+
+async function resolveMemoryConflict(action) {
+  const conflict = state.memory.conflict;
+  if (!isCompleteMemoryFile(conflict?.theirs)) return;
+  if (action === 'theirs') {
+    state.memory.file = conflict.theirs;
+    state.memory.draft = conflict.theirs.text;
+    state.memory.dirty = false;
+    state.memory.editing = false;
+    state.memory.conflict = null;
+    state.memory.conflictRetryText = '';
+    state.memory.liveNotice = null;
+    clearMemoryDraft(conflict.theirs.path);
+    state.memory.git = await fetchAgentJson(`/api/memory/git?path=${encodeURIComponent(conflict.theirs.path)}`).catch(() => ({ commit: null }));
+    renderMemory();
+    return;
+  }
+  const text = action === 'manual' ? state.memory.draft : conflict.mine;
+  await saveMemoryDraftToServer({ text, sha256: conflict.theirs.sha256 });
 }
 
 async function refreshState() {
@@ -1772,6 +2156,9 @@ function initTabs() {
 
 function initMemoryControls() {
   $('#memory-refresh')?.addEventListener('click', () => loadMemoryTree({ force: true }).catch(() => {}));
+  $('#memory-edit-btn')?.addEventListener('click', startMemoryEdit);
+  $('#memory-save-btn')?.addEventListener('click', () => saveMemoryDraftToServer().catch(() => {}));
+  $('#memory-reset-btn')?.addEventListener('click', resetMemoryEdit);
   $('#memory-fold')?.addEventListener('click', () => {
     const dirs = collectMemoryDirPaths(state.memory.tree?.root);
     if (!dirs.length) return;

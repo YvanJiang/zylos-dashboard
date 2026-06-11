@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import http from 'node:http';
 import os from 'node:os';
@@ -348,6 +349,8 @@ test('/api/memory is admin-gated and browser sessions can read tree', async () =
   writeConfig(zylosDir, 'secret', { auth: { enabled: true, password: 'secret' } });
   fs.mkdirSync(path.join(zylosDir, 'memory'), { recursive: true });
   fs.writeFileSync(path.join(zylosDir, 'memory', 'identity.md'), '# Identity\n');
+  const newlineText = '\n'.repeat(1024 * 1024);
+  fs.writeFileSync(path.join(zylosDir, 'memory', 'large.txt'), newlineText);
 
   const { origin, server } = await makeServerWithDir(zylosDir);
   try {
@@ -398,6 +401,73 @@ test('/api/memory is admin-gated and browser sessions can read tree', async () =
     const browserBody = await browserResp.json();
     assert.equal(browserBody.text, '# Identity\n');
     assert.match(browserBody.sha256, /^[a-f0-9]{64}$/);
+
+    const readWriteResp = await fetch(`${origin}/api/memory/file?path=identity.md`, {
+      method: 'PUT',
+      headers: {
+        Authorization: `Bearer ${readToken}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({ text: '# Read key write\n', sha256: browserBody.sha256 })
+    });
+    assert.equal(readWriteResp.status, 403);
+    assert.deepEqual(await readWriteResp.json(), { error: 'insufficient_scope', required: 'admin' });
+
+    const nullWriteResp = await fetch(`${origin}/api/memory/file?path=identity.md`, {
+      method: 'PUT',
+      headers: {
+        Authorization: `Bearer ${adminToken}`,
+        'Content-Type': 'application/json'
+      },
+      body: 'null'
+    });
+    assert.equal(nullWriteResp.status, 400);
+    assert.deepEqual(await nullWriteResp.json(), { error: 'invalid_memory_write' });
+
+    const largeWriteResp = await fetch(`${origin}/api/memory/file?path=large.txt`, {
+      method: 'PUT',
+      headers: {
+        Authorization: `Bearer ${adminToken}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        text: newlineText,
+        sha256: crypto.createHash('sha256').update(newlineText).digest('hex')
+      })
+    });
+    assert.equal(largeWriteResp.status, 200);
+    const largeWriteBody = await largeWriteResp.json();
+    assert.equal(largeWriteBody.text.length, 1024 * 1024);
+    assert.equal(fs.readFileSync(path.join(zylosDir, 'memory', 'large.txt'), 'utf8'), newlineText);
+
+    const adminWriteResp = await fetch(`${origin}/api/memory/file?path=identity.md`, {
+      method: 'PUT',
+      headers: {
+        Authorization: `Bearer ${adminToken}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({ text: '# Identity\nEdited\n', sha256: browserBody.sha256 })
+    });
+    assert.equal(adminWriteResp.status, 200);
+    const adminWriteBody = await adminWriteResp.json();
+    assert.equal(adminWriteBody.text, '# Identity\nEdited\n');
+    assert.notEqual(adminWriteBody.sha256, browserBody.sha256);
+    assert.equal(fs.readFileSync(path.join(zylosDir, 'memory', 'identity.md'), 'utf8'), '# Identity\nEdited\n');
+
+    const conflictResp = await fetch(`${origin}/api/memory/file?path=identity.md`, {
+      method: 'PUT',
+      headers: {
+        Authorization: `Bearer ${adminToken}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({ text: '# Stale overwrite\n', sha256: browserBody.sha256 })
+    });
+    assert.equal(conflictResp.status, 409);
+    const conflictBody = await conflictResp.json();
+    assert.equal(conflictBody.error, 'memory_conflict');
+    assert.equal(conflictBody.current.sha256, adminWriteBody.sha256);
+    assert.equal(Object.hasOwn(conflictBody.current, 'text'), false);
+    assert.equal(fs.readFileSync(path.join(zylosDir, 'memory', 'identity.md'), 'utf8'), '# Identity\nEdited\n');
   } finally {
     await closeServer(server);
     fs.rmSync(zylosDir, { recursive: true, force: true });
@@ -406,6 +476,7 @@ test('/api/memory is admin-gated and browser sessions can read tree', async () =
 
 test('proxied remote writes require consumer admin API scope or browser session', async () => {
   let actionHits = 0;
+  let memoryWriteHits = 0;
   const remote = await listen((req, res) => {
     if (req.url === '/api/auth/token') {
       res.writeHead(200, { 'content-type': 'application/json' });
@@ -420,6 +491,12 @@ test('proxied remote writes require consumer admin API scope or browser session'
       actionHits += 1;
       res.writeHead(200, { 'content-type': 'application/json' });
       res.end(JSON.stringify({ ok: true }));
+      return;
+    }
+    if (req.url === '/api/memory/file?path=identity.md' && req.method === 'PUT') {
+      memoryWriteHits += 1;
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ ok: true, path: 'identity.md' }));
       return;
     }
     res.writeHead(404, { 'content-type': 'application/json' });
@@ -479,6 +556,30 @@ test('proxied remote writes require consumer admin API scope or browser session'
     assert.equal(adminWrite.status, 200);
     assert.equal(actionHits, 1);
 
+    const readMemoryWrite = await fetch(`${origin}/fleet/Remote/api/memory/file?path=identity.md`, {
+      method: 'PUT',
+      headers: {
+        Authorization: `Bearer ${readToken}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({ text: '# Read key write\n', sha256: 'a'.repeat(64) })
+    });
+    assert.equal(readMemoryWrite.status, 403);
+    assert.deepEqual(await readMemoryWrite.json(), { error: 'insufficient_scope', required: 'admin' });
+    assert.equal(memoryWriteHits, 0);
+
+    const adminMemoryWrite = await fetch(`${origin}/fleet/Remote/api/memory/file?path=identity.md`, {
+      method: 'PUT',
+      headers: {
+        Authorization: `Bearer ${adminToken}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({ text: '# Admin write\n', sha256: 'a'.repeat(64) })
+    });
+    assert.equal(adminMemoryWrite.status, 200);
+    assert.deepEqual(await adminMemoryWrite.json(), { ok: true, path: 'identity.md' });
+    assert.equal(memoryWriteHits, 1);
+
     const login = await fetch(`${origin}/login`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
@@ -496,6 +597,18 @@ test('proxied remote writes require consumer admin API scope or browser session'
     });
     assert.equal(browserWrite.status, 200);
     assert.equal(actionHits, 2);
+
+    const browserMemoryWrite = await fetch(`${origin}/fleet/Remote/api/memory/file?path=identity.md`, {
+      method: 'PUT',
+      headers: {
+        Cookie: cookie,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({ text: '# Browser write\n', sha256: 'a'.repeat(64) })
+    });
+    assert.equal(browserMemoryWrite.status, 200);
+    assert.deepEqual(await browserMemoryWrite.json(), { ok: true, path: 'identity.md' });
+    assert.equal(memoryWriteHits, 2);
   } finally {
     await closeServer(server);
     await remote.close();

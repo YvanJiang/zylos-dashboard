@@ -8,6 +8,7 @@ import { validateMemoryQueryPath } from './memory-browser.js';
 const SECRET_PATTERN = /\b(?:Bearer\s+zylos_st_[A-Za-z0-9_-]+|zylos_st_[A-Za-z0-9_-]+|zylos_ak_[A-Za-z0-9_-]+|read_api_key|read_session_token)\b/i;
 const STREAM_GUARD_TAIL_CHARS = 128;
 const MAX_WRITE_BODY_BYTES = 1024 * 1024;
+const MAX_MEMORY_WRITE_BODY_BYTES = 2 * 1024 * 1024 + 64 * 1024;
 
 function decodeAgentName(value) {
   try {
@@ -56,7 +57,7 @@ function isSseResponse(resp) {
 
 function isAllowedProxyWrite(method, suffix) {
   return method === 'POST' && /^\/api\/actions\/[^/]+$/.test(suffix) ||
-    method === 'PUT' && suffix === '/api/settings';
+    method === 'PUT' && (suffix === '/api/settings' || suffix === '/api/memory/file');
 }
 
 function isLocalOnlyEndpoint(suffix) {
@@ -334,7 +335,10 @@ export class FleetProxy {
       headers
     };
     if (!['GET', 'HEAD'].includes(req.method)) {
-      if (!req._fleetProxyBody) req._fleetProxyBody = await readBodyBuffer(req);
+      const maxBodyBytes = req.method === 'PUT' && suffix === '/api/memory/file'
+        ? MAX_MEMORY_WRITE_BODY_BYTES
+        : MAX_WRITE_BODY_BYTES;
+      if (!req._fleetProxyBody) req._fleetProxyBody = await readBodyBuffer(req, maxBodyBytes);
       options.body = req._fleetProxyBody;
     }
     return this.fetch(remoteUrl(agent, suffix, search), options);

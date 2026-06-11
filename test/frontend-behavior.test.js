@@ -690,29 +690,62 @@ test('memory browser is admin-scoped, agent-routed, and cache-busted', () => {
   assert.match(index, /id="tab-memory"/);
   assert.match(index, /id="memory-tree"/);
   assert.match(index, /id="memory-content"/);
-  assert.match(index, /app\.js\?v=48/);
-  assert.match(index, /style\.css\?v=36/);
+  assert.match(index, /app\.js\?v=49/);
+  assert.match(index, /style\.css\?v=37/);
 
   assert.match(app, /fetchAgentJson\('\/api\/memory\/tree'\)/);
   assert.match(app, /fetchAgentJson\(`\/api\/memory\/file\?path=\$\{encoded\}`\)/);
   assert.match(app, /fetchAgentJson\(`\/api\/memory\/git\?path=\$\{encoded\}`\)/);
+  assert.match(app, /requestAgentJson\(`\/api\/memory\/file\?path=\$\{encodeURIComponent\(file\.path\)\}`/);
+  assert.match(app, /method: 'PUT'/);
+  assert.match(app, /JSON\.stringify\(\{ text, sha256 \}\)/);
+  assert.match(app, /zylos\.memoryDraft\.\$\{memoryAgentKey\(\)\}\.\$\{filePath\}/);
+  assert.match(app, /state\.memory\.draftTimer = setTimeout\(\(\) => \{/);
+  assert.match(app, /\}, 500\);/);
+  assert.match(app, /flushMemoryDraftSave\(\);[\s\S]+state\.memory\.selectedPath = filePath;/);
+  assert.match(app, /setInterval\(\(\) => \{\s*\n\s*checkMemoryLiveSha\(\)\.catch\(\(\) => \{\}\);\s*\n\s*\}, 20_000\)/);
+  assert.match(app, /state\.memory\.saving \|\| document\.hidden/);
+  assert.match(app, /buildMemoryConflict\(latest, state\.memory\.draft, state\.memory\.draft\)/);
+  assert.match(app, /isCompleteMemoryFile\(latest\)/);
+  assert.doesNotMatch(app, /catch\(\(\) => err\.current \|\| null\)/);
+  assert.match(app, /state\.memory\.error = 'memory_conflict_latest_failed'/);
+  assert.match(app, /data-memory-retry-conflict/);
+  assert.match(app, /if \(!isCompleteMemoryFile\(conflict\?\.theirs\)\) return;/);
+  assert.match(app, /state\.memory\.file = conflict\.theirs;/);
+  assert.doesNotMatch(app, /saveMemoryDraftToServer\(\{ text: conflict\.theirs\.text \|\| '', sha256: conflict\.theirs\.sha256 \}\)/);
+  assert.match(app, /leftMid\.length \* rightMid\.length > 1_000_000/);
+  assert.match(app, /memory\.diff_degraded/);
+  assert.match(app, /memory\.diff_truncated/);
+  assert.match(app, /data-memory-conflict="mine"/);
+  assert.match(app, /data-memory-conflict="theirs"/);
+  assert.match(app, /data-memory-conflict="manual"/);
   assert.match(app, /if \(name === 'memory' && remoteIsReadOnly\(\)\) name = 'overview';/);
   assert.match(app, /tab\.disabled = readOnly;/);
   assert.match(app, /memory\.remote_read_only/);
   assert.match(app, /resetMemoryState\(\);/);
   assert.match(app, /memory_file_too_large/);
   assert.match(app, /unsupported_memory_file/);
+  assert.match(app, /memory_conflict/);
 
   assert.match(css, /\.memory-layout/);
   assert.match(css, /\.memory-markdown/);
   assert.match(css, /\.memory-raw/);
+  assert.match(css, /\.memory-editor/);
+  assert.match(css, /\.memory-conflict/);
 
   for (const pack of [en, zh]) {
     assert.equal(typeof pack['tab.memory'], 'string');
+    assert.equal(typeof pack['memory.edit'], 'string');
+    assert.equal(typeof pack['memory.save'], 'string');
     assert.equal(typeof pack['memory.error_scope'], 'string');
     assert.equal(typeof pack['memory.error_too_large'], 'string');
     assert.equal(typeof pack['memory.error_unsupported'], 'string');
+    assert.equal(typeof pack['memory.error_conflict'], 'string');
+    assert.equal(typeof pack['memory.error_conflict_latest_failed'], 'string');
     assert.equal(typeof pack['memory.remote_read_only'], 'string');
+    assert.equal(typeof pack['memory.retry'], 'string');
+    assert.equal(typeof pack['memory.diff_degraded'], 'string');
+    assert.equal(typeof pack['memory.diff_truncated'], 'string');
   }
 });
 
@@ -725,7 +758,7 @@ test('fleet management entry is local-only and modal is extensible for future ma
 
   assert.match(index, /id="fleet-manage-btn"/);
   assert.match(index, /data-i18n-title="fleet_manage\.open"/);
-  assert.match(index, /app\.js\?v=48/);
+  assert.match(index, /app\.js\?v=49/);
   assert.match(index, /<path d="M12 8V4H8"/);
   assert.match(index, /<rect width="16" height="12" x="4" y="8" rx="2"/);
   assert.match(app, /function initFleetManageButton\(\)[\s\S]*btn\.hidden = !!REMOTE_AGENT/);
