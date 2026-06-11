@@ -6,7 +6,7 @@ Add a dashboard Memory view for browsing the agent's `~/zylos/memory/` directory
 
 ## Scope
 
-**In phase 1**: admin-gated read-only memory APIs, safe file tree, Markdown/raw view, per-file metadata (size, mtime, sha256), recent git commit info, local and in-page remote agent support through the fleet proxy, en/zh UI strings, tests.
+**In phase 1**: admin-gated read-only memory APIs, safe file tree, Markdown/raw view, file metadata (tree: size/mtime only; file: size/mtime/sha256), recent git commit info, local and in-page remote agent support through the fleet proxy, en/zh UI strings, tests.
 
 **Out of phase 1**: editing/saving memory files, history browsing beyond "latest commit for this file", diffs, conflict resolution UI, writing KB/artifacts, changing how Memory Sync writes files.
 
@@ -32,11 +32,12 @@ Producer endpoints, all admin-gated:
   - Returns a recursive tree rooted at memory root.
   - Response shape:
     - `{ root: { name: "memory", type: "directory", children: [...] } }`
-    - file nodes include `{ path, name, type: "file", size_bytes, mtime, sha256, renderable }`
+    - file nodes include `{ path, name, type: "file", size_bytes, mtime, renderable }`
     - directory nodes include `{ path, name, type: "directory", children }`
   - `path` is always memory-root-relative with POSIX separators, never absolute.
   - Sort directories before files, then locale/name stable sort.
   - Hide `.git/` from the tree. Do not traverse symlinks.
+  - Do not compute `sha256` in tree responses. Tree loading should only stat files/directories so opening the Memory view does not perform a full-directory content read/hash pass, especially for `archive/` and `sessions/`.
 
 - `GET /api/memory/file?path=<relative>`
   - Returns one file's content and metadata.
@@ -44,11 +45,14 @@ Producer endpoints, all admin-gated:
     - `{ path, name, size_bytes, mtime, sha256, markdown, text }`
   - `markdown` is true for `.md`/`.markdown`; the frontend renders Markdown client-side or with a small local renderer already present/added in the app.
   - Restrict phase 1 to text/markdown files. Non-renderable files return `415 { error: "unsupported_memory_file" }` or appear disabled in the UI.
+  - Enforce a maximum readable file size, initially 1 MiB. Larger files return `413 { error: "memory_file_too_large" }`; the UI should explain that phase 1 does not support online viewing for files that large.
+  - After reading, reject non-UTF-8/binary-looking content as `415 { error: "unsupported_memory_file" }` even if the extension looked renderable.
 
 - `GET /api/memory/git?path=<relative>`
   - Returns latest commit info for a file or directory:
     - `{ path, commit: { hash, short_hash, subject, author_name, author_date } | null }`
-  - Implement with `git -C <memoryRoot> log -1 --format=... -- <relativePath>`.
+  - Implement with `execFile`/argument arrays, not shell command strings: `git`, `['-C', memoryRoot, 'log', '-1', '--format=...', '--', relativePath]`.
+  - Keep the `--` path separator even though the path is already validated; command injection should be eliminated by construction, not by relying on validation.
   - If memory is not a git repo, return `{ commit: null }`, not a 500.
 
 ## Authorization And Remote Proxy
@@ -99,6 +103,7 @@ Producer filesystem validation:
   - directories for `/api/memory/file`.
 - Use `fs.realpath`/`path.relative` after resolving, and require the final real path to stay inside the real memory root.
 - Return stable errors: `invalid_memory_path`, `memory_file_not_found`, `unsupported_memory_file`.
+- Return `memory_file_too_large` with HTTP 413 when a supported file exceeds the phase 1 read cap.
 
 Consumer proxy validation:
 
@@ -137,10 +142,11 @@ Avoid placing Memory under the #210 manage modal. This is a browsing surface, no
 1. Backend helpers in `src/index.js` or a small `src/lib/memory-browser.js`:
    - resolve memory root,
    - normalize/validate relative memory path,
-   - walk tree without symlinks,
+   - walk tree without symlinks using stat metadata only,
    - read supported text files,
-   - compute sha256 and mtime/size metadata,
-   - get latest git commit metadata.
+   - enforce the file read cap and reject binary/non-UTF-8 content,
+   - compute sha256 and mtime/size metadata for opened files only,
+   - get latest git commit metadata via `execFile` argument arrays with `--`.
 2. Add producer route handlers:
    - `/api/memory/tree`
    - `/api/memory/file`
@@ -166,7 +172,7 @@ Avoid placing Memory under the #210 manage modal. This is a browsing surface, no
 Backend/API:
 
 - `GET /api/memory/tree` requires admin; read API session receives `403 insufficient_scope`.
-- Tree response includes known root files/directories with relative paths, sizes, mtimes, hashes; `.git` is absent.
+- Tree response includes known root files/directories with relative paths, sizes, mtimes, and no file hashes; `.git` is absent.
 - `GET /api/memory/file?path=identity.md` returns metadata + text and no absolute path.
 - Invalid/traversal paths are rejected:
   - `../state.md`
@@ -175,7 +181,10 @@ Backend/API:
   - NUL byte variant
   - symlink escape fixture.
 - Non-text/unsupported file returns stable unsupported error.
+- File above the phase 1 size cap returns `413 memory_file_too_large`.
+- Binary or invalid UTF-8 content with a misleading extension returns `415 unsupported_memory_file`.
 - Git metadata returns latest commit shape when memory root is a git repo and null commit when not.
+- Git metadata implementation uses `execFile`/argument arrays and `--`, not shell interpolation.
 
 Proxy:
 
@@ -206,7 +215,9 @@ Regression:
 ## Acceptance Checklist
 
 - Local dashboard shows memory tree and can open `identity.md`, `state.md`, and `reference/projects.md`.
+- Tree load does not hash every file; `sha256` appears only after opening a file.
 - Markdown render and raw source toggle both work.
+- Files above the phase 1 read cap show a clear too-large message instead of loading into the browser.
 - Latest git commit info appears for files in a git-backed memory root; missing commit displays gracefully.
 - Read-scope API token cannot access any `/api/memory*` endpoint.
 - A remote agent configured with an admin key shows its memory through in-page remote view.
