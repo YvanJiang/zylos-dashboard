@@ -48,7 +48,16 @@ const state = {
   multiAgent: false,
   fleetViewActive: false,
   fleetModeInitialized: false,
-  remoteAgent: null
+  remoteAgent: null,
+  memory: {
+    tree: null,
+    selectedPath: null,
+    file: null,
+    git: null,
+    mode: 'rendered',
+    loading: false,
+    error: null
+  }
 };
 
 const $ = (sel) => document.querySelector(sel);
@@ -1104,6 +1113,7 @@ function renderAll() {
   renderTimeline();
   renderComm();
   renderFleet();
+  renderMemory();
 }
 
 // ─── Data fetching ───
@@ -1115,6 +1125,261 @@ async function fetchJson(path) {
   }
   if (!r.ok) throw new Error(`${path} ${r.status}`);
   return r.json();
+}
+
+async function fetchAgentJson(path) {
+  const r = await fetch(api(agentPath(path)), { cache: 'no-store' });
+  if (r.status === 401) {
+    window.location.href = api('/login');
+    throw new Error('unauthorized');
+  }
+  if (!r.ok) {
+    let payload = {};
+    try { payload = await r.json(); } catch { /* ignore non-json errors */ }
+    const err = new Error(payload.error || `${path} ${r.status}`);
+    err.status = r.status;
+    err.code = payload.error || null;
+    throw err;
+  }
+  return r.json();
+}
+
+function resetMemoryState() {
+  state.memory = {
+    tree: null,
+    selectedPath: null,
+    file: null,
+    git: null,
+    mode: 'rendered',
+    loading: false,
+    error: null
+  };
+}
+
+function fmtBytes(bytes) {
+  const n = Number(bytes);
+  if (!Number.isFinite(n)) return '';
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(n < 10 * 1024 ? 1 : 0)} KB`;
+  return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function memoryStatusMessage(code) {
+  if (code === 'insufficient_scope') return t('memory.error_scope');
+  if (code === 'memory_file_too_large') return t('memory.error_too_large');
+  if (code === 'unsupported_memory_file') return t('memory.error_unsupported');
+  if (code === 'invalid_memory_path') return t('memory.error_invalid_path');
+  if (code === 'memory_file_not_found') return t('memory.error_not_found');
+  return t('memory.error_generic');
+}
+
+function flattenMemoryFiles(node, files = []) {
+  if (!node) return files;
+  if (node.type === 'file') files.push(node);
+  for (const child of node.children || []) flattenMemoryFiles(child, files);
+  return files;
+}
+
+function preferredMemoryPath(root) {
+  const files = flattenMemoryFiles(root).filter(f => f.renderable);
+  return files.find(f => f.path === 'identity.md')?.path ||
+    files.find(f => f.path?.endsWith('.md'))?.path ||
+    files[0]?.path ||
+    null;
+}
+
+function renderMemoryTreeNode(node, depth = 0) {
+  if (!node) return '';
+  if (node.type === 'directory') {
+    const children = (node.children || []).map(child => renderMemoryTreeNode(child, depth + 1)).join('');
+    const label = node.path ? `<div class="memory-dir" style="padding-left:${8 + depth * 14}px">${esc(node.name)}</div>` : '';
+    return `${label}${children}`;
+  }
+  const active = state.memory.selectedPath === node.path;
+  const disabled = !node.renderable;
+  const meta = [fmtBytes(node.size_bytes), fmtAge(node.mtime)].filter(Boolean).join(' · ');
+  return `<button class="memory-file${active ? ' active' : ''}" type="button" data-path="${esc(node.path)}" style="padding-left:${8 + depth * 14}px"${disabled ? ' disabled' : ''}>
+    <span class="memory-file-name">${esc(node.name)}</span>
+    <span class="memory-file-meta">${esc(meta)}</span>
+  </button>`;
+}
+
+function renderMarkdown(text) {
+  const lines = String(text || '').split(/\r?\n/);
+  const html = [];
+  let inCode = false;
+  let listOpen = false;
+  const closeList = () => {
+    if (listOpen) {
+      html.push('</ul>');
+      listOpen = false;
+    }
+  };
+  for (const line of lines) {
+    if (line.startsWith('```')) {
+      closeList();
+      if (inCode) html.push('</code></pre>');
+      else html.push('<pre><code>');
+      inCode = !inCode;
+      continue;
+    }
+    if (inCode) {
+      html.push(`${esc(line)}\n`);
+      continue;
+    }
+    const heading = line.match(/^(#{1,4})\s+(.+)$/);
+    if (heading) {
+      closeList();
+      const level = heading[1].length;
+      html.push(`<h${level}>${esc(heading[2])}</h${level}>`);
+      continue;
+    }
+    const bullet = line.match(/^\s*[-*]\s+(.+)$/);
+    if (bullet) {
+      if (!listOpen) {
+        html.push('<ul>');
+        listOpen = true;
+      }
+      html.push(`<li>${esc(bullet[1])}</li>`);
+      continue;
+    }
+    if (!line.trim()) {
+      closeList();
+      continue;
+    }
+    closeList();
+    html.push(`<p>${esc(line)}</p>`);
+  }
+  closeList();
+  if (inCode) html.push('</code></pre>');
+  return html.join('');
+}
+
+function renderMemoryContent() {
+  const content = $('#memory-content');
+  if (!content) return;
+  const file = state.memory.file;
+  if (!file) {
+    content.innerHTML = `<p class="empty-state">${esc(t('memory.empty'))}</p>`;
+    return;
+  }
+  if (state.memory.mode === 'raw' || !file.markdown) {
+    content.innerHTML = `<pre class="memory-raw"><code>${esc(file.text)}</code></pre>`;
+  } else {
+    content.innerHTML = `<article class="memory-markdown">${renderMarkdown(file.text)}</article>`;
+  }
+}
+
+function renderMemory() {
+  const tab = $('[data-tab="memory"]');
+  const tree = $('#memory-tree');
+  const title = $('#memory-file-title');
+  const meta = $('#memory-meta');
+  const status = $('#memory-status');
+  const content = $('#memory-content');
+  const renderedBtn = $('#memory-rendered-btn');
+  const rawBtn = $('#memory-raw-btn');
+  if (!tree || !title || !meta || !status || !content) return;
+
+  const readOnly = remoteIsReadOnly();
+  if (tab) {
+    tab.disabled = readOnly;
+    tab.title = readOnly ? t('memory.remote_read_only') : '';
+  }
+  renderedBtn?.classList.toggle('active', state.memory.mode === 'rendered');
+  rawBtn?.classList.toggle('active', state.memory.mode === 'raw');
+
+  if (readOnly) {
+    tree.innerHTML = '';
+    title.textContent = t('memory.title');
+    meta.textContent = '';
+    status.textContent = t('memory.remote_read_only');
+    status.hidden = false;
+    content.innerHTML = '';
+    return;
+  }
+
+  if (state.memory.loading) {
+    status.textContent = t('memory.loading');
+    status.hidden = false;
+  } else if (state.memory.error) {
+    status.textContent = memoryStatusMessage(state.memory.error);
+    status.hidden = false;
+  } else {
+    status.textContent = '';
+    status.hidden = true;
+  }
+
+  tree.innerHTML = state.memory.tree ? renderMemoryTreeNode(state.memory.tree.root) : `<p class="empty-state">${esc(t('memory.loading'))}</p>`;
+  tree.querySelectorAll('.memory-file').forEach((btn) => {
+    btn.addEventListener('click', () => openMemoryFile(btn.dataset.path).catch(() => {}));
+  });
+
+  const file = state.memory.file;
+  if (!file) {
+    title.textContent = t('memory.select_file');
+    meta.textContent = '';
+  } else {
+    title.textContent = file.path;
+    const commit = state.memory.git?.commit;
+    const parts = [
+      fmtBytes(file.size_bytes),
+      fmtAge(file.mtime),
+      file.sha256 ? `sha ${file.sha256.slice(0, 8)}` : '',
+      commit ? `${commit.short_hash} ${commit.subject}` : t('memory.no_commit')
+    ].filter(Boolean);
+    meta.textContent = parts.join(' · ');
+  }
+  renderMemoryContent();
+}
+
+async function loadMemoryTree({ force = false } = {}) {
+  if (remoteIsReadOnly()) {
+    renderMemory();
+    return;
+  }
+  if (state.memory.tree && !force) {
+    renderMemory();
+    return;
+  }
+  state.memory.loading = true;
+  state.memory.error = null;
+  renderMemory();
+  try {
+    state.memory.tree = await fetchAgentJson('/api/memory/tree');
+    const selected = state.memory.selectedPath || preferredMemoryPath(state.memory.tree?.root);
+    if (selected) await openMemoryFile(selected);
+  } catch (err) {
+    state.memory.error = err.code || 'memory_browser_failed';
+  } finally {
+    state.memory.loading = false;
+    renderMemory();
+  }
+}
+
+async function openMemoryFile(filePath) {
+  if (!filePath || remoteIsReadOnly()) return;
+  state.memory.selectedPath = filePath;
+  state.memory.file = null;
+  state.memory.git = null;
+  state.memory.loading = true;
+  state.memory.error = null;
+  renderMemory();
+  try {
+    const encoded = encodeURIComponent(filePath);
+    const [file, git] = await Promise.all([
+      fetchAgentJson(`/api/memory/file?path=${encoded}`),
+      fetchAgentJson(`/api/memory/git?path=${encoded}`).catch(() => ({ commit: null }))
+    ]);
+    state.memory.file = file;
+    state.memory.git = git;
+    state.memory.error = null;
+  } catch (err) {
+    state.memory.error = err.code || 'memory_browser_failed';
+  } finally {
+    state.memory.loading = false;
+    renderMemory();
+  }
 }
 
 async function refreshState() {
@@ -1425,6 +1690,7 @@ function scheduleSseReconnect() {
 // ─── Tabs ───
 function initTabs() {
   const activateTab = (name, push = false) => {
+    if (name === 'memory' && remoteIsReadOnly()) name = 'overview';
     document.querySelectorAll('.tab').forEach((t) => t.classList.toggle('active', t.dataset.tab === name));
     document.querySelectorAll('.tab-panel').forEach((p) => {
       const active = p.id === `tab-${name}`;
@@ -1432,6 +1698,7 @@ function initTabs() {
       p.hidden = !active;
     });
     if (name === 'trends') refreshCharts();
+    if (name === 'memory') loadMemoryTree().catch(() => {});
     if (push) {
       const prefix = remotePrefix();
       const path = name === 'overview' ? `${prefix}/` : `${prefix}/${name}`;
@@ -1448,19 +1715,29 @@ function initTabs() {
     // In-page remote viewing only exists on the parent document; the
     // standalone remote document (REMOTE_AGENT) keeps plain tab routing.
     if (!REMOTE_AGENT) {
-      const m = path.match(/\/fleet\/([^/]+)\/?(?:trends)?$/);
+      const m = path.match(/\/fleet\/([^/]+)\/?(?:trends|memory)?$/);
       if (m) {
         enterRemoteAgent(decodeURIComponent(m[1]), { push: false });
       } else if (state.remoteAgent) {
         exitRemoteAgent({ push: false });
       }
     }
-    const tab = path.endsWith('/trends') ? 'trends' : 'overview';
+    const tab = path.endsWith('/trends') ? 'trends' : (path.endsWith('/memory') ? 'memory' : 'overview');
     activateTab(tab, false);
   });
   document.addEventListener('visibilitychange', syncFleetSubscription);
-  const initialTab = window.location.pathname.endsWith('/trends') ? 'trends' : 'overview';
+  const initialTab = window.location.pathname.endsWith('/trends') ? 'trends' : (window.location.pathname.endsWith('/memory') ? 'memory' : 'overview');
   activateTab(initialTab, false);
+}
+
+function initMemoryControls() {
+  $('#memory-refresh')?.addEventListener('click', () => loadMemoryTree({ force: true }).catch(() => {}));
+  document.querySelectorAll('.memory-mode').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      state.memory.mode = btn.dataset.mode === 'raw' ? 'raw' : 'rendered';
+      renderMemory();
+    });
+  });
 }
 
 // ─── Fleet mode init ───
@@ -1540,6 +1817,7 @@ function resetAgentData() {
   state.summaryUpdatedAt = null;
   state.commUpdatedAt = null;
   state.timelineUpdatedAt = null;
+  resetMemoryState();
   prevSubagentIds.clear();
   const feed = $('#tool-feed');
   if (feed) feed.innerHTML = '';
@@ -3078,6 +3356,7 @@ initLogout();
 initTips();
 initInfoBarButtons();
 initFleetManageButton();
+initMemoryControls();
 initFleetHoverPause();
 initFleetSounds();
 renderAll();

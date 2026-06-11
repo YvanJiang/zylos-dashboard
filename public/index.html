@@ -7,11 +7,11 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="__ASSET_ROOT__/css/style.css?v=32">
+<link rel="stylesheet" href="__ASSET_ROOT__/css/style.css?v=33">
 <link rel="stylesheet" href="__ASSET_ROOT__/themes/light.css?v=2">
 <script src="__ASSET_ROOT__/vendor/chart.umd.js"></script>
 <script src="__ASSET_ROOT__/js/chartjs-adapter-date-fns.bundle.min.js"></script>
-<script type="module" src="__ASSET_ROOT__/js/app.js?v=44"></script>
+<script type="module" src="__ASSET_ROOT__/js/app.js?v=45"></script>
 </head>
 <body>
 <header class="app-header">
@@ -50,6 +50,7 @@
 
 <nav class="tab-bar" aria-label="Dashboard sections">
   <button class="tab active" type="button" data-tab="overview" data-i18n="tab.overview">Overview</button>
+  <button class="tab" type="button" data-tab="memory" data-i18n="tab.memory">Memory</button>
   <button class="tab" type="button" data-tab="trends" data-i18n="tab.trends">Trends</button>
 </nav>
 
@@ -300,6 +301,32 @@
         </div>
       </section>
 
+    </div>
+  </section>
+
+  <section class="tab-panel" id="tab-memory" hidden>
+    <div class="memory-layout">
+      <aside class="memory-tree-card" aria-labelledby="memory-title">
+        <div class="memory-head">
+          <h2 id="memory-title" data-i18n="memory.title">Memory</h2>
+          <button class="memory-refresh" id="memory-refresh" type="button" data-i18n-title="memory.refresh">↻</button>
+        </div>
+        <div class="memory-tree" id="memory-tree"></div>
+      </aside>
+      <section class="memory-viewer" aria-labelledby="memory-file-title">
+        <div class="memory-viewer-head">
+          <div>
+            <h2 id="memory-file-title" data-i18n="memory.select_file">Select a file</h2>
+            <div class="memory-meta" id="memory-meta"></div>
+          </div>
+          <div class="memory-toggle" role="group" aria-label="Memory view mode">
+            <button class="memory-mode active" id="memory-rendered-btn" type="button" data-mode="rendered" data-i18n="memory.rendered">Rendered</button>
+            <button class="memory-mode" id="memory-raw-btn" type="button" data-mode="raw" data-i18n="memory.raw">Raw</button>
+          </div>
+        </div>
+        <div class="memory-status" id="memory-status"></div>
+        <div class="memory-content" id="memory-content"></div>
+      </section>
     </div>
   </section>
 

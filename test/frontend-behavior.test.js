@@ -346,6 +346,7 @@ test('Agent Fleet is the top-level fleet view and pulse is gone from UI', () => 
   assert.doesNotMatch(html, /id="tab-pulse"/);
   assert.doesNotMatch(html, /Pulse Wall/);
   assert.match(html, /data-tab="overview"/);
+  assert.match(html, /data-tab="memory"/);
   assert.match(html, /data-tab="trends"/);
   assert.match(html, /id="fleet-view"/);
   assert.match(html, /id="back-to-fleet"/);
@@ -637,7 +638,7 @@ test('back button resolves in-page remote first, standalone remote second, fleet
 test('popstate routes /fleet/<name> paths into remote view only on the parent document', () => {
   const app = fs.readFileSync(path.resolve('public/js/app.js'), 'utf8');
   // The standalone remote document (REMOTE_AGENT) keeps plain tab routing.
-  assert.match(app, /if \(!REMOTE_AGENT\) \{\s*\n\s*const m = path\.match\(\/\\\/fleet\\\/\(\[\^\/\]\+\)\\\/\?\(\?::?trends\)\?\$\/\);?/);
+  assert.match(app, /if \(!REMOTE_AGENT\) \{\s*\n\s*const m = path\.match\(\/\\\/fleet\\\/\(\[\^\/\]\+\)\\\/\?\(\?::?trends\|memory\)\?\$\/\);?/);
   assert.match(app, /enterRemoteAgent\(decodeURIComponent\(m\[1\]\), \{ push: false \}\);/);
   assert.match(app, /else if \(state\.remoteAgent\) \{\s*\n\s*exitRemoteAgent\(\{ push: false \}\);/);
   // Tab pushState carries the remote prefix so deep links stay consistent.
@@ -678,6 +679,43 @@ test('remote Actions/Settings are gated by access and routed through the viewed 
   assert.match(reset, /closeSettingsModal\(\);/);
 });
 
+test('memory browser is admin-scoped, agent-routed, and cache-busted', () => {
+  const index = fs.readFileSync(path.resolve('public/index.html'), 'utf8');
+  const app = fs.readFileSync(path.resolve('public/js/app.js'), 'utf8');
+  const css = fs.readFileSync(path.resolve('public/css/style.css'), 'utf8');
+  const en = JSON.parse(fs.readFileSync(path.resolve('public/i18n/en.json'), 'utf8'));
+  const zh = JSON.parse(fs.readFileSync(path.resolve('public/i18n/zh.json'), 'utf8'));
+
+  assert.match(index, /data-tab="memory"/);
+  assert.match(index, /id="tab-memory"/);
+  assert.match(index, /id="memory-tree"/);
+  assert.match(index, /id="memory-content"/);
+  assert.match(index, /app\.js\?v=45/);
+  assert.match(index, /style\.css\?v=33/);
+
+  assert.match(app, /fetchAgentJson\('\/api\/memory\/tree'\)/);
+  assert.match(app, /fetchAgentJson\(`\/api\/memory\/file\?path=\$\{encoded\}`\)/);
+  assert.match(app, /fetchAgentJson\(`\/api\/memory\/git\?path=\$\{encoded\}`\)/);
+  assert.match(app, /if \(name === 'memory' && remoteIsReadOnly\(\)\) name = 'overview';/);
+  assert.match(app, /tab\.disabled = readOnly;/);
+  assert.match(app, /memory\.remote_read_only/);
+  assert.match(app, /resetMemoryState\(\);/);
+  assert.match(app, /memory_file_too_large/);
+  assert.match(app, /unsupported_memory_file/);
+
+  assert.match(css, /\.memory-layout/);
+  assert.match(css, /\.memory-markdown/);
+  assert.match(css, /\.memory-raw/);
+
+  for (const pack of [en, zh]) {
+    assert.equal(typeof pack['tab.memory'], 'string');
+    assert.equal(typeof pack['memory.error_scope'], 'string');
+    assert.equal(typeof pack['memory.error_too_large'], 'string');
+    assert.equal(typeof pack['memory.error_unsupported'], 'string');
+    assert.equal(typeof pack['memory.remote_read_only'], 'string');
+  }
+});
+
 test('fleet management entry is local-only and modal is extensible for future management sections', () => {
   const index = fs.readFileSync(path.resolve('public/index.html'), 'utf8');
   const app = fs.readFileSync(path.resolve('public/js/app.js'), 'utf8');
@@ -687,7 +725,7 @@ test('fleet management entry is local-only and modal is extensible for future ma
 
   assert.match(index, /id="fleet-manage-btn"/);
   assert.match(index, /data-i18n-title="fleet_manage\.open"/);
-  assert.match(index, /app\.js\?v=44/);
+  assert.match(index, /app\.js\?v=45/);
   assert.match(index, /<path d="M12 8V4H8"/);
   assert.match(index, /<rect width="16" height="12" x="4" y="8" rx="2"/);
   assert.match(app, /function initFleetManageButton\(\)[\s\S]*btn\.hidden = !!REMOTE_AGENT/);

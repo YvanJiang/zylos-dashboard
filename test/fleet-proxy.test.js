@@ -430,6 +430,84 @@ test('fleet proxy fail-closes consumer-local fleet management endpoints without 
   }
 });
 
+test('fleet proxy allows admin memory GETs and validates memory query paths consumer-side', async () => {
+  const seen = [];
+  const remote = await listen((req, res) => {
+    seen.push(req.url);
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ ok: true, url: req.url }));
+  });
+  const proxy = new FleetProxy({
+    config: { fleet: { agents: [{ name: 'Remote', base_url: remote.origin, read_api_key: 'zylos_ak_secret' }] } },
+    rootDir: publicDir(),
+    poller: { getSessionToken: async () => 'zylos_st_secret' }
+  });
+  const hub = await listen((req, res) => {
+    const url = new URL(req.url, 'http://hub.test');
+    proxy.handle(req, res, url);
+  });
+  try {
+    const tree = await fetch(`${hub.origin}/fleet/Remote/api/memory/tree`);
+    assert.equal(tree.status, 200);
+    assert.deepEqual(await tree.json(), { ok: true, url: '/api/memory/tree' });
+
+    const nested = await fetch(`${hub.origin}/fleet/Remote/api/memory/file?path=reference%2Fprojects.md`);
+    assert.equal(nested.status, 200);
+    assert.deepEqual(await nested.json(), { ok: true, url: '/api/memory/file?path=reference%2Fprojects.md' });
+
+    const unsafe = await fetch(`${hub.origin}/fleet/Remote/api/memory/file?path=..%2Fstate.md`);
+    assert.equal(unsafe.status, 400);
+    assert.deepEqual(await unsafe.json(), { error: 'invalid_memory_path' });
+
+    const write = await fetch(`${hub.origin}/fleet/Remote/api/memory/file?path=identity.md`, {
+      method: 'POST',
+      body: '{}'
+    });
+    assert.equal(write.status, 403);
+    assert.deepEqual(await write.json(), { error: 'read_only_proxy' });
+
+    assert.deepEqual(seen, [
+      '/api/memory/tree',
+      '/api/memory/file?path=reference%2Fprojects.md'
+    ]);
+  } finally {
+    await hub.close();
+    await remote.close();
+  }
+});
+
+test('fleet proxy keeps encoded slash fail-closed for memory URL path', async () => {
+  let remoteHit = false;
+  const remote = await listen((_req, res) => {
+    remoteHit = true;
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end('{}');
+  });
+  const proxy = new FleetProxy({
+    config: { fleet: { agents: [{ name: 'Remote', base_url: remote.origin, read_api_key: 'zylos_ak_secret' }] } },
+    rootDir: publicDir(),
+    poller: { getSessionToken: async () => 'zylos_st_secret' }
+  });
+  const hub = await listen((req, res) => {
+    const url = new URL(req.url, 'http://hub.test');
+    proxy.handle(req, res, url);
+  });
+  try {
+    for (const url of [
+      `${hub.origin}/fleet/Remote/api%2Fmemory/tree`,
+      `${hub.origin}/fleet/Remote/api/memory%2Ftree`
+    ]) {
+      const resp = await fetch(url);
+      assert.equal(resp.status, 403);
+      assert.deepEqual(await resp.json(), { error: 'local_endpoint_not_proxyable' });
+    }
+    assert.equal(remoteHit, false);
+  } finally {
+    await hub.close();
+    await remote.close();
+  }
+});
+
 test('fleet proxy passes through upstream insufficient_scope for whitelisted writes', async () => {
   const remote = await listen((_req, res) => {
     res.writeHead(403, { 'content-type': 'application/json' });
