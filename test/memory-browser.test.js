@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
-import { MemoryBrowser, validateMemoryQueryPath } from '../src/lib/memory-browser.js';
+import { MemoryBrowser, memoryErrorPayload, validateMemoryQueryPath } from '../src/lib/memory-browser.js';
 
 function makeZylosDir() {
   const zylosDir = fs.mkdtempSync(path.join(os.tmpdir(), 'zylos-memory-browser-test-'));
@@ -90,4 +90,13 @@ test('memory query path grammar allows nested query slashes but rejects unsafe p
   assert.throws(() => validateMemoryQueryPath('reference/../../.env'), /invalid_memory_path/);
   assert.throws(() => validateMemoryQueryPath('C:\\secret.md'), /invalid_memory_path/);
   assert.throws(() => validateMemoryQueryPath('reference\\projects.md'), /invalid_memory_path/);
+});
+
+test('unexpected filesystem errors do not leak errno codes in API payloads', () => {
+  const err = new Error('permission denied');
+  err.code = 'EACCES';
+  const payload = memoryErrorPayload(err);
+  assert.equal(payload.status, 500);
+  assert.deepEqual(payload.body, { error: 'memory_browser_failed' });
+  assert.equal(JSON.stringify(payload.body).includes('EACCES'), false);
 });

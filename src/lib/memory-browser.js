@@ -21,6 +21,7 @@ function memoryError(code, status = 400) {
   const err = new Error(code);
   err.code = code;
   err.status = status;
+  err.memoryBrowserError = true;
   return err;
 }
 
@@ -208,8 +209,14 @@ export class MemoryBrowser {
 }
 
 export function memoryErrorPayload(err) {
+  if (!err?.memoryBrowserError) {
+    return {
+      status: 500,
+      body: { error: 'memory_browser_failed' }
+    };
+  }
   return {
-    status: err.status || 500,
-    body: { error: err.code || 'memory_browser_failed' }
+    status: err.status,
+    body: { error: err.code }
   };
 }
