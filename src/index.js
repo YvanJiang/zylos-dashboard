@@ -34,7 +34,7 @@ import { IngestQueue } from './lib/ingest-queue.js';
 import { buildSystemPayload } from './lib/system-api.js';
 import { SseHub } from './lib/sse.js';
 import { FleetPoller, stateToFleetRecord } from './lib/fleet-poller.js';
-import { buildFleetPayload } from './lib/fleet-payload.js';
+import { buildSafeFleetPayload } from './lib/fleet-payload.js';
 import { FleetProxy } from './lib/fleet-proxy.js';
 import { MemoryBrowser, memoryErrorPayload } from './lib/memory-browser.js';
 import { agentColor } from './lib/agent-color.js';
@@ -378,7 +378,7 @@ function buildSelfFleetRecord() {
 }
 
 function buildFullFleetPayload(remoteFleet = fleetPoller.getFleet()) {
-  return buildFleetPayload({
+  return buildSafeFleetPayload({
     remoteFleet,
     selfRecord: buildSelfFleetRecord(),
     nowIso: new Date().toISOString()
@@ -387,8 +387,14 @@ function buildFullFleetPayload(remoteFleet = fleetPoller.getFleet()) {
 
 function broadcastFleet(remoteFleet) {
   try {
-    sse.broadcast('fleet', buildFullFleetPayload(remoteFleet));
+    const { payload, redacted } = buildFullFleetPayload(remoteFleet);
+    sse.broadcast('fleet', payload);
+    if (redacted) process.stderr.write('[fleet] SSE broadcast redacted: fleet_secret_leak_guard\n');
   } catch (err) {
+    if (err?.code === 'fleet_secret_leak_guard') {
+      process.stderr.write('[fleet] SSE broadcast skipped: fleet_secret_leak_guard (redaction insufficient)\n');
+      return;
+    }
     process.stderr.write(`[fleet] SSE broadcast skipped: ${err.message}\n`);
   }
 }
@@ -915,7 +921,7 @@ function handleApi(req, res, pathname, url) {
 
   if (pathname === '/api/fleet') {
     try {
-      sendJson(res, 200, buildFullFleetPayload());
+      sendJson(res, 200, buildFullFleetPayload().payload);
     } catch (err) {
       sendJson(res, 500, { error: err.code || err.message });
     }
