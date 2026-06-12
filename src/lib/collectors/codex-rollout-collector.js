@@ -5,6 +5,7 @@ import { Sanitizer } from '../sanitizer.js';
 
 const PER_MTOK = 1_000_000;
 const ASSISTANT_MESSAGE_SUMMARY_LIMIT = 500;
+const DEFAULT_MAX_OVERSIZED_LINE_SKIP_BYTES = 8 * 1024 * 1024;
 
 export class CodexRolloutCollector {
   constructor(store, config) {
@@ -74,10 +75,19 @@ export class CodexRolloutCollector {
         metrics_written: backfilled,
         last_checked: now
       });
+      this.store.upsertSourceHealth('jsonl_usage', 'runtime_progress', 'healthy', {
+        transcript_path: mapping.transcript_path,
+        session_id: mapping.session_id,
+        byte_offset: offset,
+        metrics_written: backfilled,
+        last_success: now
+      });
       return backfilled;
     }
 
-    const length = stat.size - offset;
+    const maxBytes = Math.max(4096, Number(this.config.codexRolloutMaxBytesPerCollect) || 256 * 1024);
+    const maxLines = Math.max(1, Number(this.config.codexRolloutMaxLinesPerCollect) || 200);
+    const length = Math.min(stat.size - offset, maxBytes);
     const buf = Buffer.alloc(length);
     const fd = fs.openSync(mapping.transcript_path, 'r');
     try {
@@ -89,6 +99,33 @@ export class CodexRolloutCollector {
     const chunk = buf.toString('utf8');
     const lastNewline = chunk.lastIndexOf('\n');
     if (lastNewline === -1) {
+      if (length === maxBytes) {
+        const skippedTo = this._skipOversizedLine(mapping.transcript_path, offset, stat.size, maxBytes);
+        const skippedBytes = skippedTo - offset;
+        this.store.upsertCodexRolloutCursor?.({
+          transcriptPath: mapping.transcript_path,
+          byteOffset: skippedTo,
+          sessionId: mapping.session_id
+        });
+        this.store.upsertSourceHealth('codex_rollout', 'collector_liveness', 'healthy', {
+          reason: 'oversized_line_skipped',
+          transcript_path: mapping.transcript_path,
+          session_id: mapping.session_id,
+          byte_offset: skippedTo,
+          skipped_bytes: skippedBytes,
+          last_success: now
+        });
+        this.store.upsertSourceHealth('jsonl_usage', 'runtime_progress', 'healthy', {
+          reason: 'oversized_line_skipped',
+          transcript_path: mapping.transcript_path,
+          session_id: mapping.session_id,
+          byte_offset: skippedTo,
+          skipped_bytes: skippedBytes,
+          metrics_written: 0,
+          last_success: now
+        });
+        return 0;
+      }
       this.store.upsertSourceHealth('codex_rollout', 'collector_liveness', 'stale', {
         reason: 'partial_line',
         transcript_path: mapping.transcript_path,
@@ -100,17 +137,23 @@ export class CodexRolloutCollector {
     }
 
     const complete = chunk.slice(0, lastNewline + 1);
-    const nextOffset = offset + Buffer.byteLength(complete, 'utf8');
 
     let written = 0;
     let currentOffset = offset;
     let lineIndex = 0;
-    for (const rawLine of complete.split('\n')) {
+    let processedLines = 0;
+    const rawLines = complete.split('\n');
+    for (const rawLine of rawLines.slice(0, -1)) {
       const line = rawLine.trim();
       const lineOffset = currentOffset;
       currentOffset += Buffer.byteLength(`${rawLine}\n`, 'utf8');
       lineIndex++;
       if (!line) continue;
+      if (processedLines >= maxLines) {
+        currentOffset = lineOffset;
+        break;
+      }
+      processedLines++;
       let event;
       try {
         event = JSON.parse(line);
@@ -125,14 +168,21 @@ export class CodexRolloutCollector {
 
     this.store.upsertCodexRolloutCursor?.({
       transcriptPath: mapping.transcript_path,
-      byteOffset: nextOffset,
+      byteOffset: currentOffset,
       sessionId: mapping.session_id
     });
 
     this.store.upsertSourceHealth('codex_rollout', 'collector_liveness', 'healthy', {
       transcript_path: mapping.transcript_path,
       session_id: mapping.session_id,
-      byte_offset: nextOffset,
+      byte_offset: currentOffset,
+      metrics_written: written,
+      last_success: now
+    });
+    this.store.upsertSourceHealth('jsonl_usage', 'runtime_progress', 'healthy', {
+      transcript_path: mapping.transcript_path,
+      session_id: mapping.session_id,
+      byte_offset: currentOffset,
       metrics_written: written,
       last_success: now
     });
@@ -140,9 +190,38 @@ export class CodexRolloutCollector {
     return written;
   }
 
+  _skipOversizedLine(transcriptPath, offset, statSize, maxBytes) {
+    const configuredMaxSkip = Number(this.config.codexRolloutMaxOversizedLineSkipBytes);
+    const maxSkipBytes = Math.max(
+      maxBytes,
+      Number.isFinite(configuredMaxSkip) && configuredMaxSkip > 0
+        ? configuredMaxSkip
+        : DEFAULT_MAX_OVERSIZED_LINE_SKIP_BYTES
+    );
+    const target = Math.min(statSize, offset + maxSkipBytes);
+    const scanSize = Math.min(maxBytes, 256 * 1024);
+    const fd = fs.openSync(transcriptPath, 'r');
+    try {
+      let position = offset;
+      const buf = Buffer.alloc(scanSize);
+      while (position < target) {
+        const bytesToRead = Math.min(scanSize, target - position);
+        const bytesRead = fs.readSync(fd, buf, 0, bytesToRead, position);
+        if (bytesRead <= 0) break;
+        const newlineIndex = buf.subarray(0, bytesRead).indexOf(0x0a);
+        if (newlineIndex >= 0 && newlineIndex < bytesRead) {
+          return position + newlineIndex + 1;
+        }
+        position += bytesRead;
+      }
+      return position;
+    } finally {
+      fs.closeSync(fd);
+    }
+  }
+
   start(intervalMs = 5_000) {
     this.stop();
-    this.collect();
     this._timer = setInterval(() => this.collect(), intervalMs);
     this._timer.unref();
   }

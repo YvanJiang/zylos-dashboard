@@ -166,6 +166,32 @@ test('metric maintenance preserves otel data and skips large guarded VACUUM', ()
   assert.equal(remaining[0].source, 'otel_token_usage');
 }));
 
+test('metric maintenance deletes legacy PM2 detail rows without deleting PM2 summary', () => withStore((store) => {
+  const now = '2026-06-07T23:59:00.000Z';
+  for (const metricName of ['pm2_cpu', 'pm2_memory', 'pm2_restarts', 'pm2_status', 'pm2_uptime', 'pm2_summary']) {
+    store.insertMetric({
+      timestamp: now,
+      runtime: 'codex',
+      metric_name: metricName,
+      metric_value: 1,
+      dimensions: null,
+      source: 'pm2',
+      confidence: 'actual'
+    });
+  }
+
+  runMetricMaintenance(store, {
+    now: new Date('2026-06-08T00:00:00.000Z')
+  });
+
+  assert.equal(store.queryMetrics({ name: 'pm2_cpu' }).length, 0);
+  assert.equal(store.queryMetrics({ name: 'pm2_memory' }).length, 0);
+  assert.equal(store.queryMetrics({ name: 'pm2_restarts' }).length, 0);
+  assert.equal(store.queryMetrics({ name: 'pm2_status' }).length, 0);
+  assert.equal(store.queryMetrics({ name: 'pm2_uptime' }).length, 0);
+  assert.equal(store.queryMetrics({ name: 'pm2_summary' }).length, 1);
+}));
+
 test('MetricResolver reads summaries first and preserves legacy fallback forms', () => withStore((store) => {
   const now = new Date().toISOString();
   store.insertMetric({

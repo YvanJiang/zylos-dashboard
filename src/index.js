@@ -301,24 +301,8 @@ if (conversationCollector) {
   };
 }
 if (codexRolloutCollector) {
-  codexRolloutCollector._onEvent = (event) => stateEngine.onEvent(event);
-  codexRolloutCollector._onRuntimeInfo = () => {
-    const st = stateEngine.getState();
-    st.runtime_info = buildRuntimeInfo();
-    sse.broadcast('state_change', st);
-    scheduleFleetStateBroadcast();
-  };
-  codexRolloutCollector._onMetric = (metric) => {
-    sse.broadcast('metric_update', {
-      metric_name: metric.metric_name,
-      value: Number(metric.metric_value),
-      dimensions: metric.dimensions || null,
-      source: metric.source || 'rollout',
-      confidence: metric.confidence || 'actual',
-      timestamp: metric.timestamp || new Date().toISOString()
-    });
-    scheduleFleetStateBroadcast();
-  };
+  // Rollout ingestion writes metrics/source health to SQLite. Keep it off the
+  // synchronous UI/state broadcast path so transcript backfill cannot block HTTP.
 }
 
 // 8. Metric resolver
@@ -757,8 +741,7 @@ async function handleApiKeyDelete(req, res, pathname) {
   sendJson(res, 200, { ok: true, ...apiKeysPayload() });
 }
 
-async function startupSequence() {
-  // Initial collector runs
+async function runInitialCollectors() {
   try { await pm2Collector.collect(); } catch (err) {
     process.stderr.write(`[startup] PM2 collector initial run failed: ${err.message}\n`);
   }
@@ -780,6 +763,10 @@ async function startupSequence() {
       process.stderr.write(`[startup] Codex rollout collector initial run failed: ${err.message}\n`);
     }
   }
+}
+
+async function startupSequence({ initialCollectors = true } = {}) {
+  if (initialCollectors) await runInitialCollectors();
 
   // State engine initialize (snapshot restore + replay)
   await stateEngine.initialize();
@@ -1539,45 +1526,56 @@ if (isMain && process.argv.includes('--smoke')) {
   }, null, 2));
   store.close();
 } else if (isMain) {
-  await startupSequence();
-  fleetPoller.start();
-
   const server = createServer();
   server.on('error', (err) => {
     console.error(`[dashboard] Failed to start: ${err.message}`);
     process.exit(1);
   });
 
-  // Start periodic collectors
-  pm2Collector.start(60_000);
-  systemCollector.start(30_000);
-  if (statuslineCollector) statuslineCollector.start();
-  if (conversationCollector) conversationCollector.start(5_000);
-  if (codexRolloutCollector) codexRolloutCollector.start(5_000);
-
-  // Start snapshot timer
-  stateEngine.startSnapshotTimer();
-
-  // Start periodic spool drain (live mode with state engine)
-  spoolDrainer.startPeriodicDrain(stateEngine, 30_000);
-
-  // Retention cleanup timer (hourly)
-  let lastVacuumDate = null;
-  const retentionTimer = setInterval(() => {
-    try {
-      const result = runMetricMaintenance(store, { lastVacuumDate });
-      lastVacuumDate = result.lastVacuumDate;
-      if (result.vacuum?.skipped) {
-        process.stderr.write(`[retention] Skipped VACUUM: ${result.vacuum.reason} (${result.vacuum.sizeBytes} > ${result.vacuum.maxBytes})\n`);
-      }
-    } catch (err) {
-      process.stderr.write(`[retention] Error: ${err.message}\n`);
-    }
-  }, 60 * 60 * 1000);
-  retentionTimer.unref();
+  let retentionTimer = null;
 
   server.listen(config.port, config.host, () => {
     console.log(`zylos-dashboard listening on http://${config.host}:${config.port}`);
+    setTimeout(() => {
+      (async () => {
+        await startupSequence({ initialCollectors: false });
+        fleetPoller.start();
+
+        // Start periodic collectors
+        pm2Collector.start(60_000);
+        systemCollector.start(30_000);
+        if (statuslineCollector) statuslineCollector.start();
+        if (conversationCollector) conversationCollector.start(5_000);
+        if (codexRolloutCollector) codexRolloutCollector.start(5_000);
+
+        // Start snapshot timer
+        stateEngine.startSnapshotTimer();
+
+        // Start periodic spool drain (live mode with state engine)
+        spoolDrainer.startPeriodicDrain(stateEngine, 30_000);
+
+        runInitialCollectors().catch((err) => {
+          process.stderr.write(`[startup] Initial collectors failed after listen: ${err.message}\n`);
+        });
+
+        // Retention cleanup timer (hourly)
+        let lastVacuumDate = null;
+        retentionTimer = setInterval(() => {
+          try {
+            const result = runMetricMaintenance(store, { lastVacuumDate });
+            lastVacuumDate = result.lastVacuumDate;
+            if (result.vacuum?.skipped) {
+              process.stderr.write(`[retention] Skipped VACUUM: ${result.vacuum.reason} (${result.vacuum.sizeBytes} > ${result.vacuum.maxBytes})\n`);
+            }
+          } catch (err) {
+            process.stderr.write(`[retention] Error: ${err.message}\n`);
+          }
+        }, 60 * 60 * 1000);
+        retentionTimer.unref();
+      })().catch((err) => {
+        process.stderr.write(`[startup] Background startup failed: ${err.message}\n`);
+      });
+    }, 15_000).unref();
   });
 
   for (const signal of ['SIGINT', 'SIGTERM']) {
@@ -1586,8 +1584,11 @@ if (isMain && process.argv.includes('--smoke')) {
       systemCollector.stop();
       if (statuslineCollector) statuslineCollector.stop();
       if (conversationCollector) conversationCollector.stop();
+      if (codexRolloutCollector) codexRolloutCollector.stop();
       stateEngine.stopSnapshotTimer();
       spoolDrainer.stopPeriodicDrain();
+      if (retentionTimer) clearInterval(retentionTimer);
+      fleetPoller.stop();
       sse.closeAll();
       server.close(() => {
         c4Reader.close();

@@ -173,6 +173,77 @@ test('CodexRolloutCollector ingests rollout fixture metrics from hook-derived pa
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
+test('CodexRolloutCollector bounds each collect pass by complete lines', () => {
+  const dir = tmpDir();
+  const rolloutPath = path.join(dir, 'rollout-codex-session-1.jsonl');
+  const fixtureText = fs.readFileSync(path.resolve('test/fixtures/codex/rollout.jsonl'), 'utf8');
+  fs.writeFileSync(rolloutPath, fixtureText);
+
+  const store = new Store(path.join(dir, 'dashboard.db'));
+  store.upsertCodexRolloutPath({
+    runtime: 'codex',
+    sessionId: 'codex-session-1',
+    transcriptPath: rolloutPath,
+    lastEventAt: '2026-05-23T01:00:00.000Z'
+  });
+
+  const collector = new CodexRolloutCollector(store, {
+    modelPrices: {
+      'gpt-5.3-codex': { input: 2, output: 8, cacheRead: 0.5, cacheCreation: 2 }
+    },
+    codexRolloutMaxLinesPerCollect: 2
+  });
+
+  assert.equal(collector.collect(), 0);
+  const fixtureLines = fixtureText.split('\n');
+  const firstCursor = store.getCodexRolloutCursor(rolloutPath);
+  assert.equal(firstCursor.byte_offset, Buffer.byteLength(`${fixtureLines[0]}\n${fixtureLines[1]}\n`, 'utf8'));
+
+  assert.equal(collector.collect(), 4);
+  const secondCursor = store.getCodexRolloutCursor(rolloutPath);
+  assert.equal(secondCursor.byte_offset, Buffer.byteLength(`${fixtureLines[0]}\n${fixtureLines[1]}\n${fixtureLines[2]}\n${fixtureLines[3]}\n`, 'utf8'));
+  const health = store.getSourceHealth().find(h => h.name === 'jsonl_usage' && h.signal_type === 'runtime_progress');
+  assert.equal(health.status, 'healthy');
+
+  store.close();
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('CodexRolloutCollector advances cursor past oversized rollout lines', () => {
+  const dir = tmpDir();
+  const rolloutPath = path.join(dir, 'rollout-codex-session-1.jsonl');
+  const oversizedLine = 'x'.repeat(5000);
+  const sessionMeta = '{"type":"session_meta","timestamp":"2026-05-23T01:00:00.000Z","payload":{"id":"codex-session-1","cli_version":"0.130.0"}}';
+  fs.writeFileSync(rolloutPath, `${oversizedLine}\n${sessionMeta}\n`);
+
+  const store = new Store(path.join(dir, 'dashboard.db'));
+  store.upsertCodexRolloutPath({
+    runtime: 'codex',
+    sessionId: 'codex-session-1',
+    transcriptPath: rolloutPath,
+    lastEventAt: '2026-05-23T01:00:00.000Z'
+  });
+
+  const collector = new CodexRolloutCollector(store, {
+    modelPrices: {},
+    codexRolloutMaxBytesPerCollect: 4096
+  });
+
+  assert.equal(collector.collect(), 0);
+  const skippedCursor = store.getCodexRolloutCursor(rolloutPath);
+  assert.equal(skippedCursor.byte_offset, Buffer.byteLength(`${oversizedLine}\n`, 'utf8'));
+  const skipHealth = store.getSourceHealth().find(h => h.name === 'codex_rollout');
+  assert.equal(skipHealth.extra.reason, 'oversized_line_skipped');
+
+  assert.equal(collector.collect(), 0);
+  assert.equal(collector.getRuntimeInfo().cli_version, '0.130.0');
+  const finalCursor = store.getCodexRolloutCursor(rolloutPath);
+  assert.equal(finalCursor.byte_offset, fs.statSync(rolloutPath).size);
+
+  store.close();
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
 test('CodexRolloutCollector extracts cli_version from session_meta without a model', () => {
   const dir = tmpDir();
   const rolloutPath = path.join(dir, 'rollout-codex-session-1.jsonl');
