@@ -209,6 +209,41 @@ test('CodexRolloutCollector bounds each collect pass by complete lines', () => {
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
+test('CodexRolloutCollector advances cursor past oversized rollout lines', () => {
+  const dir = tmpDir();
+  const rolloutPath = path.join(dir, 'rollout-codex-session-1.jsonl');
+  const oversizedLine = 'x'.repeat(5000);
+  const sessionMeta = '{"type":"session_meta","timestamp":"2026-05-23T01:00:00.000Z","payload":{"id":"codex-session-1","cli_version":"0.130.0"}}';
+  fs.writeFileSync(rolloutPath, `${oversizedLine}\n${sessionMeta}\n`);
+
+  const store = new Store(path.join(dir, 'dashboard.db'));
+  store.upsertCodexRolloutPath({
+    runtime: 'codex',
+    sessionId: 'codex-session-1',
+    transcriptPath: rolloutPath,
+    lastEventAt: '2026-05-23T01:00:00.000Z'
+  });
+
+  const collector = new CodexRolloutCollector(store, {
+    modelPrices: {},
+    codexRolloutMaxBytesPerCollect: 4096
+  });
+
+  assert.equal(collector.collect(), 0);
+  const skippedCursor = store.getCodexRolloutCursor(rolloutPath);
+  assert.equal(skippedCursor.byte_offset, Buffer.byteLength(`${oversizedLine}\n`, 'utf8'));
+  const skipHealth = store.getSourceHealth().find(h => h.name === 'codex_rollout');
+  assert.equal(skipHealth.extra.reason, 'oversized_line_skipped');
+
+  assert.equal(collector.collect(), 0);
+  assert.equal(collector.getRuntimeInfo().cli_version, '0.130.0');
+  const finalCursor = store.getCodexRolloutCursor(rolloutPath);
+  assert.equal(finalCursor.byte_offset, fs.statSync(rolloutPath).size);
+
+  store.close();
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
 test('CodexRolloutCollector extracts cli_version from session_meta without a model', () => {
   const dir = tmpDir();
   const rolloutPath = path.join(dir, 'rollout-codex-session-1.jsonl');

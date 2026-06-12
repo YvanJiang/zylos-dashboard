@@ -150,13 +150,20 @@ function broadcastFleetState() {
 }
 
 function scheduleFleetStateBroadcast() {
-  if (fleetStateTimer) return;
   const elapsed = Date.now() - lastFleetStateBroadcastAt;
-  const delay = Math.max(1000 - elapsed, 1000);
+  if (elapsed >= 1000) {
+    if (fleetStateTimer) {
+      clearTimeout(fleetStateTimer);
+      fleetStateTimer = null;
+    }
+    broadcastFleetState();
+    return;
+  }
+  if (fleetStateTimer) return;
   fleetStateTimer = setTimeout(() => {
     fleetStateTimer = null;
     broadcastFleetState();
-  }, delay);
+  }, 1000 - elapsed);
   fleetStateTimer.unref?.();
 }
 
@@ -1535,7 +1542,7 @@ if (isMain && process.argv.includes('--smoke')) {
         fleetPoller.start();
 
         // Start periodic collectors
-        pm2Collector.start(30_000);
+        pm2Collector.start(60_000);
         systemCollector.start(30_000);
         if (statuslineCollector) statuslineCollector.start();
         if (conversationCollector) conversationCollector.start(5_000);
