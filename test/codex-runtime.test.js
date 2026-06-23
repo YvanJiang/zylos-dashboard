@@ -677,12 +677,58 @@ test('MetricResolver preserves rate-limit reset metadata when falling back to st
     confidence: 'actual'
   });
 
-  const resolver = new MetricResolver(store, {}, { metricStalenessSeconds: 1 });
+  const resolver = new MetricResolver(store, {}, { runtime: 'codex', metricStalenessSeconds: 1 });
   const rate = resolver.resolve('rate_limit');
 
   assert.equal(rate.value, 37.5);
   assert.equal(rate.selected_source, 'rollout');
   assert.equal(rate.dimensions.resets_at, 1779516000);
+
+  store.close();
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('MetricResolver does not fall back to Claude statusline metrics while running Codex', () => {
+  const dir = tmpDir();
+  const store = new Store(path.join(dir, 'dashboard.db'));
+  const now = new Date().toISOString();
+  const staleCodexTimestamp = new Date(Date.now() - 2000).toISOString();
+  store.insertMetric({
+    timestamp: now,
+    runtime: 'claude',
+    session_id: 'claude-session',
+    metric_name: 'statusline_summary',
+    metric_value: 0,
+    dimensions: {
+      context_pct: 6,
+      rate_limit: 99,
+      session_cost: 1.23
+    },
+    source: 'statusline',
+    confidence: 'actual'
+  });
+  store.insertMetric({
+    timestamp: staleCodexTimestamp,
+    runtime: 'codex',
+    session_id: 'codex-session',
+    metric_name: 'rate_limit',
+    metric_value: 37.5,
+    dimensions: { window_minutes: 300 },
+    source: 'rollout',
+    confidence: 'actual'
+  });
+
+  const resolver = new MetricResolver(store, {}, {
+    runtime: 'codex',
+    metricStalenessSeconds: 1
+  });
+  const rate = resolver.resolve('rate_limit');
+  const context = resolver.resolve('context_pct');
+
+  assert.equal(rate.value, 37.5);
+  assert.equal(rate.selected_source, 'rollout');
+  assert.equal(context.value, null);
+  assert.equal(context.selected_source, null);
 
   store.close();
   fs.rmSync(dir, { recursive: true, force: true });
@@ -713,7 +759,7 @@ test('MetricResolver exposes Codex rollout TTFT and turn duration', () => {
     confidence: 'actual'
   });
 
-  const resolver = new MetricResolver(store, {}, { metricStalenessSeconds: 120 });
+  const resolver = new MetricResolver(store, {}, { runtime: 'codex', metricStalenessSeconds: 120 });
   const ttft = resolver.resolve('ttft');
   const duration = resolver.resolve('turn_duration');
 
