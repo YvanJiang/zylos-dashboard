@@ -48,6 +48,12 @@ import Database from 'better-sqlite3';
 const startedAt = new Date();
 const MEMORY_WRITE_BODY_MAX_BYTES = 2 * 1024 * 1024 + 64 * 1024;
 
+let dashboardVersion = null;
+try {
+  const pkgPath = path.join(path.dirname(new URL(import.meta.url).pathname), '..', 'package.json');
+  dashboardVersion = JSON.parse(fs.readFileSync(pkgPath, 'utf8')).version || null;
+} catch { /* header version stays hidden if package.json is unreadable */ }
+
 let zylosVersion = null;
 let ccInstalledVersion = null;
 let codexInstalledVersion = null;
@@ -357,6 +363,7 @@ function buildApiStatePayload() {
   // Include the agent's deterministic identity color/hue so the single-agent
   // mascot can be tinted to match this agent's fleet tile.
   stateData.agent = { ...config.agent, ...agentColor(config.agent?.name) };
+  stateData.dashboard_version = dashboardVersion;
   stateData.runtime_info = buildRuntimeInfo();
   stateData.new_session_threshold = getNewSessionThreshold();
   stateData.system_metrics = getSystemMetrics();
