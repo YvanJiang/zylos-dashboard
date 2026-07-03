@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.2] - 2026-06-23
+
+### Fixed
+- Codex runtime metric fallback is now runtime-scoped: dashboard no longer falls back to stale Claude `statusline` metrics after switching an agent to Codex.
+
 ## [0.5.1] - 2026-06-13
 
 ### Added

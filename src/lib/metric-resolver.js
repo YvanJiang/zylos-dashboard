@@ -87,6 +87,14 @@ const METRIC_CHAINS = {
 };
 
 const DEFAULT_STALENESS_S = 120;
+const SOURCE_RUNTIME_SUPPORT = {
+  statusline: new Set(['claude']),
+  statusline_delta: new Set(['claude']),
+  statusline_current_usage: new Set(['claude']),
+  rollout: new Set(['codex'])
+};
+
+const RUNTIME_NEUTRAL_SOURCES = new Set(['system']);
 
 // Statusline only updates while the runtime is active, so an idle agent keeps
 // reporting its last rate-limit reading (e.g. a red 100%) long after the
@@ -160,6 +168,7 @@ export class MetricResolver {
     let preferredSource = chain[0].source;
 
     for (const link of chain) {
+      if (!this._sourceSupportsActiveRuntime(link.source)) continue;
       const queryMetric = link.metric || metricName;
       const latest = this._getLatestMetric(queryMetric, link.source);
       if (!latest) continue;
@@ -220,6 +229,20 @@ export class MetricResolver {
     };
   }
 
+  _activeRuntime() {
+    return this.config.runtime || 'claude';
+  }
+
+  _sourceSupportsActiveRuntime(source) {
+    const supported = SOURCE_RUNTIME_SUPPORT[source];
+    return !supported || supported.has(this._activeRuntime());
+  }
+
+  _metricRowMatchesRuntime(row) {
+    if (!row || RUNTIME_NEUTRAL_SOURCES.has(row.source)) return true;
+    return (row.runtime || 'claude') === this._activeRuntime();
+  }
+
   _getLatestMetric(metricName, source) {
     try {
       const rows = this.store.queryMetrics({
@@ -228,7 +251,7 @@ export class MetricResolver {
         until: new Date().toISOString()
       });
 
-      const matching = rows.filter(r => r.source === source);
+      const matching = rows.filter(r => r.source === source && this._metricRowMatchesRuntime(r));
       if (matching.length === 0) return null;
       return matching[matching.length - 1];
     } catch {
