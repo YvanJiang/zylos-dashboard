@@ -46,6 +46,12 @@ h2 { margin-bottom: 0; font-size: 15px; font-weight: 600; }
   -webkit-backdrop-filter: blur(20px);
 }
 
+.header-left {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-sm);
+}
+
 .eyebrow {
   margin: 0 0 2px;
   color: var(--accent);
@@ -53,6 +59,13 @@ h2 { margin-bottom: 0; font-size: 15px; font-weight: 600; }
   font-weight: 700;
   letter-spacing: 0.05em;
   text-transform: uppercase;
+}
+
+.header-version {
+  color: var(--text-muted);
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 10px;
+  letter-spacing: 0.03em;
 }
 
 .header-actions {
@@ -147,6 +160,16 @@ h2 { margin-bottom: 0; font-size: 15px; font-weight: 600; }
   padding: var(--space-sm) var(--space-lg) 0;
   overflow-x: auto;
   -webkit-overflow-scrolling: touch;
+}
+
+.tab-bar-agent {
+  margin-left: auto;
+  align-self: center;
+  padding-right: 2px;
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
 }
 
 .tab {
@@ -1058,6 +1081,7 @@ main { padding: var(--space-md) var(--space-lg) var(--space-xl); }
   font-size: 10px;
 }
 .agent-activity {
+  position: relative;
   min-height: 54px;
   align-items: flex-start;
   padding: 8px 9px;
@@ -1089,6 +1113,24 @@ main { padding: var(--space-md) var(--space-lg) var(--space-xl); }
 .subagent-light.is-on {
   background: var(--green);
   box-shadow: 0 0 0 4px color-mix(in srgb, var(--green) 18%, transparent);
+}
+/* Active-subagent count chip, pinned to the fleet tile activity corner (#279).
+   Absolutely positioned so it never becomes .agent-activity's :last-child
+   span — that selector styles the legacy single-line activity text. Distinct
+   from .subagent-badge, which is the single-agent view's subagent counter. */
+.fleet-subagent-badge {
+  position: absolute;
+  right: 6px;
+  bottom: 6px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--green) 16%, transparent);
+  color: var(--green);
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1.6;
+  pointer-events: none;
 }
 .agent-fleet-reason {
   display: inline-flex;

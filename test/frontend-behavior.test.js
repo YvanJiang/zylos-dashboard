@@ -221,6 +221,19 @@ test('Agent Fleet fixture renders operational fields and removes deprecated Puls
   assert.doesNotMatch(html, /pulse-self-badge/);
 });
 
+test('Agent Fleet tile shows subagent count badge only when subagents are active (#279)', () => {
+  const fixture = fleetFixture();
+  fixture.agents[0].has_subagent = true;
+  fixture.agents[0].subagent_count = 37;
+  const html = renderAgentFleetHtml(fixture, { basePath: '/dash' });
+  assert.match(html, /class="fleet-subagent-badge"[^>]*>⚡37</);
+  assert.equal((html.match(/fleet-subagent-badge/g) || []).length, 1);
+
+  // Payloads without the field (older remotes) and zero-count agents render no badge.
+  const bareHtml = renderAgentFleetHtml(fleetFixture(), { basePath: '/dash' });
+  assert.doesNotMatch(bareHtml, /fleet-subagent-badge/);
+});
+
 test('Agent Fleet preserves self first and stable name color mapping when response order changes', () => {
   const fixture = fleetFixture();
   fixture.agents[1].self = true;
@@ -748,8 +761,8 @@ test('memory browser is admin-scoped, agent-routed, and cache-busted', () => {
   assert.match(index, /id="tab-memory"/);
   assert.match(index, /id="memory-tree"/);
   assert.match(index, /id="memory-content"/);
-  assert.match(index, /app\.js\?v=56/);
-  assert.match(index, /style\.css\?v=44/);
+  assert.match(index, /app\.js\?v=57/);
+  assert.match(index, /style\.css\?v=45/);
 
   assert.match(app, /fetchAgentJson\('\/api\/memory\/tree'\)/);
   assert.match(app, /fetchAgentJson\(`\/api\/memory\/file\?path=\$\{encoded\}`\)/);
@@ -816,7 +829,7 @@ test('fleet management entry is local-only and modal is extensible for future ma
 
   assert.match(index, /id="fleet-manage-btn"/);
   assert.match(index, /data-i18n-title="fleet_manage\.open"/);
-  assert.match(index, /app\.js\?v=56/);
+  assert.match(index, /app\.js\?v=57/);
   assert.match(index, /<path d="M12 8V4H8"/);
   assert.match(index, /<rect width="16" height="12" x="4" y="8" rx="2"/);
   assert.match(app, /function initFleetManageButton\(\)[\s\S]*btn\.hidden = !!REMOTE_AGENT/);

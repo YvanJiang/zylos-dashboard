@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.3] - 2026-07-04
+
+### Added
+- Fleet tiles show an active-subagent count badge (⚡N) in the activity area, hidden when no subagents are running (#279)
+- Header shows the dashboard component's own version next to the Zylos Dashboard logo; `/api/state` now exposes `dashboard_version`
+- Single-agent view shows the viewed agent's name at the right end of the tab bar
+
 ## [0.5.2] - 2026-06-23
 
 ### Fixed

@@ -293,6 +293,7 @@ export function buildAgentFleetView(fleet, options = {}) {
       memPct: agent.mem_pct,
       diskPct: agent.disk_pct,
       hasSubagent: agent.has_subagent === true,
+      subagentCount: Number.isFinite(agent.subagent_count) ? agent.subagent_count : 0,
       reason: agent.health_reason || '',
       href: isSelf ? `${basePath}/` : `${basePath}/fleet/${encodeURIComponent(String(agent.name || ''))}/`,
       mascotSrc: mascotSrc(mood, options.mascotRoot)
@@ -346,6 +347,9 @@ function renderTile(tile, labels) {
     ? `<span class="agent-link-chip link-${escapeHtml(tile.linkChip.quality)}" title="${escapeHtml(tile.linkChip.title)}">${escapeHtml(tile.linkChip.label)}</span>`
     : '';
   const subagentLabel = tile.hasSubagent ? labels.subagent : '';
+  const subagentBadge = tile.subagentCount > 0
+    ? `<span class="fleet-subagent-badge" title="${escapeHtml(labels.subagent)}: ${tile.subagentCount}">⚡${tile.subagentCount}</span>`
+    : '';
   const feedHtml = activityFeedRows(tile, labels);
   return `<a class="agent-tile agent-tile-${escapeHtml(tile.mood)}${tile.offline ? ' is-offline' : ''}${tile.isSelf ? ' is-self' : ''} context-${escapeHtml(tile.contextLevel)}" href="${escapeHtml(tile.href)}" data-agent="${escapeHtml(tile.name)}" data-state="${escapeHtml(tile.mood)}"${tile.isSelf ? ' data-self="true"' : ''}${tile.linkQuality !== 'ok' ? ` data-link-quality="${escapeHtml(tile.linkQuality)}"` : ''} style="--agent-accent:${escapeHtml(tile.color)};--agent-hue:${tile.hue}deg;--context-pct:${ringPct};">
     <div class="agent-tile-head">
@@ -374,6 +378,7 @@ function renderTile(tile, labels) {
     ${rateRows(tile, labels)}
     <div class="agent-activity${feedHtml ? ' has-feed' : ''}">
       <span class="subagent-light${tile.hasSubagent ? ' is-on' : ''}" aria-label="${escapeHtml(subagentLabel)}"></span>
+      ${subagentBadge}
       ${feedHtml ? `<div class="fleet-feed">${feedHtml}</div>` : `<span>${escapeHtml(tile.activity)}</span>`}
     </div>
     ${reason}

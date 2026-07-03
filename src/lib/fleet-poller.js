@@ -157,6 +157,10 @@ function hasSubagent(state) {
   return Array.isArray(state?.active_subagents) && state.active_subagents.length > 0;
 }
 
+function subagentCount(state) {
+  return Array.isArray(state?.active_subagents) ? state.active_subagents.length : 0;
+}
+
 function deriveActivity(state) {
   if (state?.running_tools?.length > 0) return state.running_tools[0].tool_detail || state.running_tools[0].tool_name || 'Running tool';
   if (state?.active_subagents?.length > 0) return state.active_subagents[0].last_activity || state.active_subagents[0].description || 'Subagent active';
@@ -288,6 +292,7 @@ function sanitizeRecord(record) {
     disk_pct: record.disk_pct,
     has_upgrade: record.has_upgrade === true,
     has_subagent: record.has_subagent === true,
+    subagent_count: Number.isFinite(record.subagent_count) ? record.subagent_count : 0,
     last_seen: record.last_seen,
     pulse_rate: record.pulse_rate,
     health_reason: record.health_reason,
@@ -342,6 +347,7 @@ export function stateToFleetRecord(agentConfig = {}, statePayload = {}, opts = {
     disk_pct: numberOrNull(systemMetrics?.disk_pct ?? systemMetrics?.disk_used_pct),
     has_upgrade: hasUpgrade(runtimeInfo),
     has_subagent: hasSubagent(statePayload),
+    subagent_count: subagentCount(statePayload),
     last_seen: nowIso(nowMs),
     pulse_rate: pulseRate,
     health_reason: healthReason,
@@ -400,6 +406,7 @@ export class FleetPoller {
         disk_pct: null,
         has_upgrade: false,
         has_subagent: false,
+        subagent_count: 0,
         last_seen: null,
         pulse_rate: null,
         health_reason: 'not_polled',
@@ -468,6 +475,7 @@ export class FleetPoller {
       disk_pct: null,
       has_upgrade: false,
       has_subagent: false,
+      subagent_count: 0,
       last_seen: null,
       pulse_rate: null,
       health_reason: 'not_polled',
@@ -1012,6 +1020,7 @@ export class FleetPoller {
       disk_pct: existing.disk_pct ?? null,
       has_upgrade: existing.has_upgrade === true,
       has_subagent: existing.has_subagent === true,
+      subagent_count: Number.isFinite(existing.subagent_count) ? existing.subagent_count : 0,
       last_seen: existing.last_seen || null,
       pulse_rate: 0,
       health_reason: reason,

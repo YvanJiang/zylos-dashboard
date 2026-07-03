@@ -332,7 +332,29 @@ function applyRuntimeVisibility() {
 }
 
 // ─── Render: Info Bar ───
+// Header version + tab-bar agent name. The version is this page's own
+// dashboard component version: set once from the first payload that carries
+// it (the local server's /api/state, or the remote's own document in
+// standalone remote mode) and never overwritten — in-page remote viewing
+// swaps dashboardState to the remote agent's payload, whose version belongs
+// to a different install.
+function renderIdentityChrome() {
+  const versionEl = $('#dashboard-version');
+  const version = state.dashboardState?.dashboard_version;
+  if (versionEl && version && !versionEl.textContent) {
+    versionEl.textContent = `v${version}`;
+    versionEl.hidden = false;
+  }
+  const nameEl = $('#tab-bar-agent-name');
+  if (nameEl) {
+    const name = viewedAgentName();
+    nameEl.textContent = name;
+    nameEl.hidden = !name;
+  }
+}
+
 function renderInfoBar() {
+  renderIdentityChrome();
   const bar = $('#info-bar');
   if (!bar) return;
   const ri = state.dashboardState?.runtime_info;
