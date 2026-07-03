@@ -134,7 +134,8 @@ test('usage_event unique index deduplicates null-session replay keys atomically'
 }));
 
 test('metric maintenance preserves otel data and skips large guarded VACUUM', () => withStore((store) => {
-  const oldTimestamp = new Date(Date.now() - 120 * 24 * 60 * 60 * 1000).toISOString();
+  const maintenanceNow = new Date('2026-06-07T00:00:00.000Z');
+  const oldTimestamp = new Date(maintenanceNow.getTime() - 120 * 24 * 60 * 60 * 1000).toISOString();
   store.insertMetric({
     timestamp: oldTimestamp,
     runtime: 'claude',
@@ -155,7 +156,7 @@ test('metric maintenance preserves otel data and skips large guarded VACUUM', ()
   });
 
   const result = runMetricMaintenance(store, {
-    now: new Date('2026-06-07T00:00:00.000Z'),
+    now: maintenanceNow,
     vacuumMaxBytes: 1
   });
 
