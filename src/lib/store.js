@@ -303,7 +303,7 @@ export class Store {
     `);
 
     this._deleteOldEvents = this.db.prepare(`
-      DELETE FROM runtime_events WHERE timestamp < datetime('now', '-' || ? || ' days')
+      DELETE FROM runtime_events WHERE timestamp < datetime(@anchor, '-' || @days || ' days')
     `);
 
     this._insertMetric = this.db.prepare(`
@@ -343,7 +343,7 @@ export class Store {
       DELETE FROM metric_points
       WHERE metric_name LIKE @metric_name_pattern
         AND source LIKE @source_pattern
-        AND timestamp < datetime('now', '-' || @days || ' days')
+        AND timestamp < datetime(@anchor, '-' || @days || ' days')
     `);
 
     this._deleteMetricsByName = this.db.prepare(`
@@ -354,7 +354,7 @@ export class Store {
 
     this._deleteMetricsExcludingPatterns = this.db.prepare(`
       DELETE FROM metric_points
-      WHERE timestamp < datetime('now', '-' || @days || ' days')
+      WHERE timestamp < datetime(@anchor, '-' || @days || ' days')
         AND metric_name NOT IN ('usage_event', 'statusline_summary', 'system_summary', 'pm2_summary', 'ttft', 'turn_duration')
         AND metric_name NOT LIKE 'pm2_%'
         AND source NOT LIKE 'otel%'
@@ -379,7 +379,7 @@ export class Store {
     `);
 
     this._deleteOldSnapshots = this.db.prepare(`
-      DELETE FROM state_snapshots WHERE snapshot_at < datetime('now', '-' || ? || ' days')
+      DELETE FROM state_snapshots WHERE snapshot_at < datetime(@anchor, '-' || @days || ' days')
     `);
 
     this._insertFact = this.db.prepare(`
@@ -395,7 +395,7 @@ export class Store {
     `);
 
     this._deleteOldFacts = this.db.prepare(`
-      DELETE FROM activity_facts WHERE timestamp < datetime('now', '-' || ? || ' days')
+      DELETE FROM activity_facts WHERE timestamp < datetime(@anchor, '-' || @days || ' days')
     `);
 
     this._upsertSourceHealth = this.db.prepare(`
@@ -622,8 +622,8 @@ export class Store {
     return this._eventsSince.all(eventSeq).map(this._parseEventRow);
   }
 
-  deleteEventsOlderThan(days) {
-    return this._deleteOldEvents.run(days);
+  deleteEventsOlderThan(days, anchor = 'now') {
+    return this._deleteOldEvents.run({ days, anchor });
   }
 
   insertMetric(point) {
@@ -675,11 +675,12 @@ export class Store {
     return this._deletePm2Metrics.run(days);
   }
 
-  deleteMetricsByNameAndSource(metricNamePattern, sourcePattern, days) {
+  deleteMetricsByNameAndSource(metricNamePattern, sourcePattern, days, anchor = 'now') {
     return this._deleteMetricsByNameAndSource.run({
       metric_name_pattern: metricNamePattern,
       source_pattern: sourcePattern,
-      days
+      days,
+      anchor
     });
   }
 
@@ -690,8 +691,8 @@ export class Store {
     });
   }
 
-  deleteOtherLegacyMetricsOlderThan(days) {
-    return this._deleteMetricsExcludingPatterns.run({ days });
+  deleteOtherLegacyMetricsOlderThan(days, anchor = 'now') {
+    return this._deleteMetricsExcludingPatterns.run({ days, anchor });
   }
 
   upsertPm2State(processName, state = {}) {
@@ -723,8 +724,8 @@ export class Store {
     }));
   }
 
-  deleteSnapshotsOlderThan(days) {
-    return this._deleteOldSnapshots.run(days);
+  deleteSnapshotsOlderThan(days, anchor = 'now') {
+    return this._deleteOldSnapshots.run({ days, anchor });
   }
 
   walCheckpoint() {
@@ -785,8 +786,8 @@ export class Store {
     }));
   }
 
-  deleteFactsOlderThan(days) {
-    return this._deleteOldFacts.run(days);
+  deleteFactsOlderThan(days, anchor = 'now') {
+    return this._deleteOldFacts.run({ days, anchor });
   }
 
   upsertSourceHealth(name, signalType, status, extra) {

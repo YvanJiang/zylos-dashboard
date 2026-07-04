@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.5.3] - 2026-07-04
 
+### Fixed
+- Metric maintenance retention deletes now honor the injected `now` (time anchor threaded into the delete SQL instead of SQLite `datetime('now')`), fixing the permanently-failing fixed-date PM2 retention test; production behavior unchanged (anchor defaults to the current time)
+
 ### Added
 - Fleet tiles show an active-subagent count badge (⚡N) in the activity area, hidden when no subagents are running (#279)
 - Header shows the dashboard component's own version next to the Zylos Dashboard logo; `/api/state` now exposes `dashboard_version`
