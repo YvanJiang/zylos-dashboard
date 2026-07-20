@@ -212,6 +212,24 @@ h2 { margin-bottom: 0; font-size: 15px; font-weight: 600; }
 main { padding: var(--space-md) var(--space-lg) var(--space-xl); }
 .tab-panel[hidden] { display: none; }
 
+/* ─── Core runtime observability ─── */
+.runtime-observability-card { grid-column: 1 / -1; }
+.diagnostic-only { color: var(--text-muted); font-size: 11px; }
+.runtime-observability-status, .runtime-observability-summary, .runtime-observability-section {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: var(--space-sm) var(--space-md);
+  margin-top: var(--space-sm);
+}
+.runtime-observability-status.is-unavailable, .runtime-observability-unavailable { color: var(--state-possibly-stuck); }
+.runtime-observability-status.is-warning { color: var(--state-possibly-stuck); border-color: var(--state-possibly-stuck); }
+.runtime-observability-summary { display: flex; flex-wrap: wrap; gap: var(--space-sm); color: var(--text-dim); }
+.runtime-observability-summary strong { color: var(--text); }
+.runtime-observability-section h3 { font-size: 12px; margin: 0 0 var(--space-xs); }
+.runtime-observability-list { margin: 0; padding-left: 18px; color: var(--text-dim); }
+.runtime-observability-list li + li { margin-top: 3px; }
+.runtime-observability-empty, .runtime-observability-counters { margin: 0; color: var(--text-muted); }
+
 /* ─── Memory Browser ─── */
 .memory-layout {
   display: grid;

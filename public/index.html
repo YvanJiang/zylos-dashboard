@@ -7,12 +7,12 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="__ASSET_ROOT__/css/style.css?v=45">
+<link rel="stylesheet" href="__ASSET_ROOT__/css/style.css?v=46">
 <link rel="stylesheet" href="__ASSET_ROOT__/themes/light.css?v=2">
 <script src="__ASSET_ROOT__/vendor/chart.umd.js"></script>
 <script src="__ASSET_ROOT__/js/chartjs-adapter-date-fns.bundle.min.js"></script>
 <script src="__ASSET_ROOT__/js/markdown-it.min.js"></script>
-<script type="module" src="__ASSET_ROOT__/js/app.js?v=57"></script>
+<script type="module" src="__ASSET_ROOT__/js/app.js?v=58"></script>
 </head>
 <body>
 <header class="app-header">
@@ -94,6 +94,14 @@
             <div id="subagent-list"></div>
           </div>
         </div>
+      </section>
+
+      <section class="card runtime-observability-card" aria-labelledby="runtime-observability-title">
+        <div class="card-head">
+          <h2 id="runtime-observability-title">Core Runtime Observability</h2>
+          <span class="diagnostic-only">Provider/process identity is diagnostic-only</span>
+        </div>
+        <div id="runtime-observability" aria-live="polite"></div>
       </section>
 
       <!-- ② Capacity & Cost -->
