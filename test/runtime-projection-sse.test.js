@@ -56,3 +56,27 @@ test('SseHub drops slow and disconnected clients without blocking other projecti
   assert.equal(healthy.writes.filter((line) => line.includes('"projection_sequence":2')).length, 0);
   assert.equal(hub.clients.size, 0);
 });
+
+test('SseHub lets a Luna connection wait until its first complete runtime projection', () => {
+  const hub = new SseHub();
+  const luna = new FakeResponse();
+  let receivedCompleteProjection = false;
+  const acceptLunaEvent = (eventType, data) => {
+    if (!receivedCompleteProjection) {
+      if (eventType !== 'runtime_projection' || data.complete !== true) return false;
+      receivedCompleteProjection = true;
+    }
+    return true;
+  };
+
+  hub.addClient(luna, null, [], acceptLunaEvent);
+  hub.broadcast('fleet_state', { state: 'idle' });
+  hub.broadcast('runtime_projection', { ...projection, complete: false });
+  hub.broadcast('runtime_projection', projection);
+  hub.broadcast('fleet_state', { state: 'busy' });
+
+  const events = luna.writes.filter((line) => line.includes('event:'));
+  assert.match(events[0], /^id: 3\nevent: runtime_projection/);
+  assert.match(events[0], /"complete":true/);
+  assert.match(events[1], /^id: 4\nevent: fleet_state/);
+});

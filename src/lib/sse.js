@@ -6,7 +6,7 @@ export class SseHub {
     this.sequence = 0;
   }
 
-  addClient(res, validator, initialEvents = []) {
+  addClient(res, validator, initialEvents = [], acceptsEvent = null) {
     res.writeHead(200, {
       'content-type': 'text/event-stream',
       'cache-control': 'no-store',
@@ -14,7 +14,7 @@ export class SseHub {
       'x-accel-buffering': 'no'
     });
     res.write(': connected\n\n');
-    const client = { res, validator: validator || null };
+    const client = { res, validator: validator || null, acceptsEvent };
     for (const { eventType, data } of initialEvents) {
       if (!this._write(client, this._eventPayload(eventType, data))) return false;
     }
@@ -42,6 +42,7 @@ export class SseHub {
     const payload = `id: ${this.sequence}\n${this._eventPayload(eventType, data)}`;
     for (const client of this.clients) {
       if (this._evictIfInvalid(client)) continue;
+      if (client.acceptsEvent && !client.acceptsEvent(eventType, data)) continue;
       this._write(client, payload);
     }
   }

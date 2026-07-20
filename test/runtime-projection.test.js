@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { RuntimeProjectionPublisher } from '../src/lib/runtime-projection.js';
+import { createLunaProjectionEventFilter, RuntimeProjectionPublisher } from '../src/lib/runtime-projection.js';
 import { completeSnapshot } from './helpers/runtime-snapshot-fixture.js';
 
 test('RuntimeProjectionPublisher derives a complete read-only v1 projection from an accepted full Core snapshot', () => {
@@ -115,4 +115,37 @@ test('RuntimeProjectionPublisher exposes no provider-native identity, PID, lease
   assert.doesNotMatch(text, /native-session|secret-owner|9999|runtime_identity|provider_native_id|lease|workspace_root|"control":true|"core_direct_access":true/i);
   assert.equal(publisher.get().capabilities.control, false);
   assert.equal(publisher.get().capabilities.core_direct_access, false);
+});
+
+test('Luna projection event filter ignores duplicate and obsolete data, fails closed on conflicts and gaps, and resyncs on the next full projection', () => {
+  const publisher = new RuntimeProjectionPublisher({ dashboardInstanceId: 'dashboard-A' });
+  publisher.publish(completeSnapshot({ version: 1 }), { status: 'initial', apply: true });
+  const first = publisher.get();
+  const filter = createLunaProjectionEventFilter(first);
+
+  assert.equal(filter.isReady(), true);
+  assert.equal(filter.accepts('fleet_state', {}), true);
+  assert.equal(filter.accepts('runtime_projection', structuredClone(first)), false);
+  assert.equal(filter.accepts('runtime_projection', { ...first, projection_sequence: 0 }), false);
+  assert.equal(filter.accepts('runtime_projection', { ...first, service: { ...first.service, health: 'degraded' } }), false);
+  assert.equal(filter.isReady(), false);
+  assert.equal(filter.accepts('fleet_state', {}), false);
+
+  const resync = { ...first, projection_id: 'projection-dashboard-A-3', projection_sequence: 3 };
+  assert.equal(filter.accepts('runtime_projection', resync), true);
+  assert.equal(filter.isReady(), true);
+  assert.equal(filter.accepts('runtime_projection', { ...resync, projection_id: 'projection-dashboard-B-1', dashboard_instance_id: 'dashboard-B', projection_sequence: 1 }), true);
+
+  const gapFilter = createLunaProjectionEventFilter(first);
+  const gap = { ...first, projection_id: 'projection-dashboard-A-3', projection_sequence: 3 };
+  assert.equal(gapFilter.accepts('runtime_projection', gap), false);
+  assert.equal(gapFilter.isReady(), false);
+  const fullAfterGap = { ...gap, projection_id: 'projection-dashboard-A-4', projection_sequence: 4 };
+  assert.equal(gapFilter.accepts('runtime_projection', fullAfterGap), true);
+
+  const degradedFilter = createLunaProjectionEventFilter(first);
+  const degraded = { ...first, projection_id: 'projection-dashboard-A-2', projection_sequence: 2, complete: false, error: { code: 'observability_degraded' } };
+  assert.equal(degradedFilter.accepts('runtime_projection', degraded), true);
+  assert.equal(degradedFilter.isReady(), false);
+  assert.equal(degradedFilter.accepts('runtime_projection', { ...degraded, projection_id: 'projection-dashboard-A-3', projection_sequence: 3, complete: true, error: null }), true);
 });

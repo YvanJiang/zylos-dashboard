@@ -34,7 +34,7 @@ import { IngestQueue } from './lib/ingest-queue.js';
 import { buildSystemPayload } from './lib/system-api.js';
 import { SseHub } from './lib/sse.js';
 import { RuntimeSnapshotConsumer, RuntimeSnapshotError } from './lib/runtime-snapshot.js';
-import { RuntimeProjectionPublisher } from './lib/runtime-projection.js';
+import { createLunaProjectionEventFilter, RuntimeProjectionPublisher } from './lib/runtime-projection.js';
 import { FleetPoller, stateToFleetRecord } from './lib/fleet-poller.js';
 import { buildSafeFleetPayload } from './lib/fleet-payload.js';
 import { FleetProxy } from './lib/fleet-proxy.js';
@@ -1188,12 +1188,15 @@ function handleApi(req, res, pathname, url) {
     const apiToken = req._apiToken;
     const validator = apiToken ? () => !!validateApiSession(apiToken) : null;
     const projection = runtimeProjectionPublisher.get();
-    if (!projection || !projection.complete) {
-      sendJson(res, 503, { error: 'runtime_projection_unavailable', requires_full: true });
-      return true;
+    const isLunaConsumer = url.searchParams.get('consumer') === 'luna';
+    const lunaFilter = isLunaConsumer ? createLunaProjectionEventFilter(projection) : null;
+    const initialEvents = isLunaConsumer && projection?.complete
+      ? [{ eventType: 'runtime_projection', data: projection }]
+      : [];
+    if (!sse.addClient(res, validator, initialEvents, lunaFilter?.accepts)) return true;
+    if (!isLunaConsumer || lunaFilter.isReady()) {
+      res.write(`event: fleet_state\ndata: ${JSON.stringify(buildApiStatePayload())}\n\n`);
     }
-    if (!sse.addClient(res, validator, [{ eventType: 'runtime_projection', data: projection }])) return true;
-    res.write(`event: fleet_state\ndata: ${JSON.stringify(buildApiStatePayload())}\n\n`);
     return true;
   }
 

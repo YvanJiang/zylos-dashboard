@@ -83,8 +83,8 @@ test('Dashboard publishes the versioned Luna runtime projection through the exis
   assert.match(index, /RuntimeProjectionPublisher/);
   assert.match(index, /runtimeProjectionPublisher\.publish\(snapshot, update\)/);
   assert.match(index, /sse\.broadcast\('runtime_projection', projection\)/);
-  assert.match(index, /eventType: 'runtime_projection'/);
-  assert.match(index, /if \(!projection \|\| !projection\.complete\)/);
-  assert.match(index, /runtime_projection_unavailable/);
+  assert.match(index, /createLunaProjectionEventFilter/);
+  assert.match(index, /isLunaConsumer && projection\?\.complete/);
+  assert.match(index, /url\.searchParams\.get\('consumer'\) === 'luna'/);
   assert.doesNotMatch(index, /zylos-core|core\.db|runtime\.db/);
 });

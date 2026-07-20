@@ -14,6 +14,10 @@ function clone(value) {
   return value === null ? null : structuredClone(value);
 }
 
+function projectionEqual(left, right) {
+  return JSON.stringify(left) === JSON.stringify(right);
+}
+
 function activeTurn(snapshot, executor) {
   return snapshot.turns.items.find((turn) => turn.turn_id === executor.active_turn_id) || null;
 }
@@ -98,4 +102,58 @@ export class RuntimeProjectionPublisher {
   get() {
     return clone(this.#projection);
   }
+}
+
+export function createLunaProjectionEventFilter(initialProjection = null) {
+  let current = initialProjection?.complete ? clone(initialProjection) : null;
+  let requiresFull = current === null;
+
+  return {
+    isReady() {
+      return current !== null && !requiresFull;
+    },
+    accepts(eventType, projection) {
+      if (eventType !== 'runtime_projection') return current !== null && !requiresFull;
+      if (current === null) {
+        if (!projection?.complete) {
+          requiresFull = true;
+          return false;
+        }
+        current = clone(projection);
+        requiresFull = false;
+        return true;
+      }
+      if (current.dashboard_instance_id !== projection.dashboard_instance_id) {
+        if (!projection.complete) {
+          requiresFull = true;
+          return false;
+        }
+        current = clone(projection);
+        requiresFull = false;
+        return true;
+      }
+      if (projection.projection_sequence === current.projection_sequence) {
+        if (!projectionEqual(current, projection)) requiresFull = true;
+        return false;
+      }
+      if (projection.projection_sequence < current.projection_sequence) return false;
+      if (requiresFull) {
+        if (!projection.complete) return false;
+        current = clone(projection);
+        requiresFull = false;
+        return true;
+      }
+      if (projection.projection_sequence > current.projection_sequence + 1) {
+        requiresFull = true;
+        return false;
+      }
+      if (!projection.complete) {
+        current = clone(projection);
+        requiresFull = true;
+        return true;
+      }
+      current = clone(projection);
+      return true;
+    },
+  };
 }
