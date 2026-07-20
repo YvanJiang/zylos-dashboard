@@ -1,5 +1,6 @@
 import {
   containsPublicSecretValue,
+  isValidRfc3339Timestamp,
   OPERATIONS_ACTION_DEFINITIONS,
   OPERATIONS_CONTROL_STATUSES,
 } from '../../public/js/operations-control-contract.js';
@@ -132,7 +133,7 @@ function validateContractError(error) {
     || typeof error.retryable !== 'boolean'
     || !['none', 'known', 'unknown'].includes(error.side_effect_status)
     || typeof error.user_message !== 'string' || error.user_message.trim().length === 0
-    || typeof error.occurred_at !== 'string' || !Number.isFinite(Date.parse(error.occurred_at))
+    || !isValidRfc3339Timestamp(error.occurred_at)
     || (error.detail_ref !== undefined && (typeof error.detail_ref !== 'string' || error.detail_ref.length === 0))) {
     throw new OperationsControlError('invalid_control_result', 'Control result error does not match the Core public error contract.');
   }
@@ -149,7 +150,7 @@ export function validateOperationsControlResult(value, { action } = {}) {
   if (!required.every((field) => Object.hasOwn(value, field))) {
     throw new OperationsControlError('invalid_control_result', 'Control result is missing required fields.');
   }
-  if (value.contract !== 'zylos.control-result' || !/^1\.[0-9]+$/.test(value.contract_version)) {
+  if (value.contract !== 'zylos.control-result' || !/^1\.(?:0|[1-9][0-9]*)$/.test(value.contract_version)) {
     throw new OperationsControlError('invalid_control_result', 'Unsupported control result contract.');
   }
   if (!CONTROL_STATUSES.has(value.status)) {
@@ -175,7 +176,7 @@ export function validateOperationsControlResult(value, { action } = {}) {
       || value.target_version < value.previous_target_version) {
       throw new OperationsControlError('invalid_control_result', 'Successful target versions are invalid.');
     }
-    if (typeof value.accepted_at !== 'string' || !Number.isFinite(Date.parse(value.accepted_at))) {
+    if (!isValidRfc3339Timestamp(value.accepted_at)) {
       throw new OperationsControlError('invalid_control_result', 'Successful controls require accepted_at.');
     }
   } else {
@@ -188,7 +189,7 @@ export function validateOperationsControlResult(value, { action } = {}) {
   }
   if (value.status === 'accepted'
     ? value.completed_at !== null
-    : (typeof value.completed_at !== 'string' || !Number.isFinite(Date.parse(value.completed_at)))) {
+    : !isValidRfc3339Timestamp(value.completed_at)) {
     throw new OperationsControlError('invalid_control_result', 'completed_at does not match status.');
   }
   if ((['conflict', 'forbidden'].includes(value.status) || (action && action !== 'inspect'))
@@ -208,6 +209,27 @@ function resultKey(value) {
 
 function jsonEqual(left, right) {
   return JSON.stringify(left) === JSON.stringify(right);
+}
+
+function targetEqual(left, right) {
+  const fields = Object.keys(left);
+  return fields.length === Object.keys(right).length
+    && fields.every((field) => Object.hasOwn(right, field) && left[field] === right[field]);
+}
+
+function assertSubmitCorrelation(result, request) {
+  if (result.caller_namespace !== request.caller_namespace
+    || result.control_id !== request.control_id
+    || result.trace_id !== request.trace_id
+    || !targetEqual(result.target, request.target)) {
+    throw new OperationsControlError('invalid_control_result', 'Core result does not match the submitted control identity.');
+  }
+}
+
+function assertResourceCorrelation(result, callerNamespace, controlId) {
+  if (result.caller_namespace !== callerNamespace || result.control_id !== controlId) {
+    throw new OperationsControlError('invalid_control_result', 'Core result does not match the requested control resource.');
+  }
 }
 
 export class OperationsControlResultStore {
@@ -326,12 +348,16 @@ export class OperationsControlClient {
     const body = await this.#requestJson(this.endpoint, {
       method: 'POST', body: request, operation: 'submission',
     });
-    return validateOperationsControlResult(body, { action: request.action });
+    const result = validateOperationsControlResult(body, { action: request.action });
+    assertSubmitCorrelation(result, request);
+    return result;
   }
 
   async getResult(callerNamespace, controlId) {
     const url = `${this.endpoint.replace(/\/+$/, '')}/${encodeURIComponent(callerNamespace)}/${encodeURIComponent(controlId)}`;
     const body = await this.#requestJson(url, { method: 'GET', operation: 'result poll' });
-    return validateOperationsControlResult(body);
+    const result = validateOperationsControlResult(body);
+    assertResourceCorrelation(result, callerNamespace, controlId);
+    return result;
   }
 }

@@ -133,6 +133,8 @@ test('validates the exact action target/result matrix and rejects cross-action d
   );
   for (const malformed of [
     { ...result('completed'), completed_at: null },
+    { ...result('completed'), accepted_at: '2026-07-20' },
+    { ...result('completed'), completed_at: '2026-07-20 10:00:01' },
     { ...result('completed'), audit_id: null },
     { ...result('completed'), result: { intent_id: 'intent-A', state: 'future' } },
     { ...result('completed'), target_version: '4' },
@@ -141,9 +143,42 @@ test('validates the exact action target/result matrix and rejects cross-action d
     { ...result('failed'), error: { ...result('failed').error, retryable: 'no' } },
     { ...result('failed'), error: { ...result('failed').error, side_effect_status: 'maybe' } },
     { ...result('failed'), error: { ...result('failed').error, occurred_at: 'yesterday' } },
+    { ...result('failed'), error: { ...result('failed').error, occurred_at: '2026-07-20' } },
   ]) {
     assert.throws(
       () => validateOperationsControlResult(malformed, { action: 'reconcile' }),
+      (error) => error instanceof OperationsControlError && error.code === 'invalid_control_result',
+    );
+  }
+});
+
+test('client correlates submit and poll results to the exact Core control resource', async () => {
+  for (const mismatched of [
+    { ...result('completed'), caller_namespace: 'dashboard.other' },
+    { ...result('completed'), control_id: 'control-B' },
+    { ...result('completed'), trace_id: 'trace-B' },
+    { ...result('completed'), target: { aggregate_type: 'service', service_instance_id: 'service-B' } },
+  ]) {
+    const client = new OperationsControlClient({
+      endpoint: 'https://core.test/control',
+      fetch: async () => response(mismatched),
+    });
+    await assert.rejects(
+      () => client.submit(request()),
+      (error) => error instanceof OperationsControlError && error.code === 'invalid_control_result',
+    );
+  }
+
+  for (const mismatched of [
+    { ...result('completed'), caller_namespace: 'dashboard.other' },
+    { ...result('completed'), control_id: 'control-B' },
+  ]) {
+    const client = new OperationsControlClient({
+      endpoint: 'https://core.test/control',
+      fetch: async () => response(mismatched),
+    });
+    await assert.rejects(
+      () => client.getResult('dashboard.prod', 'control-A'),
       (error) => error instanceof OperationsControlError && error.code === 'invalid_control_result',
     );
   }

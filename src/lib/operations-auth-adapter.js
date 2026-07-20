@@ -1,6 +1,7 @@
 import crypto from 'node:crypto';
 import {
   containsPublicSecretValue,
+  isValidRfc3339Timestamp,
   OPERATIONS_ACTION_DEFINITIONS,
   OPERATIONS_TARGET_IDENTITIES,
 } from '../../public/js/operations-control-contract.js';
@@ -183,7 +184,7 @@ function activeGrant(policy, subject, action, target, now) {
     && grant.capability === capability
     && (!grant.required_role || subject.roles.includes(grant.required_role))
     && (grant.expires_at === null
-      || (Number.isFinite(Date.parse(grant.expires_at)) && Date.parse(grant.expires_at) > Date.parse(now)))
+      || (isValidRfc3339Timestamp(grant.expires_at) && Date.parse(grant.expires_at) > Date.parse(now)))
     && breakGlassAudited(grant)
     && scopeCouldCover(grant.scope, target)
   )) || [];
@@ -198,10 +199,18 @@ function validateVerifiedSubject(subject) {
     || typeof subject.subject_id !== 'string' || subject.subject_id.length === 0
     || !Array.isArray(subject.roles)
     || subject.roles.some((role) => typeof role !== 'string' || role.length === 0)
-    || typeof subject.authenticated_at !== 'string'
-    || !Number.isFinite(Date.parse(subject.authenticated_at))) {
+    || !isValidRfc3339Timestamp(subject.authenticated_at)) {
     throw new OperationsAuthError('unauthenticated', 'A verified external subject is required.', 401);
   }
+}
+
+function requireActiveGrant(policy, subject, action, target, now) {
+  validateVerifiedSubject(subject);
+  const grant = activeGrant(policy, subject, action, target, now);
+  if (!grant) {
+    throw new OperationsAuthError('forbidden', 'The verified subject has no current covering operations grant.');
+  }
+  return grant;
 }
 
 export class OperationsAuthorizationAdapter {
@@ -214,14 +223,7 @@ export class OperationsAuthorizationAdapter {
   }
 
   authorize(verifiedSubject, { action, target }) {
-    validateVerifiedSubject(verifiedSubject);
-    const grant = activeGrant(this.policy, verifiedSubject, action, target, this.now());
-    if (!grant) {
-      throw new OperationsAuthError(
-        'forbidden',
-        'The verified subject has no current covering operations grant.',
-      );
-    }
+    const grant = requireActiveGrant(this.policy, verifiedSubject, action, target, this.now());
     return structuredClone(grant);
   }
 
@@ -229,9 +231,7 @@ export class OperationsAuthorizationAdapter {
     rejectClientAuthority(input);
     validateInput(input);
     const now = this.now();
-    validateVerifiedSubject(verifiedSubject);
-    const grant = activeGrant(this.policy, verifiedSubject, input.action, input.target, now);
-    if (!grant) throw new OperationsAuthError('forbidden', 'The verified subject has no current covering operations grant.');
+    const grant = requireActiveGrant(this.policy, verifiedSubject, input.action, input.target, now);
     const controlId = input.control_id || this.generateId('control');
     return {
       contract: 'zylos.control-request',

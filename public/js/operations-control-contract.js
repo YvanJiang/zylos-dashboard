@@ -40,3 +40,25 @@ export function containsPublicSecretValue(value) {
   return typeof value === 'string'
     && PUBLIC_SECRET_VALUE_PATTERNS.some((pattern) => pattern.test(value));
 }
+
+const RFC3339_PATTERN = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(Z|[+-]\d{2}:\d{2})$/;
+
+export function isValidRfc3339Timestamp(value) {
+  const match = typeof value === 'string' ? RFC3339_PATTERN.exec(value) : null;
+  if (!match) return false;
+  const [, yearText, monthText, dayText, hourText, minuteText, secondText, zone] = match;
+  const year = Number(yearText);
+  const month = Number(monthText);
+  const day = Number(dayText);
+  const leap = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
+  const days = [31, leap ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+  const zoneHour = zone === 'Z' ? 0 : Number(zone.slice(1, 3));
+  const zoneMinute = zone === 'Z' ? 0 : Number(zone.slice(4, 6));
+  return month >= 1 && month <= 12
+    && day >= 1 && day <= (days[month - 1] ?? 0)
+    && Number(hourText) <= 23
+    && Number(minuteText) <= 59
+    && Number(secondText) <= 60
+    && zoneHour <= 23
+    && zoneMinute <= 59;
+}

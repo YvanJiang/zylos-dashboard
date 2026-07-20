@@ -26,16 +26,16 @@ Dashboard 要解决的核心问题：**用一个 Web 界面覆盖 zylos agent �
 
 ### 非目标
 
-- **不是独立控制面**：Dashboard 不直接修改配置、进程或运行时状态；仅可把经部署授权的 Core 规范控制请求提交给 Core
+- **Not an independent control plane**: Dashboard never mutates configuration, processes, or runtime state directly; it may only submit deployment-authorized public control requests to Core.
 - **不修改现有组件**：零侵入 activity-monitor、scheduler、comm-bridge 的代码
 - **不是外部 SaaS**：所有数据本地存储，不发送到第三方
 - **不做跨实例汇聚**（Phase 3 之前）：当前聚焦单实例可观测性
 
 ## 设计原则
 
-### 观测只读，控制由 Core 执行
+### Read-only observation; Core-owned control execution
 
-Dashboard 的观测路径是纯粹的消费者：读取现有状态、查询只读数据并接收 runtime 信号。可选 operations adapter 仅把 verified external subject 与版本化部署策略映射成最小 capability/scope，向 Core 提交其公共控制合同；所有授权复核、持久化、审计与状态变更仍由 Core 执行。该 adapter 默认关闭，Dashboard 不直接写运行时数据源。
+Dashboard's observation path is a pure consumer: it reads existing state, queries read-only data, and receives runtime signals. The optional operations adapter maps a verified external subject and versioned deployment policy to the minimum capability and scope, then submits Core's public control contract. Core still owns authorization revalidation, persistence, audit, and every state transition. The adapter is disabled by default, and Dashboard never writes runtime data sources directly.
 
 ### 统一指标模型，不是数据来源拼盘
 
@@ -78,7 +78,7 @@ Dashboard 是 zylos 组件，遵循 zylos-component-template 规范：ESM only�
 └────────────┘                     └────────────────────┘
 ```
 
-Dashboard 的数据采集与投影是纯观测节点；启用 operations adapter 时，仅通过受信传输向 Core 提交规范、带 CAS 的控制请求，不直接写入任何观测数据源或运行时状态。
+Dashboard data collection and projections remain purely observational. When enabled, the operations adapter only submits canonical CAS-fenced control requests to Core over a trusted transport; it never writes an observation source or runtime state directly.
 
 ### 容器视图
 
@@ -234,7 +234,7 @@ Dashboard 的核心抽象是统一指标模型。所有指标对用户呈现统�
 
 | 决策 | 结论 | 关键 tradeoff |
 |------|------|--------------|
-| 架构定位 | 观测只读；可选 Core 授权控制 adapter | 保持观测零侵入，控制能力由 Core 公共合同、CAS、审计与授权边界约束 |
+| Architecture role | Read-only observation with an optional Core-authorized control adapter | Observation stays non-invasive; Core's public contract, CAS, audit, and authorization boundaries constrain every control |
 | 前端技术 | Vanilla JS + Chart.js + CSS Custom Properties 主题层 | 零构建即开即用，CSS 变量支撑皮肤切换（~25 个语义 token），切换主题只需翻转 `data-theme` 属性。评估过 Preact/Vue CDN/Svelte，均不值得引入框架开销 |
 | 实时推送 | SSE + polling fallback | 只读场景不需要 WebSocket 双向通信，SSE 更轻量 |
 | 数据库访问 | SQLite 三层只读 | 性能有代价（无法用 WAL 优化），但绝对防止意外写入 |
