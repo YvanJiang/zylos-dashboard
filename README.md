@@ -92,6 +92,14 @@ opens Core SQLite databases or infers Core health from processes, PID values, na
 provider identifiers, fleet presence, or terminal state. Partial collections remain
 explicitly unavailable; they are never rendered as idle.
 
+For Luna, the existing `/api/stream` seam emits a versioned
+`runtime_projection` first for every accepted connection. Projection sequence is
+continuous for one Dashboard instance and includes the Core instance and snapshot
+version it was derived from. A partial Core snapshot is emitted to existing clients
+as an explicit `complete=false` degraded projection; new connections wait for a
+complete replacement and receive `503 runtime_projection_unavailable` meanwhile.
+After a Dashboard restart, the new instance ID starts its sequence at one.
+
 ```
 Claude Code hooks --> hook-ingest.cjs --> /api/ingest --> SQLite DB
                                                              |
