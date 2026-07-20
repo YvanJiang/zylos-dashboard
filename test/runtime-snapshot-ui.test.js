@@ -77,3 +77,14 @@ test('Dashboard wires the public Core snapshot view into state refresh and SSE w
   assert.match(app, /state\.runtimeSnapshot = data;\s*renderState\(\);\s*renderRuntimeObservabilityPanel\(\);/);
   assert.match(app, /const localDetails = primary\.available/);
 });
+
+test('Dashboard publishes the versioned Luna runtime projection through the existing snapshot and SSE seams', () => {
+  const index = fs.readFileSync(path.resolve('src/index.js'), 'utf8');
+  assert.match(index, /RuntimeProjectionPublisher/);
+  assert.match(index, /runtimeProjectionPublisher\.publish\(snapshot, update\)/);
+  assert.match(index, /sse\.broadcast\('runtime_projection', projection\)/);
+  assert.match(index, /createLunaProjectionEventFilter/);
+  assert.match(index, /isLunaConsumer && projection\?\.complete/);
+  assert.match(index, /url\.searchParams\.get\('consumer'\) === 'luna'/);
+  assert.doesNotMatch(index, /zylos-core|core\.db|runtime\.db/);
+});

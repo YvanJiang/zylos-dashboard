@@ -34,6 +34,7 @@ import { IngestQueue } from './lib/ingest-queue.js';
 import { buildSystemPayload } from './lib/system-api.js';
 import { SseHub } from './lib/sse.js';
 import { RuntimeSnapshotConsumer, RuntimeSnapshotError } from './lib/runtime-snapshot.js';
+import { createLunaProjectionEventFilter, RuntimeProjectionPublisher } from './lib/runtime-projection.js';
 import { FleetPoller, stateToFleetRecord } from './lib/fleet-poller.js';
 import { buildSafeFleetPayload } from './lib/fleet-payload.js';
 import { FleetProxy } from './lib/fleet-proxy.js';
@@ -148,6 +149,10 @@ const sse = new SseHub(15_000);
 // Core owns the durable projection. Dashboard holds only the latest validated
 // full replacement in memory and never reads Core storage or runtime processes.
 const runtimeSnapshotConsumer = new RuntimeSnapshotConsumer();
+// This is an in-memory delivery cache derived solely from the validated Core
+// snapshot seam. A new Dashboard process gets a new instance ID and must wait
+// for a Core snapshot before it can serve Luna's first projection.
+const runtimeProjectionPublisher = new RuntimeProjectionPublisher();
 let fleetStateTimer = null;
 let lastFleetStateBroadcastAt = 0;
 let fleetPollerReady = false; // fleetPoller is declared later (TDZ guard)
@@ -1182,8 +1187,16 @@ function handleApi(req, res, pathname, url) {
   if (pathname === '/api/stream') {
     const apiToken = req._apiToken;
     const validator = apiToken ? () => !!validateApiSession(apiToken) : null;
-    sse.addClient(res, validator);
-    res.write(`event: fleet_state\ndata: ${JSON.stringify(buildApiStatePayload())}\n\n`);
+    const projection = runtimeProjectionPublisher.get();
+    const isLunaConsumer = url.searchParams.get('consumer') === 'luna';
+    const lunaFilter = isLunaConsumer ? createLunaProjectionEventFilter(projection) : null;
+    const initialEvents = isLunaConsumer && projection?.complete
+      ? [{ eventType: 'runtime_projection', data: projection }]
+      : [];
+    if (!sse.addClient(res, validator, initialEvents, lunaFilter?.accepts)) return true;
+    if (!isLunaConsumer || lunaFilter.isReady()) {
+      res.write(`event: fleet_state\ndata: ${JSON.stringify(buildApiStatePayload())}\n\n`);
+    }
     return true;
   }
 
@@ -1554,8 +1567,16 @@ export function createServer() {
       try {
         const update = runtimeSnapshotConsumer.apply(snapshot);
         const payload = runtimeSnapshotConsumer.getPublic();
+        const projectionUpdate = runtimeProjectionPublisher.publish(snapshot, update);
+        const projection = runtimeProjectionPublisher.get();
         sse.broadcast('runtime_snapshot', payload);
-        sendJson(res, update.apply ? 202 : (update.status === 'conflict' ? 409 : 200), { ...payload, update });
+        if (projectionUpdate.apply) sse.broadcast('runtime_projection', projection);
+        sendJson(res, update.apply ? 202 : (update.status === 'conflict' ? 409 : 200), {
+          ...payload,
+          update,
+          runtime_projection: projection,
+          runtime_projection_update: projectionUpdate,
+        });
       } catch (err) {
         const status = err instanceof RuntimeSnapshotError ? 422 : 500;
         sendJson(res, status, { error: err.code || 'runtime_snapshot_rejected' });
