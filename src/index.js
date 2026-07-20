@@ -35,6 +35,9 @@ import { buildSystemPayload } from './lib/system-api.js';
 import { SseHub } from './lib/sse.js';
 import { RuntimeSnapshotConsumer, RuntimeSnapshotError } from './lib/runtime-snapshot.js';
 import { createLunaProjectionEventFilter, RuntimeProjectionPublisher } from './lib/runtime-projection.js';
+import { OperationsAuthorizationAdapter } from './lib/operations-auth-adapter.js';
+import { OperationsControlClient, OperationsControlResultStore } from './lib/operations-control-client.js';
+import { createOperationsControlApi } from './lib/operations-control-api.js';
 import { FleetPoller, stateToFleetRecord } from './lib/fleet-poller.js';
 import { buildSafeFleetPayload } from './lib/fleet-payload.js';
 import { FleetProxy } from './lib/fleet-proxy.js';
@@ -115,6 +118,28 @@ try {
 
 const auth = new AuthGate(config, store);
 const memoryBrowser = new MemoryBrowser({ zylosDir: config.zylosDir });
+let operationsControlApi = null;
+if (config.operationsControl?.enabled === true) {
+  try {
+    const authorizationAdapter = new OperationsAuthorizationAdapter({
+      callerNamespace: config.operationsControl.callerNamespace,
+      policy: config.operationsControl.authorizationPolicy,
+    });
+    operationsControlApi = createOperationsControlApi({
+      authorizationAdapter,
+      client: new OperationsControlClient({
+        endpoint: config.operationsControl.endpoint,
+        timeoutMs: config.operationsControl.timeoutMs,
+      }),
+      resultStore: new OperationsControlResultStore(),
+      getVerifiedSubject: (req) => req._verifiedExternalSubject || null,
+      readJsonBody,
+      sendJson,
+    });
+  } catch (error) {
+    process.stderr.write(`[operations-control] disabled: ${error.message}\n`);
+  }
+}
 
 // 3. Sanitizer
 const sanitizer = new Sanitizer(config.zylosDir);
@@ -1541,6 +1566,15 @@ export function createServer() {
 
     if (pathname.startsWith('/fleet/')) {
       await fleetProxy.handle(req, res, url);
+      return;
+    }
+
+    if (pathname === '/api/runtime-controls' || pathname.startsWith('/api/runtime-controls/')) {
+      if (!operationsControlApi) {
+        sendJson(res, 503, { error: 'operations_control_unavailable' });
+        return;
+      }
+      await operationsControlApi.handle(req, res, url);
       return;
     }
 

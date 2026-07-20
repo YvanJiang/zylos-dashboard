@@ -3,6 +3,7 @@ import { setAssetRoot, getLocale, initI18n, t, renderI18n } from './i18n.js?v=2'
 import { renderAgentFleet, MASCOT_BY_MOOD } from './agent-fleet.js';
 import { createFleetSounds } from './fleet-sounds.js';
 import { derivePrimaryRuntimeState, renderRuntimeObservability } from './runtime-observability.js';
+import { buildOperationsControlInput, submitOperationsControl } from './operations-controls.js';
 
 const BASE_PATH = document.documentElement.dataset.basePath || '';
 const ASSET_ROOT = `${BASE_PATH}/_assets`;
@@ -455,6 +456,47 @@ function renderState() {
 function renderRuntimeObservabilityPanel() {
   const panel = $('#runtime-observability');
   if (panel) panel.innerHTML = renderRuntimeObservability(state.runtimeSnapshot);
+}
+
+function initOperationsControls() {
+  const form = $('#operations-control-form');
+  if (!form) return;
+  const submit = $('#operations-submit');
+  const output = $('#operations-result');
+  form.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    if (state.remoteAgent || REMOTE_AGENT) {
+      output.dataset.tone = 'error';
+      output.textContent = t('operations.local_only');
+      return;
+    }
+    submit.disabled = true;
+    try {
+      const action = $('#operations-action').value;
+      const rawVersion = $('#operations-version').value.trim();
+      const input = buildOperationsControlInput({
+        action,
+        target: JSON.parse($('#operations-target').value),
+        expectedVersion: rawVersion === '' ? null : Number(rawVersion),
+        reason: $('#operations-reason').value,
+      });
+      output.dataset.tone = 'pending';
+      output.textContent = t('operations.submitting');
+      await submitOperationsControl({
+        basePath: BASE_PATH,
+        input,
+        onUpdate(view) {
+          output.dataset.tone = view.tone;
+          output.textContent = `${view.status} — ${view.detail}`;
+        },
+      });
+    } catch (error) {
+      output.dataset.tone = 'error';
+      output.textContent = `${t('operations.invalid')}: ${error.message}`;
+    } finally {
+      submit.disabled = false;
+    }
+  });
 }
 
 function renderToolFeed(tools, p) {
@@ -3963,6 +4005,7 @@ initLogout();
 initTips();
 initInfoBarButtons();
 initFleetManageButton();
+initOperationsControls();
 initMemoryControls();
 initFleetHoverPause();
 initFleetSounds();
