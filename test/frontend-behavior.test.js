@@ -16,7 +16,7 @@ test('single-agent mascot uses the octopus PNGs shared with Agent Fleet and tint
   const app = fs.readFileSync(path.resolve('public/js/app.js'), 'utf8');
   const index = fs.readFileSync(path.resolve('src/index.js'), 'utf8');
   // Reuses the Agent Fleet mood logic + mascot file map (single source of truth).
-  assert.match(app, /import \{ renderAgentFleet, liveStateMood, MASCOT_BY_MOOD \} from '\.\/agent-fleet\.js'/);
+  assert.match(app, /import \{ renderAgentFleet, MASCOT_BY_MOOD \} from '\.\/agent-fleet\.js'/);
   // Renders an <img> from the shared mascot set, not the legacy inline SVG.
   assert.match(app, /img class="mascot-img" src="\$\{ASSET_ROOT\}\/img\/mascot\//);
   assert.match(app, /hue-rotate\(\$\{hue\}deg\)/);
@@ -761,8 +761,8 @@ test('memory browser is admin-scoped, agent-routed, and cache-busted', () => {
   assert.match(index, /id="tab-memory"/);
   assert.match(index, /id="memory-tree"/);
   assert.match(index, /id="memory-content"/);
-  assert.match(index, /app\.js\?v=57/);
-  assert.match(index, /style\.css\?v=45/);
+  assert.match(index, /app\.js\?v=58/);
+  assert.match(index, /style\.css\?v=46/);
 
   assert.match(app, /fetchAgentJson\('\/api\/memory\/tree'\)/);
   assert.match(app, /fetchAgentJson\(`\/api\/memory\/file\?path=\$\{encoded\}`\)/);
@@ -829,7 +829,7 @@ test('fleet management entry is local-only and modal is extensible for future ma
 
   assert.match(index, /id="fleet-manage-btn"/);
   assert.match(index, /data-i18n-title="fleet_manage\.open"/);
-  assert.match(index, /app\.js\?v=57/);
+  assert.match(index, /app\.js\?v=58/);
   assert.match(index, /<path d="M12 8V4H8"/);
   assert.match(index, /<rect width="16" height="12" x="4" y="8" rx="2"/);
   assert.match(app, /function initFleetManageButton\(\)[\s\S]*btn\.hidden = !!REMOTE_AGENT/);

@@ -82,6 +82,16 @@ https://<your-host>/dashboard/
 
 ## Architecture
 
+### Core runtime observability
+
+Core publishes its public `zylos.observability-snapshot` to Dashboard's authenticated
+`POST /api/runtime-snapshot` boundary. Dashboard retains only the latest validated
+full replacement in memory, ordered by Core service instance and snapshot version,
+and forwards a redacted presentation view through `/api/state` and SSE. It never
+opens Core SQLite databases or infers Core health from processes, PID values, native
+provider identifiers, fleet presence, or terminal state. Partial collections remain
+explicitly unavailable; they are never rendered as idle.
+
 ```
 Claude Code hooks --> hook-ingest.cjs --> /api/ingest --> SQLite DB
                                                              |

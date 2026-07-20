@@ -173,7 +173,6 @@ export async function handleAction(action, body, config) {
   try {
     switch (action) {
       case 'interrupt': result = await interrupt(reqId, zylosDir); break;
-      case 'restart-session': result = await restartSession(reqId, config); break;
       case 'switch-runtime': result = await switchRuntime(reqId, body, config); break;
       case 'switch-model': result = await switchModel(reqId, body, config, zylosDir); break;
       case 'switch-effort': result = await switchEffort(reqId, body, config, zylosDir); break;
@@ -206,24 +205,6 @@ async function interrupt(reqId, zylosDir) {
   } catch (err) {
     log(reqId, `c4-control failed: ${err.message}`);
     return { ok: false, error: 'interrupt_failed', message: err.message, messageKey: 'result.interrupt_failed', messageParams: { error: err.message } };
-  }
-}
-
-async function restartSession(reqId, config) {
-  const runtime = config.runtime || process.env.ZYLOS_RUNTIME || 'claude';
-  const session = runtime === 'codex' ? 'codex-main' : 'claude-main';
-  log(reqId, `exec: tmux kill-session -t ${session}`);
-  try {
-    await execFileAsync('tmux', ['kill-session', '-t', session], { timeout: 5000 });
-    log(reqId, `tmux session "${session}" killed`);
-    return { ok: true, message: `Session "${session}" terminated. Activity monitor will restart it.`, messageKey: 'result.restart_ok', messageParams: { session } };
-  } catch (err) {
-    if (err.message?.includes('no server running') || err.message?.includes("can't find session")) {
-      log(reqId, `tmux: no active session "${session}"`);
-      return { ok: true, message: 'No active session found. Activity monitor will start a new one.', messageKey: 'result.restart_no_session' };
-    }
-    log(reqId, `tmux kill-session failed: ${err.message}`);
-    return { ok: false, error: 'restart_failed', message: err.message, messageKey: 'result.restart_failed', messageParams: { error: err.message } };
   }
 }
 
