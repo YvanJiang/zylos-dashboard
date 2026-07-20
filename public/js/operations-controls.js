@@ -1,27 +1,17 @@
-const KNOWN_STATUSES = new Set([
-  'accepted', 'completed', 'noop', 'conflict', 'forbidden', 'failed', 'not_found',
-]);
+import {
+  OPERATIONS_ACTION_DEFINITIONS,
+  OPERATIONS_CONTROL_STATUSES,
+  OPERATIONS_TARGET_IDENTITIES,
+} from './operations-control-contract.js';
 
-const ACTION_TARGETS = Object.freeze({
-  inspect: { mutable: false, targets: { service: ['service_instance_id'], conversation: ['conversation_id'], turn: ['turn_id'], executor: ['executor_instance_id'], queue: ['conversation_id'], recovery: ['recovery_id'] } },
-  stop_active_turn: { mutable: true, targets: { turn: ['conversation_id', 'turn_id'] } },
-  clear_unstarted_queue: { mutable: true, targets: { queue: ['conversation_id', 'through_queue_sequence'] } },
-  reconcile: { mutable: true, targets: { service: ['service_instance_id'] } },
-  evict_idle_executor: { mutable: true, targets: { executor: ['conversation_id', 'executor_instance_id'] } },
-  confirm_recovery: { mutable: true, targets: { recovery: ['recovery_id', 'conversation_id', 'turn_id'] } },
-  reject_recovery: { mutable: true, targets: { recovery: ['recovery_id', 'conversation_id', 'turn_id'] } },
-});
+const KNOWN_STATUSES = new Set(OPERATIONS_CONTROL_STATUSES);
 
 function targetIdentity(target) {
-  const identities = {
-    service: 'service_instance_id', conversation: 'conversation_id', turn: 'turn_id',
-    executor: 'executor_instance_id', queue: 'conversation_id', recovery: 'recovery_id',
-  };
-  return target[identities[target.aggregate_type]];
+  return target[OPERATIONS_TARGET_IDENTITIES[target.aggregate_type]];
 }
 
 function exactTarget(action, target) {
-  const definition = ACTION_TARGETS[action];
+  const definition = OPERATIONS_ACTION_DEFINITIONS[action];
   const fields = definition?.targets?.[target?.aggregate_type];
   if (!fields) throw new TypeError('The action target is not supported by the Core v1 contract.');
   const expected = ['aggregate_type', ...fields];
@@ -100,5 +90,7 @@ export async function submitOperationsControl({
     onUpdate(view);
     if (view.terminal) return view;
   }
-  return controlResultPresentation({ status: 'unknown', error: { user_message: 'Timed out waiting for Core control completion.' } });
+  const timeoutView = controlResultPresentation({ status: 'unknown', error: { user_message: 'Timed out waiting for Core control completion.' } });
+  onUpdate(timeoutView);
+  return timeoutView;
 }

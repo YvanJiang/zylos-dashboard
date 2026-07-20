@@ -1,18 +1,30 @@
-const CONTROL_STATUSES = new Set([
-  'accepted', 'completed', 'noop', 'conflict', 'forbidden', 'not_found', 'failed',
-]);
-const SECRET_FIELD = /(?:^|_)(?:secret|token|password|credential|authorization|cookie|signature|api_key|private_key|access_key)(?:_|$)/i;
-const SECRET_VALUE = /\b(?:zylos_(?:ak|st)_[A-Za-z0-9_-]+|(?:sk|rk)_[A-Za-z0-9_-]{16,})\b/;
+import {
+  containsPublicSecretValue,
+  OPERATIONS_ACTION_DEFINITIONS,
+  OPERATIONS_CONTROL_STATUSES,
+} from '../../public/js/operations-control-contract.js';
 
-const ACTION_SHAPES = Object.freeze({
-  inspect: { target: { conversation: ['conversation_id'], service: ['service_instance_id'], turn: ['turn_id'], executor: ['executor_instance_id'], queue: ['conversation_id'], recovery: ['recovery_id'] }, result: ['snapshot'] },
-  stop_active_turn: { target: { turn: ['conversation_id', 'turn_id'] }, result: ['winner', 'active_turn_id', 'active_turn_version', 'priority_turn_created', 'priority_turn_cancelled'] },
-  clear_unstarted_queue: { target: { queue: ['conversation_id', 'through_queue_sequence'] }, result: ['cleared_turn_ids', 'through_queue_sequence'] },
-  reconcile: { target: { service: ['service_instance_id'] }, result: ['intent_id', 'state'] },
-  evict_idle_executor: { target: { executor: ['conversation_id', 'executor_instance_id'] }, result: ['evicted', 'executor_instance_id'] },
-  confirm_recovery: { target: { recovery: ['recovery_id', 'conversation_id', 'turn_id'] }, result: ['decision', 'recovery_turn_id'] },
-  reject_recovery: { target: { recovery: ['recovery_id', 'conversation_id', 'turn_id'] }, result: ['decision', 'recovery_turn_id'] },
-});
+const CONTROL_STATUSES = new Set(OPERATIONS_CONTROL_STATUSES);
+const SECRET_FIELD = /(?:^|_)(?:secret|token|password|credential|credentials|authorization|cookie|signature)(?:_|$)/i;
+const SECRET_FIELD_SUFFIXES = ['api_key', 'private_key', 'access_key'];
+const PUBLIC_AUTHORIZATION_FIELDS = new Set(['authorization_policy_id', 'authorization_policy_version']);
+const PRIVATE_PAYLOAD_FIELD = /^(?:raw_provider|raw_channel|provider_payload|channel_payload|provider_private|channel_private)(?:_|$)/i;
+
+function normalizedFieldName(field) {
+  return field
+    .replace(/([a-z0-9])([A-Z])/g, '$1_$2')
+    .replace(/[^A-Za-z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '')
+    .toLowerCase();
+}
+
+function isPrivateField(field) {
+  const normalized = normalizedFieldName(field);
+  if (PUBLIC_AUTHORIZATION_FIELDS.has(normalized)) return false;
+  return PRIVATE_PAYLOAD_FIELD.test(normalized)
+    || SECRET_FIELD.test(normalized)
+    || SECRET_FIELD_SUFFIXES.some((suffix) => normalized === suffix || normalized.endsWith(`_${suffix}`));
+}
 
 export class OperationsControlError extends Error {
   constructor(code, message, status = 502) {
@@ -25,7 +37,7 @@ export class OperationsControlError extends Error {
 
 function assertSafe(value, path = 'control_result', ancestors = new Set()) {
   if (typeof value === 'string') {
-    if (SECRET_VALUE.test(value)) {
+    if (containsPublicSecretValue(value)) {
       throw new OperationsControlError('unsafe_control_result', `${path} contains secret-shaped content.`);
     }
     return;
@@ -36,7 +48,7 @@ function assertSafe(value, path = 'control_result', ancestors = new Set()) {
   }
   ancestors.add(value);
   for (const [field, child] of Object.entries(value)) {
-    if (SECRET_FIELD.test(field)) {
+    if (isPrivateField(field)) {
       throw new OperationsControlError('unsafe_control_result', `${path}.${field} is not public.`);
     }
     assertSafe(child, `${path}.${field}`, ancestors);
@@ -55,9 +67,9 @@ function exactFields(value, fields) {
 }
 
 function validateActionShape(value, action) {
-  const definition = ACTION_SHAPES[action];
+  const definition = OPERATIONS_ACTION_DEFINITIONS[action];
   if (!definition) throw new OperationsControlError('invalid_control_result', 'Unknown requested action.');
-  const targetFields = definition.target[value.target.aggregate_type];
+  const targetFields = definition.targets[value.target.aggregate_type];
   if (!targetFields || !exactFields(value.target, ['aggregate_type', ...targetFields])) {
     throw new OperationsControlError('invalid_control_result', `Target does not match ${action}.`);
   }
@@ -111,6 +123,21 @@ function validateActionShape(value, action) {
   }
 }
 
+function validateContractError(error) {
+  assertRecord(error, 'control_result.error');
+  const required = ['code', 'category', 'retryable', 'side_effect_status', 'user_message', 'occurred_at'];
+  if (!required.every((field) => Object.hasOwn(error, field))
+    || typeof error.code !== 'string' || !/^[a-z][a-z0-9_]*$/.test(error.code)
+    || !['validation', 'authentication', 'authorization', 'conflict', 'capacity', 'provider', 'channel', 'storage', 'internal'].includes(error.category)
+    || typeof error.retryable !== 'boolean'
+    || !['none', 'known', 'unknown'].includes(error.side_effect_status)
+    || typeof error.user_message !== 'string' || error.user_message.trim().length === 0
+    || typeof error.occurred_at !== 'string' || !Number.isFinite(Date.parse(error.occurred_at))
+    || (error.detail_ref !== undefined && (typeof error.detail_ref !== 'string' || error.detail_ref.length === 0))) {
+    throw new OperationsControlError('invalid_control_result', 'Control result error does not match the Core public error contract.');
+  }
+}
+
 export function validateOperationsControlResult(value, { action } = {}) {
   assertRecord(value, 'control_result');
   assertSafe(value);
@@ -152,7 +179,7 @@ export function validateOperationsControlResult(value, { action } = {}) {
       throw new OperationsControlError('invalid_control_result', 'Successful controls require accepted_at.');
     }
   } else {
-    assertRecord(value.error, 'control_result.error');
+    validateContractError(value.error);
     for (const candidate of [value.previous_target_version, value.target_version]) {
       if (candidate !== null && (!Number.isSafeInteger(candidate) || candidate < 1)) {
         throw new OperationsControlError('invalid_control_result', 'Failed target versions are invalid.');
@@ -258,57 +285,26 @@ export class OperationsControlClient {
     this.timeoutMs = timeoutMs;
   }
 
-  async submit(request) {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), this.timeoutMs);
-    timer.unref?.();
-    let response;
-    try {
-      response = await this.fetch(this.endpoint, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json', accept: 'application/json' },
-        body: JSON.stringify(request),
-        signal: controller.signal,
-      });
-    } catch (error) {
-      throw new OperationsControlError(
-        'network_failure',
-        error?.name === 'AbortError' ? 'Core operations transport timed out.' : 'Core operations transport is unavailable.',
-      );
-    } finally {
-      clearTimeout(timer);
-    }
-    if (response.status === 401 || response.status === 403) {
-      throw new OperationsControlError('authentication_failure', 'Core rejected the trusted transport.', response.status);
-    }
-    if (!response.ok) {
-      throw new OperationsControlError('transport_failure', `Core operations transport returned HTTP ${response.status}.`);
-    }
-    let body;
-    try {
-      body = await response.json();
-    } catch {
-      throw new OperationsControlError('invalid_control_result', 'Core returned non-JSON control data.');
-    }
-    return validateOperationsControlResult(body, { action: request.action });
-  }
-
-  async getResult(callerNamespace, controlId) {
-    const url = `${this.endpoint.replace(/\/+$/, '')}/${encodeURIComponent(callerNamespace)}/${encodeURIComponent(controlId)}`;
+  async #requestJson(url, { method, body, operation }) {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.timeoutMs);
     timer.unref?.();
     let response;
     try {
       response = await this.fetch(url, {
-        method: 'GET',
-        headers: { accept: 'application/json' },
+        method,
+        headers: body === undefined
+          ? { accept: 'application/json' }
+          : { 'content-type': 'application/json', accept: 'application/json' },
+        ...(body === undefined ? {} : { body: JSON.stringify(body) }),
         signal: controller.signal,
       });
     } catch (error) {
       throw new OperationsControlError(
         'network_failure',
-        error?.name === 'AbortError' ? 'Core operations result poll timed out.' : 'Core operations result is unavailable.',
+        error?.name === 'AbortError'
+          ? `Core operations ${operation} timed out.`
+          : `Core operations ${operation} is unavailable.`,
       );
     } finally {
       clearTimeout(timer);
@@ -317,12 +313,25 @@ export class OperationsControlClient {
       throw new OperationsControlError('authentication_failure', 'Core rejected the trusted transport.', response.status);
     }
     if (!response.ok) {
-      throw new OperationsControlError('transport_failure', `Core operations result returned HTTP ${response.status}.`);
+      throw new OperationsControlError('transport_failure', `Core operations ${operation} returned HTTP ${response.status}.`);
     }
-    let body;
-    try { body = await response.json(); } catch {
+    try {
+      return await response.json();
+    } catch {
       throw new OperationsControlError('invalid_control_result', 'Core returned non-JSON control data.');
     }
+  }
+
+  async submit(request) {
+    const body = await this.#requestJson(this.endpoint, {
+      method: 'POST', body: request, operation: 'submission',
+    });
+    return validateOperationsControlResult(body, { action: request.action });
+  }
+
+  async getResult(callerNamespace, controlId) {
+    const url = `${this.endpoint.replace(/\/+$/, '')}/${encodeURIComponent(callerNamespace)}/${encodeURIComponent(controlId)}`;
+    const body = await this.#requestJson(url, { method: 'GET', operation: 'result poll' });
     return validateOperationsControlResult(body);
   }
 }

@@ -16,6 +16,12 @@ export function createOperationsControlApi({
   readJsonBody,
   sendJson,
 } = {}) {
+  const submittedControls = new Map();
+
+  function subjectIdentity(subject) {
+    return `${subject.source}\u0000${subject.type}\u0000${subject.subject_id}`;
+  }
+
   return {
     async handle(req, res, url) {
       const match = url.pathname.match(/^\/api\/runtime-controls\/([^/]+)$/);
@@ -35,6 +41,11 @@ export function createOperationsControlApi({
           const request = authorizationAdapter.createRequest(subject, input);
           const result = await client.submit(request);
           const update = resultStore.apply(result, { action: request.action });
+          submittedControls.set(request.control_id, {
+            subject: subjectIdentity(subject),
+            action: request.action,
+            target: structuredClone(request.target),
+          });
           sendJson(res, result.status === 'accepted' ? 202 : 200, {
             result: update.result,
             result_update: { status: update.status, apply: update.apply },
@@ -49,6 +60,15 @@ export function createOperationsControlApi({
       if (match && req.method === 'GET') {
         const controlId = decodeURIComponent(match[1]);
         try {
+          const submitted = submittedControls.get(controlId);
+          if (!submitted) {
+            sendJson(res, 404, { error: 'not_found' });
+            return true;
+          }
+          if (submitted.subject !== subjectIdentity(subject)) {
+            throw new OperationsAuthError('forbidden', 'Control results are visible only to the verified submitting subject.');
+          }
+          authorizationAdapter.authorize(subject, submitted);
           const result = await client.getResult(authorizationAdapter.callerNamespace, controlId);
           const update = resultStore.apply(result);
           sendJson(res, 200, {

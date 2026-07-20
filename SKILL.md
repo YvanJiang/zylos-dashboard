@@ -58,7 +58,7 @@ dependencies: []
 
 # Zylos Dashboard
 
-Read-only observability dashboard for a local Zylos agent.
+Provider-neutral observability plus deployment-authorized Core operations for a local Zylos agent. Dashboard never mutates runtime state directly.
 
 ```bash
 npm start

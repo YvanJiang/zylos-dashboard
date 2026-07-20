@@ -99,6 +99,9 @@ test('client fails closed on transport, authentication, network, unknown status,
     [async () => { throw new Error('socket closed'); }, 'network_failure'],
     [async () => response({ ...result('completed'), status: 'unknown' }), 'invalid_control_result'],
     [async () => response({ ...result('completed'), secret: 'zylos_st_do_not_leak' }), 'unsafe_control_result'],
+    [async () => response({ ...result('completed'), credentials: 'opaque' }), 'unsafe_control_result'],
+    [async () => response({ ...result('completed'), privateKey: 'opaque' }), 'unsafe_control_result'],
+    [async () => response({ ...result('completed'), raw_provider: {} }), 'unsafe_control_result'],
   ];
   for (const [fetch, code] of cases) {
     const client = new OperationsControlClient({ endpoint: 'https://core.test/control', fetch });
@@ -133,6 +136,11 @@ test('validates the exact action target/result matrix and rejects cross-action d
     { ...result('completed'), audit_id: null },
     { ...result('completed'), result: { intent_id: 'intent-A', state: 'future' } },
     { ...result('completed'), target_version: '4' },
+    { ...result('failed'), error: {} },
+    { ...result('failed'), error: { ...result('failed').error, category: 'future' } },
+    { ...result('failed'), error: { ...result('failed').error, retryable: 'no' } },
+    { ...result('failed'), error: { ...result('failed').error, side_effect_status: 'maybe' } },
+    { ...result('failed'), error: { ...result('failed').error, occurred_at: 'yesterday' } },
   ]) {
     assert.throws(
       () => validateOperationsControlResult(malformed, { action: 'reconcile' }),

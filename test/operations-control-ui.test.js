@@ -58,3 +58,20 @@ test('UI follows accepted results to terminal completion without adding authorit
   assert.equal(calls[1].url, '/api/runtime-controls/control-A');
   assert.doesNotMatch(calls[0].init.body, /role|capabilit|scope|policy/i);
 });
+
+test('UI publishes unknown when accepted polling exhausts its bound', async () => {
+  const accepted = { status: 'accepted', control_id: 'control-A', control_result_version: 1, audit_id: 'audit-A', previous_target_version: 3, target_version: 3, error: null };
+  const updates = [];
+  const final = await submitOperationsControl({
+    fetchImpl: async (_url, init = {}) => new Response(JSON.stringify({ result: accepted }), {
+      status: init.method === 'POST' ? 202 : 200,
+      headers: { 'content-type': 'application/json' },
+    }),
+    input: buildOperationsControlInput({ action: 'inspect', target: { aggregate_type: 'conversation', conversation_id: 'conversation-A' }, expectedVersion: null, reason: 'Inspect.' }),
+    onUpdate: (view) => updates.push(view.status),
+    pollDelay: async () => {},
+    maxPolls: 1,
+  });
+  assert.equal(final.status, 'unknown');
+  assert.deepEqual(updates, ['accepted', 'accepted', 'unknown']);
+});

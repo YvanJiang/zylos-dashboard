@@ -1,33 +1,21 @@
 import crypto from 'node:crypto';
+import {
+  containsPublicSecretValue,
+  OPERATIONS_ACTION_DEFINITIONS,
+  OPERATIONS_TARGET_IDENTITIES,
+} from '../../public/js/operations-control-contract.js';
 
 const CLIENT_AUTHORITY_FIELDS = new Set([
   'actor', 'auth_context', 'role', 'roles', 'capability', 'capabilities', 'scope',
   'policy_id', 'policy_version', 'grant_id', 'expires_at',
 ]);
 
-const ACTION_CAPABILITIES = Object.freeze({
-  inspect: 'runtime.inspect',
-  stop_active_turn: 'turn.stop',
-  clear_unstarted_queue: 'queue.clear',
-  reconcile: 'service.reconcile',
-  evict_idle_executor: 'executor.evict',
-  confirm_recovery: 'recovery.decide',
-  reject_recovery: 'recovery.decide',
-});
+const ACTION_CAPABILITIES = Object.freeze(Object.fromEntries(
+  Object.entries(OPERATIONS_ACTION_DEFINITIONS).map(([action, definition]) => [action, definition.capability]),
+));
 
 const SCOPE_PRIORITY = Object.freeze({ tenant: 0, bot: 1, service: 2, conversation: 2, recovery: 3 });
 const INPUT_FIELDS = new Set(['control_id', 'action', 'target', 'expected_version', 'reason']);
-const ACTION_TARGETS = Object.freeze({
-  inspect: { mutable: false, targets: { service: ['service_instance_id'], conversation: ['conversation_id'], turn: ['turn_id'], executor: ['executor_instance_id'], queue: ['conversation_id'], recovery: ['recovery_id'] } },
-  stop_active_turn: { mutable: true, targets: { turn: ['conversation_id', 'turn_id'] } },
-  clear_unstarted_queue: { mutable: true, targets: { queue: ['conversation_id', 'through_queue_sequence'] } },
-  reconcile: { mutable: true, targets: { service: ['service_instance_id'] } },
-  evict_idle_executor: { mutable: true, targets: { executor: ['conversation_id', 'executor_instance_id'] } },
-  confirm_recovery: { mutable: true, targets: { recovery: ['recovery_id', 'conversation_id', 'turn_id'] } },
-  reject_recovery: { mutable: true, targets: { recovery: ['recovery_id', 'conversation_id', 'turn_id'] } },
-});
-const TARGET_IDENTITIES = Object.freeze({ service: 'service_instance_id', conversation: 'conversation_id', turn: 'turn_id', executor: 'executor_instance_id', queue: 'conversation_id', recovery: 'recovery_id' });
-const SECRET_VALUE = /\b(?:zylos_(?:ak|st)_[A-Za-z0-9_-]+|(?:sk|rk)_[A-Za-z0-9_-]{16,})\b/;
 
 export class OperationsAuthError extends Error {
   constructor(code, message, status = 403) {
@@ -116,7 +104,7 @@ function validateInput(input) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) invalidRequest('Request body must be an object.');
   const unknown = Object.keys(input).find((field) => !INPUT_FIELDS.has(field));
   if (unknown) invalidRequest(`Unknown operations request field ${unknown}.`);
-  const definition = ACTION_TARGETS[input.action];
+  const definition = OPERATIONS_ACTION_DEFINITIONS[input.action];
   const targetFields = definition?.targets?.[input.target?.aggregate_type];
   if (!targetFields) invalidRequest('Action and target aggregate type do not match Core v1.');
   const exactFields = ['aggregate_type', ...targetFields];
@@ -132,7 +120,7 @@ function validateInput(input) {
       invalidRequest(`Target ${field} must be a non-empty Core ID.`);
     }
   }
-  const identity = input.target[TARGET_IDENTITIES[input.target.aggregate_type]];
+  const identity = input.target[OPERATIONS_TARGET_IDENTITIES[input.target.aggregate_type]];
   if (input.expected_version === null) {
     if (definition.mutable) invalidRequest('Every mutation requires expected_version.');
   } else {
@@ -145,7 +133,7 @@ function validateInput(input) {
       invalidRequest('expected_version must identify the canonical target aggregate and version.');
     }
   }
-  if (typeof input.reason !== 'string' || input.reason.trim().length === 0 || SECRET_VALUE.test(input.reason)) {
+  if (typeof input.reason !== 'string' || input.reason.trim().length === 0 || containsPublicSecretValue(input.reason)) {
     invalidRequest('A non-secret redacted reason is required.');
   }
 }
@@ -157,8 +145,7 @@ function scopeCouldCover(scope, target) {
     case 'bot':
       return target.aggregate_type !== 'service';
     case 'conversation':
-      return !Object.hasOwn(target, 'conversation_id')
-        || target.conversation_id === scope.conversation_id;
+      return target.conversation_id === scope.conversation_id;
     case 'service':
       return target.aggregate_type === 'service'
         && target.service_instance_id === scope.service_instance_id;
@@ -205,6 +192,18 @@ function activeGrant(policy, subject, action, target, now) {
   ))[0] || null;
 }
 
+function validateVerifiedSubject(subject) {
+  if (!subject || !['user', 'service'].includes(subject.type)
+    || !['dashboard_session', 'service_credential', 'platform_admin_bridge'].includes(subject.source)
+    || typeof subject.subject_id !== 'string' || subject.subject_id.length === 0
+    || !Array.isArray(subject.roles)
+    || subject.roles.some((role) => typeof role !== 'string' || role.length === 0)
+    || typeof subject.authenticated_at !== 'string'
+    || !Number.isFinite(Date.parse(subject.authenticated_at))) {
+    throw new OperationsAuthError('unauthenticated', 'A verified external subject is required.', 401);
+  }
+}
+
 export class OperationsAuthorizationAdapter {
   constructor({ callerNamespace, policy, now = () => new Date().toISOString(), generateId } = {}) {
     validatePolicy(callerNamespace, policy);
@@ -214,20 +213,25 @@ export class OperationsAuthorizationAdapter {
     this.generateId = generateId || ((kind) => `${kind}-${crypto.randomUUID()}`);
   }
 
-  createRequest(verifiedSubject, input) {
-    rejectClientAuthority(input);
-    validateInput(input);
-    if (!verifiedSubject || !['user', 'service'].includes(verifiedSubject.type)) {
-      throw new OperationsAuthError('unauthenticated', 'A verified external subject is required.', 401);
-    }
-    const now = this.now();
-    const grant = activeGrant(this.policy, verifiedSubject, input.action, input.target, now);
+  authorize(verifiedSubject, { action, target }) {
+    validateVerifiedSubject(verifiedSubject);
+    const grant = activeGrant(this.policy, verifiedSubject, action, target, this.now());
     if (!grant) {
       throw new OperationsAuthError(
         'forbidden',
         'The verified subject has no current covering operations grant.',
       );
     }
+    return structuredClone(grant);
+  }
+
+  createRequest(verifiedSubject, input) {
+    rejectClientAuthority(input);
+    validateInput(input);
+    const now = this.now();
+    validateVerifiedSubject(verifiedSubject);
+    const grant = activeGrant(this.policy, verifiedSubject, input.action, input.target, now);
+    if (!grant) throw new OperationsAuthError('forbidden', 'The verified subject has no current covering operations grant.');
     const controlId = input.control_id || this.generateId('control');
     return {
       contract: 'zylos.control-request',

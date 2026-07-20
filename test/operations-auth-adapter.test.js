@@ -186,6 +186,44 @@ test('submits only exact Core targets, mutation CAS, redacted reasons, and known
       (error) => error instanceof OperationsAuthError && error.code === 'invalid_control_request',
     );
   }
+
+  for (const reason of [
+    'Bearer leaked-token',
+    'sk-ant-12345678',
+    'xoxb-12345678',
+    '-----BEGIN PRIVATE KEY-----',
+  ]) {
+    assert.throws(
+      () => adapter.createRequest(verifiedSubject(), stopInput({ reason })),
+      (error) => error instanceof OperationsAuthError && error.code === 'invalid_control_request',
+      `secret-shaped reason must be rejected: ${reason}`,
+    );
+  }
+});
+
+test('conversation grants never cover Core targets without the scoped conversation id', () => {
+  const inspectGrant = {
+    ...policy().grants[0],
+    grant_id: 'grant-inspect-A',
+    capability: 'runtime.inspect',
+  };
+  const adapter = new OperationsAuthorizationAdapter({
+    callerNamespace: 'dashboard.prod',
+    policy: policy({ grants: [inspectGrant] }),
+    now: () => NOW,
+  });
+
+  for (const target of [
+    { aggregate_type: 'turn', turn_id: 'turn-A' },
+    { aggregate_type: 'executor', executor_instance_id: 'executor-A' },
+  ]) {
+    assert.throws(
+      () => adapter.createRequest(verifiedSubject(), {
+        action: 'inspect', target, expected_version: null, reason: 'Inspect the exact Core aggregate.',
+      }),
+      (error) => error instanceof OperationsAuthError && error.code === 'forbidden',
+    );
+  }
 });
 
 test('rejects malformed deployment policy scopes before any control can be submitted', () => {

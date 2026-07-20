@@ -26,16 +26,16 @@ Dashboard 要解决的核心问题：**用一个 Web 界面覆盖 zylos agent �
 
 ### 非目标
 
-- **不是控制面板**：Dashboard 是纯观测层，不执行写操作（不修改配置、不重启服务、不发消息）
+- **不是独立控制面**：Dashboard 不直接修改配置、进程或运行时状态；仅可把经部署授权的 Core 规范控制请求提交给 Core
 - **不修改现有组件**：零侵入 activity-monitor、scheduler、comm-bridge 的代码
 - **不是外部 SaaS**：所有数据本地存储，不发送到第三方
 - **不做跨实例汇聚**（Phase 3 之前）：当前聚焦单实例可观测性
 
 ## 设计原则
 
-### 只读观测，不改变现有架构
+### 观测只读，控制由 Core 执行
 
-Dashboard 是纯粹的消费者。它读取现有 activity-monitor 写入的状态文件，查询已有的 SQLite 数据库，接收 runtime 发出的 OTel 信号——但不向任何上游系统写入任何数据。这保证了 Dashboard 的引入和移除对 zylos 核心运行逻辑零影响。
+Dashboard 的观测路径是纯粹的消费者：读取现有状态、查询只读数据并接收 runtime 信号。可选 operations adapter 仅把 verified external subject 与版本化部署策略映射成最小 capability/scope，向 Core 提交其公共控制合同；所有授权复核、持久化、审计与状态变更仍由 Core 执行。该 adapter 默认关闭，Dashboard 不直接写运行时数据源。
 
 ### 统一指标模型，不是数据来源拼盘
 
@@ -78,7 +78,7 @@ Dashboard 是 zylos 组件，遵循 zylos-component-template 规范：ESM only�
 └────────────┘                     └────────────────────┘
 ```
 
-Dashboard 是 zylos 生态中的纯观测节点：不向任何上游写入，只读取和接收数据。
+Dashboard 的数据采集与投影是纯观测节点；启用 operations adapter 时，仅通过受信传输向 Core 提交规范、带 CAS 的控制请求，不直接写入任何观测数据源或运行时状态。
 
 ### 容器视图
 
@@ -234,7 +234,7 @@ Dashboard 的核心抽象是统一指标模型。所有指标对用户呈现统�
 
 | 决策 | 结论 | 关键 tradeoff |
 |------|------|--------------|
-| 架构定位 | 纯只读观测层 | 放弃控制能力，换取零侵入和安全性 |
+| 架构定位 | 观测只读；可选 Core 授权控制 adapter | 保持观测零侵入，控制能力由 Core 公共合同、CAS、审计与授权边界约束 |
 | 前端技术 | Vanilla JS + Chart.js + CSS Custom Properties 主题层 | 零构建即开即用，CSS 变量支撑皮肤切换（~25 个语义 token），切换主题只需翻转 `data-theme` 属性。评估过 Preact/Vue CDN/Svelte，均不值得引入框架开销 |
 | 实时推送 | SSE + polling fallback | 只读场景不需要 WebSocket 双向通信，SSE 更轻量 |
 | 数据库访问 | SQLite 三层只读 | 性能有代价（无法用 WAL 优化），但绝对防止意外写入 |
