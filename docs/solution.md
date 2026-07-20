@@ -26,16 +26,16 @@ Dashboard 要解决的核心问题：**用一个 Web 界面覆盖 zylos agent �
 
 ### 非目标
 
-- **不是控制面板**：Dashboard 是纯观测层，不执行写操作（不修改配置、不重启服务、不发消息）
+- **Not an independent control plane**: Dashboard never mutates configuration, processes, or runtime state directly; it may only submit deployment-authorized public control requests to Core.
 - **不修改现有组件**：零侵入 activity-monitor、scheduler、comm-bridge 的代码
 - **不是外部 SaaS**：所有数据本地存储，不发送到第三方
 - **不做跨实例汇聚**（Phase 3 之前）：当前聚焦单实例可观测性
 
 ## 设计原则
 
-### 只读观测，不改变现有架构
+### Read-only observation; Core-owned control execution
 
-Dashboard 是纯粹的消费者。它读取现有 activity-monitor 写入的状态文件，查询已有的 SQLite 数据库，接收 runtime 发出的 OTel 信号——但不向任何上游系统写入任何数据。这保证了 Dashboard 的引入和移除对 zylos 核心运行逻辑零影响。
+Dashboard's observation path is a pure consumer: it reads existing state, queries read-only data, and receives runtime signals. The optional operations adapter maps a verified external subject and versioned deployment policy to the minimum capability and scope, then submits Core's public control contract. Core still owns authorization revalidation, persistence, audit, and every state transition. The adapter is disabled by default, and Dashboard never writes runtime data sources directly.
 
 ### 统一指标模型，不是数据来源拼盘
 
@@ -78,7 +78,7 @@ Dashboard 是 zylos 组件，遵循 zylos-component-template 规范：ESM only�
 └────────────┘                     └────────────────────┘
 ```
 
-Dashboard 是 zylos 生态中的纯观测节点：不向任何上游写入，只读取和接收数据。
+Dashboard data collection and projections remain purely observational. When enabled, the operations adapter only submits canonical CAS-fenced control requests to Core over a trusted transport; it never writes an observation source or runtime state directly.
 
 ### 容器视图
 
@@ -234,7 +234,7 @@ Dashboard 的核心抽象是统一指标模型。所有指标对用户呈现统�
 
 | 决策 | 结论 | 关键 tradeoff |
 |------|------|--------------|
-| 架构定位 | 纯只读观测层 | 放弃控制能力，换取零侵入和安全性 |
+| Architecture role | Read-only observation with an optional Core-authorized control adapter | Observation stays non-invasive; Core's public contract, CAS, audit, and authorization boundaries constrain every control |
 | 前端技术 | Vanilla JS + Chart.js + CSS Custom Properties 主题层 | 零构建即开即用，CSS 变量支撑皮肤切换（~25 个语义 token），切换主题只需翻转 `data-theme` 属性。评估过 Preact/Vue CDN/Svelte，均不值得引入框架开销 |
 | 实时推送 | SSE + polling fallback | 只读场景不需要 WebSocket 双向通信，SSE 更轻量 |
 | 数据库访问 | SQLite 三层只读 | 性能有代价（无法用 WAL 优化），但绝对防止意外写入 |

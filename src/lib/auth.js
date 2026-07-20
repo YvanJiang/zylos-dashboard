@@ -272,6 +272,7 @@ function nextTarget(req, base) {
 
 function needsAdminApiAccess(pathname, method) {
   if (pathname.startsWith('/api/actions')) return true;
+  if (pathname.startsWith('/api/runtime-controls')) return true;
   if (pathname === '/api/settings' && method === 'PUT') return true;
   if (pathname === '/api/fleet/agents' || pathname.startsWith('/api/fleet/agents/')) return true;
   if (pathname === '/api/agent/name') return true;
@@ -356,7 +357,10 @@ export class AuthGate {
     if (!bearer) return null;
     if (bearer.startsWith(API_SESSION_PREFIX)) {
       const result = validateApiSession(bearer);
-      if (result) req._apiToken = bearer;
+      if (result) {
+        req._apiToken = bearer;
+        this.markVerifiedExternalSubject(req, 'service_credential');
+      }
       return result;
     }
     return null;
@@ -364,8 +368,29 @@ export class AuthGate {
 
   isAuthenticated(req) {
     if (!this.enabled) return true;
-    if (validateSession(getSessionCookie(req))) return true;
+    if (validateSession(getSessionCookie(req))) {
+      this.markVerifiedExternalSubject(req, 'dashboard_session');
+      return true;
+    }
     return !!this.getApiAuth(req);
+  }
+
+  markVerifiedExternalSubject(req, source) {
+    const binding = this.config.operationsControl?.authSubjects?.[source];
+    if (!binding || !['user', 'service'].includes(binding.type)
+      || typeof binding.subject_id !== 'string' || binding.subject_id.length === 0
+      || !Array.isArray(binding.roles)
+      || binding.roles.some((role) => typeof role !== 'string' || role.length === 0)) {
+      return null;
+    }
+    req._verifiedExternalSubject = Object.freeze({
+      source,
+      type: binding.type,
+      subject_id: binding.subject_id,
+      roles: Object.freeze([...binding.roles]),
+      authenticated_at: new Date().toISOString(),
+    });
+    return req._verifiedExternalSubject;
   }
 
   async handle(req, res, url) {
@@ -387,6 +412,7 @@ export class AuthGate {
     if (!this.enabled) return false;
 
     if (validateSession(getSessionCookie(req))) {
+      this.markVerifiedExternalSubject(req, 'dashboard_session');
       res.setHeader('Cache-Control', 'no-store');
       return false;
     }
