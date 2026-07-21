@@ -3541,12 +3541,6 @@ function createActionsModal() {
   </div>
   <div class="modal-body">
     <div class="action-group">
-      <span class="action-group-label">${esc(t('actions.agent_control'))}</span>
-      <div class="action-row">
-        <button class="action-btn" data-action="interrupt" type="button">${esc(t('actions.interrupt'))}</button>
-      </div>
-    </div>
-    <div class="action-group">
       <span class="action-group-label">${esc(t('actions.configuration'))}</span>
       <div class="action-field">
         <label class="action-field-label">${esc(t('actions.runtime'))}</label>
@@ -3821,7 +3815,7 @@ function closeActionsModal() {
   setModalBodyDisabled(false);
 }
 
-const CONFIRM_ACTIONS = new Set(['interrupt', 'switch-runtime', 'switch-model', 'switch-effort', 'upgrade-zylos', 'upgrade-cc']);
+const CONFIRM_ACTIONS = new Set(['switch-runtime', 'switch-model', 'switch-effort', 'upgrade-zylos', 'upgrade-cc']);
 
 let countdownTimer = null;
 let pendingConfirmCancel = null;
@@ -3905,7 +3899,6 @@ async function execAction(action, body) {
   const healthPath = agentPath('/api/health');
   if (CONFIRM_ACTIONS.has(action)) {
     const labels = {
-      'interrupt': t('confirm.interrupt'),
       'switch-runtime': body?.runtime === 'codex'
         ? t('confirm.switch_runtime_codex')
         : t('confirm.switch_runtime', { value: body?.runtime }),

@@ -28,13 +28,12 @@ Dashboard 的组件结构、部署配置、安全保护和验证计划。
 │   │   ├── config.js            # config loader + hot-reload
 │   │   ├── resolver.js          # Metric Resolver 引擎
 │   │   └── sse.js               # SSE 实时推送
-│   ├── adapters/
-│   │   ├── file-adapter.js      # JSON/JSONL 状态文件
-│   │   ├── statusline-adapter.js # statusline.json (Claude only)
-│   │   ├── sqlite-adapter.js    # c4.db + scheduler.db (readonly)
-│   │   ├── pm2-adapter.js       # pm2 jlist
-│   │   ├── hook-adapter.js      # Hook 事件流 (Phase 2)
-│   │   └── telemetry-adapter.js # OTel OTLP (Phase 2)
+│   ├── lib/
+│   │   ├── runtime-snapshot.js          # Core 公共快照验证与版本排序
+│   │   ├── statusline-ingest.cjs        # Claude StatusLine 直接 ingestion
+│   │   ├── hook-ingest.cjs              # Hook 事件直接 ingestion
+│   │   ├── store.js                     # Dashboard 自有 SQLite
+│   │   └── collectors/                  # 系统、PM2 与 durable metric 读取
 │   └── otel/                    # Phase 2
 │       ├── collector.js         # OTLP 接收端
 │       ├── claude-codec.js      # claude_code.* 解析

@@ -30,10 +30,6 @@ function codexModelsCachePath() {
   return path.join(codexHome(), 'models_cache.json');
 }
 
-function c4ControlPath(zylosDir) {
-  return path.join(zylosDir, '.claude', 'skills', 'comm-bridge', 'scripts', 'c4-control.js');
-}
-
 function dashboardDataDir(zylosDir) {
   return path.join(zylosDir, 'components', 'dashboard');
 }
@@ -172,7 +168,6 @@ export async function handleAction(action, body, config) {
   let result;
   try {
     switch (action) {
-      case 'interrupt': result = await interrupt(reqId, zylosDir); break;
       case 'switch-runtime': result = await switchRuntime(reqId, body, config); break;
       case 'switch-model': result = await switchModel(reqId, body, config, zylosDir); break;
       case 'switch-effort': result = await switchEffort(reqId, body, config, zylosDir); break;
@@ -188,24 +183,6 @@ export async function handleAction(action, body, config) {
 
   log(reqId, `<= ${result.ok ? 'ok' : 'fail'}${result.error ? ' ' + result.error : ''}${result.message ? ' | ' + result.message : ''}`);
   return result;
-}
-
-async function interrupt(reqId, zylosDir) {
-  const c4Control = c4ControlPath(zylosDir);
-  log(reqId, `enqueue control: [KEYSTROKE]Escape (priority=0, bypass-state) via ${c4Control}`);
-  try {
-    const { stdout, stderr } = await execFileAsync(
-      'node',
-      [c4Control, 'enqueue', '--content', '[KEYSTROKE]Escape', '--priority', '0', '--bypass-state', '--no-ack-suffix'],
-      { timeout: 5000 }
-    );
-    const out = (stdout || '').trim() + (stderr ? ` | stderr: ${stderr.trim()}` : '');
-    log(reqId, `c4-control done${out ? ': ' + out : ''}`);
-    return { ok: true, message: 'Interrupt signal sent', messageKey: 'result.interrupt_ok' };
-  } catch (err) {
-    log(reqId, `c4-control failed: ${err.message}`);
-    return { ok: false, error: 'interrupt_failed', message: err.message, messageKey: 'result.interrupt_failed', messageParams: { error: err.message } };
-  }
 }
 
 async function switchRuntime(reqId, body, config) {

@@ -22,7 +22,6 @@ function makeEngine(opts = {}) {
   const store = opts.store || makeMockStore();
   const config = { zylosDir: '/tmp/zylos-test', runtime: opts.runtime || 'claude' };
   const engine = new StateEngine(store, {}, config, { now });
-  engine._state.amHeartbeat = { state: 'idle', health: 'ok', lastCheck: clock / 1000, lastActivity: clock / 1000 };
   return { engine, now, advance };
 }
 
@@ -497,7 +496,7 @@ test('runtime boundary event resets foreground runtime state', () => {
   assert.equal(state.active_subagents.length, 0);
   assert.equal(state.last_prompt, null);
   assert.equal(engine.getCurrentSessionId(), null);
-  assert.equal(state.state, 'IDLE');
+  assert.equal(state.state, 'UNKNOWN');
 });
 
 test('session_start for a new session resets stale foreground runtime state', () => {
@@ -536,7 +535,7 @@ test('session_start for a new session resets stale foreground runtime state', ()
   assert.equal(state.active_subagents.length, 0, 'old session subagent should be cleared');
   assert.equal(state.last_prompt, null, 'old prompt should be cleared');
   assert.equal(engine.getCurrentSessionId(), 'codex-new');
-  assert.equal(state.state, 'IDLE');
+  assert.equal(state.state, 'UNKNOWN');
 });
 
 test('duplicate session_start for current session preserves foreground runtime state', () => {
@@ -927,7 +926,6 @@ test('snapshot restore preserves last_message', () => {
   const config = { zylosDir: '/tmp/zylos-test', runtime: 'claude' };
   let clock = 1000000;
   const engine1 = new StateEngine(store, {}, config, { now: () => clock });
-  engine1._state.amHeartbeat = { state: 'idle', health: 'ok', lastCheck: clock / 1000, lastActivity: clock / 1000 };
 
   engine1.onEvent({
     event_type: 'stop',
@@ -942,7 +940,6 @@ test('snapshot restore preserves last_message', () => {
   assert.ok(snapshotData.last_message, 'last_message included in snapshot');
 
   const engine2 = new StateEngine(store, {}, config, { now: () => clock });
-  engine2._state.amHeartbeat = { state: 'idle', health: 'ok', lastCheck: clock / 1000, lastActivity: clock / 1000 };
   engine2.initialize();
 
   const state = engine2.getState();
@@ -960,7 +957,6 @@ test('snapshot restore preserves mainSessionId and activeSubagents', () => {
   const config = { zylosDir: '/tmp/zylos-test', runtime: 'claude' };
   let clock = 1000000;
   const engine1 = new StateEngine(store, {}, config, { now: () => clock });
-  engine1._state.amHeartbeat = { state: 'idle', health: 'ok', lastCheck: clock / 1000, lastActivity: clock / 1000 };
 
   engine1.onEvent({
     event_type: 'user_prompt_submit',
@@ -990,7 +986,6 @@ test('snapshot restore preserves mainSessionId and activeSubagents', () => {
   assert.ok(snapshotData, 'snapshot should be saved');
 
   const engine2 = new StateEngine(store, {}, config, { now: () => clock });
-  engine2._state.amHeartbeat = { state: 'idle', health: 'ok', lastCheck: clock / 1000, lastActivity: clock / 1000 };
   engine2.initialize();
 
   const state = engine2.getState();
@@ -1012,7 +1007,6 @@ test('snapshot restore preserves last_prompt', () => {
   const config = { zylosDir: '/tmp/zylos-test', runtime: 'claude' };
   let clock = 1000000;
   const engine1 = new StateEngine(store, {}, config, { now: () => clock });
-  engine1._state.amHeartbeat = { state: 'idle', health: 'ok', lastCheck: clock / 1000, lastActivity: clock / 1000 };
 
   engine1.onEvent({
     event_type: 'user_prompt_submit',
@@ -1027,7 +1021,6 @@ test('snapshot restore preserves last_prompt', () => {
   assert.ok(snapshotData.last_prompt, 'last_prompt included in snapshot');
 
   const engine2 = new StateEngine(store, {}, config, { now: () => clock });
-  engine2._state.amHeartbeat = { state: 'idle', health: 'ok', lastCheck: clock / 1000, lastActivity: clock / 1000 };
   engine2.initialize();
 
   const state = engine2.getState();
@@ -1046,7 +1039,6 @@ test('snapshot restore preserves lastProgressAt', () => {
   const config = { zylosDir: '/tmp/zylos-test', runtime: 'claude' };
   let clock = 1000000;
   const engine1 = new StateEngine(store, {}, config, { now: () => clock });
-  engine1._state.amHeartbeat = { state: 'idle', health: 'ok', lastCheck: clock / 1000, lastActivity: clock / 1000 };
 
   engine1.onEvent({
     event_type: 'post_tool_use',
@@ -1060,7 +1052,6 @@ test('snapshot restore preserves lastProgressAt', () => {
   assert.ok(snapshotData.last_progress_at, 'last_progress_at included in snapshot');
 
   const engine2 = new StateEngine(store, {}, config, { now: () => clock });
-  engine2._state.amHeartbeat = { state: 'idle', health: 'ok', lastCheck: clock / 1000, lastActivity: clock / 1000 };
   engine2.initialize();
 
   assert.ok(engine2._state.lastProgressAt, 'lastProgressAt restored from snapshot');
@@ -1069,9 +1060,6 @@ test('snapshot restore preserves lastProgressAt', () => {
 
 test('long-running tool with recent progress stays BUSY, not POSSIBLY_STUCK', () => {
   const signals = {
-    amAvailable: true,
-    amState: 'busy',
-    amHealth: 'ok',
     runningTool: { tool_name: 'Read', age: 400 },
     openTurn: null,
     pendingPermission: null,
@@ -1091,9 +1079,6 @@ test('long-running tool with recent progress stays BUSY, not POSSIBLY_STUCK', ()
 
 test('long-running tool without recent progress is POSSIBLY_STUCK', () => {
   const signals = {
-    amAvailable: true,
-    amState: 'busy',
-    amHealth: 'ok',
     runningTool: { tool_name: 'Read', age: 400 },
     openTurn: null,
     pendingPermission: null,
@@ -1113,9 +1098,6 @@ test('long-running tool without recent progress is POSSIBLY_STUCK', () => {
 
 test('open turn with recent progress stays BUSY', () => {
   const signals = {
-    amAvailable: true,
-    amState: 'busy',
-    amHealth: 'ok',
     runningTool: null,
     openTurn: { age: 400 },
     pendingPermission: null,
@@ -1131,6 +1113,21 @@ test('open turn with recent progress stays BUSY', () => {
 
   const result = deriveAgentState(signals);
   assert.equal(result.state, 'BUSY', 'should be BUSY when turn is old but progress is recent');
+});
+
+test('system collector liveness alone never authorizes IDLE', () => {
+  const result = deriveAgentState({
+    runningTool: null,
+    openTurn: null,
+    lastProgressAge: Infinity,
+    collectorLivenessFresh: true,
+    collectorLivenessAvailable: true,
+    possiblyStuckSince: null,
+    runtime: 'claude',
+    now: () => Date.now()
+  });
+  assert.equal(result.state, 'UNKNOWN');
+  assert.match(result.reason, /Core runtime snapshot/i);
 });
 
 test('post_tool_use resets possibly-stuck via lastProgressAt', () => {
@@ -1339,38 +1336,6 @@ test('c4-send.js produces friendly labels with target extraction', () => {
   }
 });
 
-test('c4-control.js produces friendly labels', () => {
-  const sanitizer = new Sanitizer('/home/howard/zylos');
-
-  const cases = [
-    [
-      'node /home/howard/zylos/.claude/skills/comm-bridge/scripts/c4-control.js ack --id 42',
-      'Control: ack #42'
-    ],
-    [
-      'node c4-control.js enqueue --content "Heartbeat check" --priority 1',
-      'Control: enqueue'
-    ],
-    [
-      'node c4-control.js get --id 99',
-      'Control: get #99'
-    ],
-    [
-      'node c4-control.js ack --id "3100"',
-      'Control: ack #3100'
-    ],
-  ];
-
-  for (const [input, expected] of cases) {
-    const result = sanitizer.sanitizeHookPayload('PreToolUse', {
-      session_id: 's', tool_name: 'Bash', tool_use_id: 't',
-      tool_input: { command: input }
-    });
-    assert.strictEqual(result.metadata.tool_detail, expected,
-      `"${input.slice(0, 60)}..." → "${result.metadata.tool_detail}"`);
-  }
-});
-
 test('c4 friendly labels reject false positives', () => {
   const sanitizer = new Sanitizer('/home/howard/zylos');
 
@@ -1378,11 +1343,8 @@ test('c4 friendly labels reject false positives', () => {
     'echo c4-send.js "telegram" "123"',
     'node /path/to/not-c4-send.js "telegram" "123"',
     'grep c4-send.js README.md',
-    'cat c4-control.js',
-    'echo c4-control.js ack --id 5',
     "echo 'foo| node c4-send.js \"telegram\" \"123\"'",
     "grep 'foo| node c4-send.js \"telegram\" \"123\"' README.md",
-    "printf 'foo| node c4-control.js ack --id \"3100\"'",
   ];
 
   for (const input of cases) {
@@ -1391,7 +1353,7 @@ test('c4 friendly labels reject false positives', () => {
       tool_input: { command: input }
     });
     const detail = result.metadata.tool_detail;
-    assert.ok(!detail.startsWith('Send to') && !detail.startsWith('Control:'),
+    assert.ok(!detail.startsWith('Send to'),
       `"${input}" should NOT produce friendly label, got: "${detail}"`);
   }
 });
@@ -1431,11 +1393,6 @@ test('UserPromptSubmit shows prompt source from reply via', () => {
       '[HXA:default DM] Jinglever said: review done ---- reply via: node c4-send.js "hxa-connect" "org:default|Jinglever"',
       'Prompt from hxa-connect (Jinglever)',
       'hxa-connect (Jinglever)'
-    ],
-    [
-      'Heartbeat check ---- ack via: node c4-control.js ack --id 42',
-      'Prompt from control',
-      'control'
     ],
     [
       'just a plain prompt from the terminal',

@@ -22,7 +22,6 @@ function makeFixture() {
       content TEXT NOT NULL,
       status TEXT DEFAULT 'pending',
       priority INTEGER DEFAULT 3,
-      require_idle INTEGER DEFAULT 0,
       retry_count INTEGER DEFAULT 0
     );
   `);

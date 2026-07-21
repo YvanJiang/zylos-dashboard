@@ -64,7 +64,7 @@ test('HookInstaller — Claude', async (t) => {
 
   await t.test('preserves existing hooks', () => {
     const existingHook = {
-      hooks: [{ type: 'command', command: 'node ~/zylos/.claude/skills/activity-monitor/scripts/hook-activity.js', timeout: 5 }],
+      hooks: [{ type: 'command', command: 'node ~/zylos/.claude/skills/other-observer/scripts/hook.js', timeout: 5 }],
       matcher: ''
     };
     const settings = JSON.parse(fs.readFileSync(installer._claudePath(), 'utf8'));
@@ -75,7 +75,7 @@ test('HookInstaller — Claude', async (t) => {
 
     const after = JSON.parse(fs.readFileSync(installer._claudePath(), 'utf8'));
     assert.equal(after.hooks.PreToolUse.length, 2);
-    assert.ok(after.hooks.PreToolUse[0].hooks[0].command.includes('activity-monitor'));
+    assert.ok(after.hooks.PreToolUse[0].hooks[0].command.includes('other-observer'));
   });
 
   await t.test('upgrades existing sync hooks to async in-place', () => {
@@ -111,7 +111,7 @@ test('HookInstaller — Claude', async (t) => {
 
     const settings = JSON.parse(fs.readFileSync(installer._claudePath(), 'utf8'));
     assert.equal(settings.hooks.PreToolUse.length, 1);
-    assert.ok(settings.hooks.PreToolUse[0].hooks[0].command.includes('activity-monitor'));
+    assert.ok(settings.hooks.PreToolUse[0].hooks[0].command.includes('other-observer'));
     assert.equal(settings.hooks.PostToolUse, undefined);
   });
 

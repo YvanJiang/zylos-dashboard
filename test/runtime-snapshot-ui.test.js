@@ -59,9 +59,11 @@ test('primary runtime state is Core-authoritative and never derives idle or runn
 test('Dashboard has no legacy terminal-multiplexer control path that can define runtime state or stop work', () => {
   const actions = fs.readFileSync(path.resolve('src/lib/actions.js'), 'utf8');
   const app = fs.readFileSync(path.resolve('public/js/app.js'), 'utf8');
+  const stateEngine = fs.readFileSync(path.resolve('src/lib/state-engine.js'), 'utf8');
   assert.doesNotMatch(actions, new RegExp(['tm', 'ux'].join(''), 'i'));
   assert.doesNotMatch(actions, /restart-session/);
   assert.doesNotMatch(app, /restart-session/);
+  assert.doesNotMatch(stateEngine, /am[_-]?heartbeat/i);
 });
 
 test('Dashboard wires the public Core snapshot view into state refresh and SSE without a Core direct connection', () => {

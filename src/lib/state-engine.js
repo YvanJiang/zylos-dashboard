@@ -1,6 +1,3 @@
-import fs from 'node:fs';
-import path from 'node:path';
-
 const STALE_TOOL_THRESHOLD_MS = 300_000;
 const STALE_SUBAGENT_THRESHOLD_MS = 1_800_000;
 const STALE_PERMISSION_THRESHOLD_MS = 600_000;
@@ -9,48 +6,11 @@ const STUCK_CONFIRMATION_THRESHOLD_S = 600;
 const RECENT_PROGRESS_THRESHOLD_S = 60;
 const COLLECTOR_FRESHNESS_MS = 30_000;
 const SNAPSHOT_INTERVAL_MS = 30_000;
-const AM_HEARTBEAT_INTERVAL_MS = 15_000;
-const AM_HEARTBEAT_STALE_MS = 60_000;
 const TOOL_TOMBSTONE_LIMIT = 64;
 
 export function deriveAgentState(signals) {
   const evidence = [];
   const missing = [];
-
-  if (!signals.amAvailable) {
-    missing.push('am_heartbeat');
-    if (signals.runningTool) {
-      evidence.push(`tool_running:${signals.runningTool.tool_name}:${Math.floor(signals.runningTool.age)}s`);
-    }
-    if (signals.openTurn) {
-      evidence.push(`open_turn:${Math.floor(signals.openTurn.age)}s`);
-    }
-    return {
-      state: 'UNKNOWN',
-      confidence: 'LOW',
-      evidence,
-      missing_evidence: missing,
-      reason: 'AM heartbeat unavailable — session liveness unconfirmed',
-      suggested_action: 'Check activity-monitor service'
-    };
-  }
-
-  evidence.push(`am:${signals.amState}:health=${signals.amHealth}`);
-
-  if (signals.amState === 'offline') {
-    return {
-      state: 'OFFLINE',
-      confidence: 'HIGH',
-      evidence,
-      missing_evidence: missing,
-      reason: 'Agent session is not responding',
-      suggested_action: 'Check if the agent session is running'
-    };
-  }
-
-  if (signals.amHealth !== 'ok') {
-    evidence.push(`am_health_degraded:${signals.amHealth}`);
-  }
 
   if (signals.runningTool) {
     const ageSec = Math.floor(signals.runningTool.age);
@@ -139,6 +99,14 @@ export function deriveAgentState(signals) {
 
   if (!signals.collectorLivenessAvailable) {
     missing.push('collector_liveness');
+    return {
+      state: 'UNKNOWN',
+      confidence: 'LOW',
+      evidence,
+      missing_evidence: missing,
+      reason: 'No current provider-neutral progress signal',
+      suggested_action: 'Wait for the next Core runtime snapshot'
+    };
   }
 
   if (signals.lastProgressAge < Infinity) {
@@ -146,12 +114,12 @@ export function deriveAgentState(signals) {
   }
 
   return {
-    state: 'IDLE',
-    confidence: 'MEDIUM',
+    state: 'UNKNOWN',
+    confidence: 'LOW',
     evidence,
-    missing_evidence: missing,
-    reason: 'No active task',
-    suggested_action: null
+    missing_evidence: [...missing, 'core_runtime_snapshot'],
+    reason: 'Core runtime snapshot is required to establish idle state',
+    suggested_action: 'Wait for the next Core runtime snapshot'
   };
 }
 
@@ -163,7 +131,6 @@ export class StateEngine {
     this._now = now;
     this._onStateChange = onStateChange;
     this._snapshotTimer = null;
-    this._amTimer = null;
     this._lastSnapshotState = null;
     this._lastSnapshotTime = 0;
 
@@ -174,7 +141,6 @@ export class StateEngine {
       possiblyStuckSince: null,
       lastProgressAt: null,
       pm2: null,
-      amHeartbeat: null,
       lastSnapshotCursor: 0,
       mainSessionId: null,
       activeSubagents: new Map(),
@@ -597,25 +563,18 @@ export class StateEngine {
       }
     }
 
-    this._readAMHeartbeat();
   }
 
   startSnapshotTimer() {
     this.stopSnapshotTimer();
     this._snapshotTimer = setInterval(() => this._periodicSnapshot(), SNAPSHOT_INTERVAL_MS);
     this._snapshotTimer.unref();
-    this._amTimer = setInterval(() => this._readAMHeartbeat(), AM_HEARTBEAT_INTERVAL_MS);
-    this._amTimer.unref();
   }
 
   stopSnapshotTimer() {
     if (this._snapshotTimer) {
       clearInterval(this._snapshotTimer);
       this._snapshotTimer = null;
-    }
-    if (this._amTimer) {
-      clearInterval(this._amTimer);
-      this._amTimer = null;
     }
   }
 
@@ -624,9 +583,6 @@ export class StateEngine {
     const oldestTool = this._oldestRunningTool();
 
     const signals = {
-      amAvailable: this._state.amHeartbeat !== null,
-      amState: this._state.amHeartbeat?.state ?? null,
-      amHealth: this._state.amHeartbeat?.health ?? null,
       runningTool: oldestTool ? {
         tool_name: oldestTool.tool_name,
         age: (now() - new Date(oldestTool.started_at).getTime()) / 1000
@@ -753,7 +709,7 @@ export class StateEngine {
   _isCollectorLivenessFresh() {
     try {
       const health = this.store.getCollectorLiveness();
-      const sources = ['pm2_reader', 'system_sampler', 'hook_handler', 'am_heartbeat'];
+      const sources = ['system_sampler', 'hook_handler'];
       const now = this._now();
       return sources.every(name => {
         const h = health.find(s => s.name === name);
@@ -772,53 +728,10 @@ export class StateEngine {
   _isCollectorLivenessAvailable() {
     try {
       const health = this.store.getCollectorLiveness();
-      const sources = ['pm2_reader', 'system_sampler', 'hook_handler', 'am_heartbeat'];
+      const sources = ['system_sampler', 'hook_handler'];
       return sources.some(name => health.find(s => s.name === name));
     } catch {
       return false;
-    }
-  }
-
-  _isAMProcessOnline() {
-    const pm2 = this._state.pm2;
-    if (!pm2) return null;
-    const procs = Array.isArray(pm2) ? pm2 : (pm2.processes || pm2.services || []);
-    const am = procs.find(p => p.name === 'activity-monitor' || p.name === 'zylos-activity-monitor');
-    if (!am) return null;
-    const status = String(am.pm2_env?.status || am.status || '').toLowerCase();
-    return ['online', 'running'].includes(status);
-  }
-
-  _readAMHeartbeat() {
-    const amOnline = this._isAMProcessOnline();
-    if (amOnline === false) {
-      this._state.amHeartbeat = null;
-      this.store.upsertSourceHealth('am_heartbeat', 'collector_liveness', 'stale', {
-        reason: 'AM process not online in PM2'
-      });
-      return;
-    }
-
-    try {
-      const amStatusPath = path.join(
-        this._config.zylosDir,
-        'activity-monitor', 'agent-status.json'
-      );
-      const raw = fs.readFileSync(amStatusPath, 'utf8');
-      const data = JSON.parse(raw);
-      this._state.amHeartbeat = {
-        state: data.state,
-        health: data.health,
-        lastCheck: data.last_check,
-        lastActivity: data.last_activity
-      };
-      this.store.upsertSourceHealth('am_heartbeat', 'collector_liveness', 'healthy', {
-        last_success: new Date(this._now()).toISOString(),
-        agent_state: data.state,
-        agent_health: data.health
-      });
-    } catch {
-      this._state.amHeartbeat = null;
     }
   }
 
@@ -848,7 +761,6 @@ export class StateEngine {
 
   _periodicSnapshot() {
     try {
-      this._readAMHeartbeat();
       this._saveSnapshot();
       this._lastSnapshotTime = this._now();
     } catch (err) {
@@ -973,8 +885,7 @@ export class StateEngine {
           pm2_reader: formatEntry('pm2_reader', { signalType: 'collector_liveness' }),
           system_sampler: formatEntry('system_sampler', { signalType: 'collector_liveness' }),
           hook_handler: formatEntry('hook_handler', { signalType: 'collector_liveness' }),
-          conversation_reader: formatEntry('conversation_reader', { signalType: 'collector_liveness' }),
-          am_heartbeat: formatEntry('am_heartbeat', { signalType: 'collector_liveness' })
+          conversation_reader: formatEntry('conversation_reader', { signalType: 'collector_liveness' })
         },
         platform: {
           statusline: formatEntry('statusline', { signalType: 'collector_liveness' }),

@@ -145,7 +145,7 @@ Core publishes its public `zylos.observability-snapshot` to Dashboard's authenti
 `POST /api/runtime-snapshot` boundary. Dashboard retains only the latest validated
 full replacement in memory, ordered by Core service instance and snapshot version,
 and forwards a redacted presentation view through `/api/state` and SSE. It never
-opens Core SQLite databases or infers Core health from processes, PID values, native
+opens Core SQLite databases or infers Core health from process identifiers, native
 provider identifiers, fleet presence, or terminal state. Partial collections remain
 explicitly unavailable; they are never rendered as idle.
 
@@ -164,18 +164,18 @@ silently for a complete replacement before receiving any event.
 After a Dashboard restart, the new instance ID starts its sequence at one.
 
 ```
-Claude Code hooks --> hook-ingest.cjs --> /api/ingest --> SQLite DB
-                                                             |
-statusline.json (core) --> StatuslineCollector ---------------+
-                                                             |
-PM2 / System collectors ------------------------------------- +
-                                                             v
-                                                    State Engine --> SSE --> Browser
+Core public snapshot --> /api/runtime-snapshot --> validated latest snapshot
+Claude Code hooks ----> hook-ingest.cjs -------> SQLite DB
+StatusLine command ---> /api/ingest/statusline -> SQLite DB
+System metrics --------------------------------> SQLite DB
+                                                       |
+                                                       v
+                                              API / SSE --> Browser
 ```
 
 Data flows:
 - **Hook events**: Claude Code hook scripts POST to `/api/ingest` (with offline spool fallback)
-- **Metrics**: StatuslineCollector reads core's `statusline.json` via file polling
+- **Metrics**: the StatusLine command posts directly to Dashboard; the collector reads only the indexed latest durable metric
 - **System**: PM2 and system collectors poll at intervals
 - **Frontend**: SSE stream with polling fallback; i18n via JSON locale files
 
