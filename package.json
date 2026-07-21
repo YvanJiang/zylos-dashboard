@@ -11,7 +11,8 @@
     "test:contracts:compatibility": "node --test test/operations-control-core-contract.test.js",
     "test:acceptance": "ACCEPTANCE=1 node --test test/acceptance-phase2a.test.js",
     "smoke": "node src/index.js --smoke",
-    "smoke:api": "node scripts/smoke-api.js"
+    "smoke:api": "node scripts/smoke-api.js",
+    "smoke:runtime-migration": "node --test scripts/runtime-migration-smoke.js"
   },
   "keywords": [
     "zylos",
