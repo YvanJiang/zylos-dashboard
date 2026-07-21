@@ -390,19 +390,40 @@ function proveEventsFlow(normalizedEvents, observability, flowCounts) {
     ({ kind }) => kind === 'interaction_answer_delivery_unknown',
   );
   assert.ok(deliveryUnknown);
-  const turn = observability.cases.complete.turns.items[0];
-  record(flowCounts, 'events', () => assert.equal(turn.phase, deliveryUnknown.phase));
-  record(flowCounts, 'events', () => assert.equal(turn.error.code, deliveryUnknown.error.code));
-  record(flowCounts, 'events', () => (
-    assert.equal(turn.side_effect_status, deliveryUnknown.error.side_effect_status)
-  ));
+  const eventDerivedSnapshot = structuredClone(observability.cases.complete);
+  eventDerivedSnapshot.snapshot_id = 'snapshot-derived-from-normalized-event';
+  eventDerivedSnapshot.snapshot_version += 1;
+  const [eventDerivedTurn] = eventDerivedSnapshot.turns.items;
+  eventDerivedTurn.turn_version = deliveryUnknown.turn_version;
+  eventDerivedTurn.state = deliveryUnknown.phase;
+  eventDerivedTurn.phase = deliveryUnknown.phase;
+  eventDerivedTurn.side_effect_status = deliveryUnknown.error.side_effect_status;
+  eventDerivedTurn.error = structuredClone(deliveryUnknown.error);
   const consumer = new RuntimeSnapshotConsumer();
-  record(flowCounts, 'events', () => assert.equal(consumer.apply(observability.cases.complete).apply, true));
+  record(flowCounts, 'events', () => {
+    assert.equal(consumer.apply(eventDerivedSnapshot).apply, true);
+  });
   record(flowCounts, 'events', () => {
     const publicView = consumer.getPublic().snapshot;
-    assert.equal(publicView.turns.items[0].state, 'recovering');
+    const [projectedTurn] = publicView.turns.items;
+    assert.equal(projectedTurn.turn_version, deliveryUnknown.turn_version);
+    assert.equal(projectedTurn.phase, deliveryUnknown.phase);
+    assert.equal(projectedTurn.state, deliveryUnknown.phase);
+  });
+  record(flowCounts, 'events', () => {
+    const [projectedTurn] = consumer.getPublic().snapshot.turns.items;
+    assert.equal(projectedTurn.error.code, deliveryUnknown.error.code);
+    assert.equal(projectedTurn.side_effect_status, deliveryUnknown.error.side_effect_status);
+  });
+  record(flowCounts, 'events', () => {
+    const publicView = consumer.getPublic().snapshot;
     assert.equal(publicView.executors.items[0].provider_native_id, undefined);
     assert.equal(publicView.executors.items[0].runtime_identity, undefined);
+  });
+  record(flowCounts, 'events', () => {
+    const unsafe = structuredClone(eventDerivedSnapshot);
+    unsafe.turns.items[0].provider_payload = { event: deliveryUnknown };
+    assert.throws(() => new RuntimeSnapshotConsumer().apply(unsafe), { code: 'unsafe_snapshot' });
   });
 }
 

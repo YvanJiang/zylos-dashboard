@@ -5,7 +5,9 @@ import assert from 'node:assert/strict';
 
 import { createCompatibilityEvidence } from './helpers/public-contract-compatibility.js';
 
-test('Dashboard independently proves the current Core public contract matrix', () => {
+test('Dashboard independently proves the current Core public contract matrix', {
+  skip: !process.env.ZYLOS_CORE_PUBLIC_CONTRACTS_DIR,
+}, () => {
   const evidence = createCompatibilityEvidence();
   assert.equal(evidence.repository, 'zylos-dashboard');
   console.log(`ZYLOS_CONTRACT_COMPATIBILITY_EVIDENCE=${JSON.stringify(evidence)}`);
