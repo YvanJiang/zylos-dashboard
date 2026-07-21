@@ -253,6 +253,7 @@ function proveRawComputations(fixture, assertionCounts) {
   for (const vector of fixture.vectors) {
     if (vector.scope === 'legacy-c4') {
       assert.equal(vector.idempotency_key, `legacy-c4:${vector.key_fields.legacy_record_id}`);
+      computations.idempotency_key_from_raw_payload += 1;
     } else {
       const derivedInput = keyInput(vector.scope, vector.key_fields);
       const derivedInputJcs = canonicalizeJson(derivedInput);
