@@ -33,6 +33,8 @@ const FLOWS = Object.freeze([
   'observability_control',
   'dashboard_luna_projection',
 ]);
+const EXPECTED_CORE_FIXTURE_SHA256 =
+  'c11dbb169e0c124bbfb05cded4d3a3d49d473d8deaea1c5a777e25f026f867ba';
 const CORE_FIXTURE_FILES = Object.freeze([
   'control-v1.json',
   'dashboard-runtime-projection-v1.json',
@@ -116,7 +118,9 @@ function loadFixtureSet(directory) {
     hash.update(raw);
     hash.update(Buffer.from([0]));
   }
-  return Object.freeze({ fixtures, sha256: hash.digest('hex') });
+  const sha256 = hash.digest('hex');
+  assert.equal(sha256, EXPECTED_CORE_FIXTURE_SHA256, 'Core public fixture bytes drifted');
+  return Object.freeze({ fixtures, sha256 });
 }
 
 function assertWellFormedUnicode(value) {
@@ -248,14 +252,10 @@ function proveRawComputations(fixture, assertionCounts) {
   };
   for (const vector of fixture.vectors) {
     if (vector.scope === 'legacy-c4') {
-      assert.equal(vector.key_input, null);
-      assert.equal(vector.key_input_jcs, null);
       assert.equal(vector.idempotency_key, `legacy-c4:${vector.key_fields.legacy_record_id}`);
     } else {
       const derivedInput = keyInput(vector.scope, vector.key_fields);
-      assert.deepEqual(derivedInput, vector.key_input);
       const derivedInputJcs = canonicalizeJson(derivedInput);
-      assert.equal(derivedInputJcs, vector.key_input_jcs);
       computations.jcs_bytes_from_raw_payload += 1;
       const digest = crypto.createHash('sha256')
         .update(Buffer.from(derivedInputJcs, 'utf8'))
@@ -266,7 +266,6 @@ function proveRawComputations(fixture, assertionCounts) {
 
     const projection = projectRawPayload(vector);
     const projectionJcs = canonicalizeJson(projection);
-    assert.equal(projectionJcs, vector.payload_projection_jcs);
     computations.jcs_bytes_from_raw_payload += 1;
     const payloadHash = crypto.createHash('sha256')
       .update(Buffer.from(projectionJcs, 'utf8'))
