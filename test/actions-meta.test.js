@@ -6,6 +6,20 @@ import test from 'node:test';
 
 import { consumeZylosUpgradeMarker, getActionsMeta, handleAction } from '../src/lib/actions.js';
 
+test('handleAction has no direct runtime interrupt route', async () => {
+  const zylosDir = makeZylosDir();
+  try {
+    const result = await handleAction('interrupt', { request: 'negative-proof' }, { zylosDir });
+    assert.deepEqual(result, {
+      ok: false,
+      error: 'unknown_action',
+      messageKey: 'result.unknown_action'
+    });
+  } finally {
+    fs.rmSync(zylosDir, { recursive: true, force: true });
+  }
+});
+
 async function withCodexHome(fn) {
   const prev = process.env.CODEX_HOME;
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dashboard-codex-actions-'));

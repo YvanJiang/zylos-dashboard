@@ -27,7 +27,7 @@ Dashboard 要解决的核心问题：**用一个 Web 界面覆盖 zylos agent �
 ### 非目标
 
 - **Not an independent control plane**: Dashboard never mutates configuration, processes, or runtime state directly; it may only submit deployment-authorized public control requests to Core.
-- **不修改现有组件**：零侵入 activity-monitor、scheduler、comm-bridge 的代码
+- **不修改现有组件**：观测通过 Core 公共快照、直接 hook/statusLine ingestion 和只读数据源完成
 - **不是外部 SaaS**：所有数据本地存储，不发送到第三方
 - **不做跨实例汇聚**（Phase 3 之前）：当前聚焦单实例可观测性
 
@@ -109,7 +109,7 @@ API Server 内部由三层组成：**Adapter → Resolver → API**。
 │  ┌────┴──────────────────────────────────────────┐    │
 │  │              Adapter Layer                     │    │
 │  │                                               │    │
-│  │  FileAdapter     StatusLineAdapter  SQLiteAdapter  │
+│  │  CoreSnapshotAdapter  StatusLineAdapter  SQLiteAdapter │
 │  │  PM2Adapter      HookAdapter        TelemetryAdapter│
 │  └───────────────────────────────────────────────┘    │
 └───────────────────────────────────────────────────────┘
@@ -124,9 +124,9 @@ API Server 内部由三层组成：**Adapter → Resolver → API**。
 正常路径（以 agent 状态为例）：
 
 ```
-runtime hook → activity-monitor 写入状态文件
+runtime hook / Core snapshot → Dashboard ingestion / fleet poller
                         │
-Dashboard adapter ── fs.watch 检测变更 ── resolver 选出最佳来源
+Dashboard adapter ── durable store / public API ── resolver 选出最佳来源
                         │
               REST 返回指标值 + 来源信息 + 可用性状态
                         │
@@ -138,10 +138,10 @@ Dashboard adapter ── fs.watch 检测变更 ── resolver 选出最佳来�
 ```
 resolver 查询所有 adapter：
   遥测 adapter → 5 分钟无数据（stale）
-  状态文件 adapter → 2 秒前更新（ok）
+  Core 公共快照 adapter → 2 秒前更新（ok）
 
-freshness 优先于 source priority → 选中状态文件 adapter
-→ 前端：数值正常展示 + 黄灯提示"数据来源降级至状态文件"
+freshness 优先于 source priority → 选中 Core 公共快照 adapter
+→ 前端：数值正常展示 + 黄灯提示"数据来源降级至 Core 快照"
 ```
 
 Resolver 的完整排序规则、输出结构和更多示例见 → [指标模型模块文档](modules/metric-model.md)
@@ -157,7 +157,7 @@ Dashboard 的核心抽象是统一指标模型。所有指标对用户呈现统�
 
 前端根据这两层状态决定展示方式：unsupported 灰态隐藏、ok 正常、degraded/stale 黄灯、error 红灯。
 
-当前指标目录包含 18 个统一指标，覆盖状态、成本、工具、性能、通信、任务六个域。每个指标的 resolver chain 定义了 adapter 优先级：**telemetry > hook > 状态文件**，但 freshness 优先于 source priority。
+当前指标目录包含 18 个统一指标，覆盖状态、成本、工具、性能、通信、任务六个域。每个指标的 resolver chain 定义了 adapter 优先级：**telemetry > Core snapshot > direct hook**，但 freshness 优先于 source priority。
 
 完整指标目录、resolver 规则、freshness 阈值见 → [指标模型模块文档](modules/metric-model.md)
 
@@ -167,8 +167,8 @@ Dashboard 的核心抽象是统一指标模型。所有指标对用户呈现统�
 
 | Adapter | 数据来源 | 引入 Phase | 职责 |
 |---------|---------|-----------|------|
-| FileAdapter | activity-monitor JSON/JSONL | Phase 1 | 状态文件和事件日志读取 |
-| StatusLineAdapter | statusline.json | Phase 1 | Claude runtime 的 context/cost/token 实时状态 |
+| CoreSnapshotAdapter | Core public snapshot/event stream | Phase 1 | provider-neutral runtime state and lifecycle |
+| StatusLineAdapter | direct StatusLine ingest | Phase 1 | Claude runtime 的 context/cost/token 实时状态 |
 | SQLiteAdapter | c4.db, scheduler.db | Phase 1 | 通信记录和任务调度数据（只读） |
 | PM2Adapter | pm2 jlist | Phase 1 | 进程级监控 |
 | HookAdapter | Hook 事件流 | Phase 2 | 直接接收 runtime hook 事件，替代文件轮询 |
@@ -180,7 +180,7 @@ Dashboard 的核心抽象是统一指标模型。所有指标对用户呈现统�
 
 ### 安全模型
 
-**数据只读保护**：SQLite 三层只读（URI readonly + fileMustExist + PRAGMA query_only），文件系统只 watch 不写入。
+**数据边界保护**：Core 状态只通过公共快照读取；外部 SQLite 使用三层只读保护，Dashboard 仅写入自己的 metric/event store。
 
 **访问控制**：与 zylos-pages 一致的 cookie-based session auth。scrypt 密码哈希、内存 session 存储、HttpOnly+SameSite=Strict cookie、暴力破解防护（per-IP lockout + 全局限速）。`/api/health` 和静态资源不需要登录，其余 API 和页面均需认证。CLI 支持 Bearer token。Server 绑定 localhost，外部走 Caddy 反代。
 
@@ -198,7 +198,7 @@ Dashboard 的核心抽象是统一指标模型。所有指标对用户呈现统�
 
 **目标**：零侵入，只读已有数据，立即可用。
 
-**数据来源**：状态文件 + JSONL + SQLite + PM2 + StatusLine。
+**数据来源**：Core 公共快照 + direct hook/StatusLine ingestion + Dashboard SQLite + 系统采样。
 
 **功能面板**：
 - 实时状态面板（agent 状态灯、当前工具、context 使用率、配额）
@@ -208,7 +208,7 @@ Dashboard 的核心抽象是统一指标模型。所有指标对用户呈现统�
 - 任务调度监控（活跃任务、执行历史、下次执行）
 - PM2 服务健康（运行状态、重启次数、内存/CPU）
 
-**依赖**：P0 验证清单通过即可上线。Dashboard 自身无外部依赖。Codex runtime 的 context_usage 在 Phase 1 为 degraded 状态（上游 activity-monitor 尚未写入 state file），不阻塞上线。
+**依赖**：P0 验证清单通过即可上线。Dashboard 自身无外部 SaaS 依赖。Codex runtime 的 context_usage 在对应 Core 公共指标尚不可用时标记为 degraded，不阻塞上线。
 
 ### Phase 2 — Multi-Runtime OTel + Hook（1-2 周）
 
@@ -238,10 +238,9 @@ Dashboard 的核心抽象是统一指标模型。所有指标对用户呈现统�
 | 前端技术 | Vanilla JS + Chart.js + CSS Custom Properties 主题层 | 零构建即开即用，CSS 变量支撑皮肤切换（~25 个语义 token），切换主题只需翻转 `data-theme` 属性。评估过 Preact/Vue CDN/Svelte，均不值得引入框架开销 |
 | 实时推送 | SSE + polling fallback | 只读场景不需要 WebSocket 双向通信，SSE 更轻量 |
 | 数据库访问 | SQLite 三层只读 | 性能有代价（无法用 WAL 优化），但绝对防止意外写入 |
-| 文件监控 | fs.watch + 5-10s polling 兜底 | inotify 在 temp+rename 模式下不可靠，polling 兜底保正确性 |
 | OTel 时机 | Phase 2，不进 MVP | MVP 零侵入可以更快验证价值，OTel 需要额外配置和验证 |
 | 多 runtime | 指标并集覆盖，unsupported 不假补 | 每个 runtime 有不可用指标，但不会误导用户 |
-| 指标来源 | telemetry > hook > 状态文件 | 遥测精度最高但依赖配置，状态文件兜底 |
+| 指标来源 | telemetry > Core snapshot > direct hook | Core 是 runtime 权威，hook 和遥测补充指标细节 |
 | Resolver 仲裁 | freshness > source priority | fresh 低优来源优于 stale 高优来源，优先保证数据新鲜度 |
 | 认证 | 与 zylos-pages 一致的 cookie-based session auth（scrypt 密码、内存 session、暴力破解防护）。URL token 默认关 | URL token 有 Referer/日志泄露风险。复用 Pages 验证过的 auth 方案降低实现风险 |
 | Base Path | X-Forwarded-Prefix + browser-base.js（从 zylos-pages 移植） | 遵循 zylos-component-template COMPONENT-SPEC.md §4 规范 |
@@ -256,7 +255,7 @@ Dashboard 的核心抽象是统一指标模型。所有指标对用户呈现统�
 | OTel 数据量管理 | 保留时长可配置，默认全保留。查询维度支持小时/天/7天/30天。Metrics 和 logs 全量保留；traces 默认 1:10 采样（可配置）。超 30 天的 traces 和 logs 自动归档 |
 | 多实例数据汇聚 | Dashboard 自身闭环，不依赖 HXA。Push vs pull 方式延迟到 Phase 3 实施时决定 |
 | Codex OTel 字段映射 | Phase 2 实测建立映射表，按 data-sources.md 中已验证的字段为准 |
-| Codex context_usage | 不等 activity-monitor 迭代。Phase 1 标记为 degraded，Dashboard 自身不阻塞 |
+| Codex context_usage | 等待 Core 公共指标；缺失时标记为 degraded，Dashboard 自身不阻塞 |
 | llm_latency 语义对齐 | 如果两个 runtime 的延迟语义不等价，各成一套指标，选择性展示（不强行统一为一个数字） |
 
 ## 与 COCO Dashboard 的关系

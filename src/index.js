@@ -1453,6 +1453,7 @@ async function handleStatuslineIngest(req, res) {
       metrics_written: written,
       runtime: 'claude'
     });
+    if (statuslineCollector) await statuslineCollector.collect();
 
     for (const m of metrics) {
       if (m.metric_name && m.metric_value != null) {

@@ -217,14 +217,6 @@ export class Sanitizer {
       return target ? `Send to ${channel} (${target})` : `Send to ${channel}`;
     }
 
-    const ctrlMatch = cmd.match(/^node\s+(?:\S*\/)?c4-control\.js\s+(\w+)/);
-    if (ctrlMatch) {
-      const sub = ctrlMatch[1];
-      const idMatch = cmd.match(/--id\s+"?(\d+)"?/);
-      if (idMatch) return `Control: ${sub} #${idMatch[1]}`;
-      return `Control: ${sub}`;
-    }
-
     return null;
   }
 
@@ -236,9 +228,6 @@ export class Sanitizer {
       const target = replyVia[2] ? this._extractC4Target(replyVia[2]) : null;
       return target ? `${channel} (${target})` : channel;
     }
-
-    // "ack via: node .../c4-control.js ack --id ..."
-    if (/ack via:/.test(prompt)) return 'control';
 
     // Scheduler task delivery
     if (/\[Scheduled Task\]|\[scheduler\]/i.test(prompt)) return 'scheduler';

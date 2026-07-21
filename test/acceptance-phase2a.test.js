@@ -279,13 +279,9 @@ test('Deployed: settings.json has dashboard hooks', (t) => {
   }
 });
 
-test('Deployed: existing hooks preserved', (t) => {
+test('Deployed: statusline command preserved', (t) => {
   if (!fs.existsSync(REAL_SETTINGS_PATH)) return t.skip('no deployed settings.json on this box');
   const settings = JSON.parse(fs.readFileSync(REAL_SETTINGS_PATH, 'utf8'));
-  const amHook = settings.hooks.PreToolUse?.some(g =>
-    g.hooks?.some(h => h.command?.includes('activity-monitor'))
-  );
-  assert.ok(amHook, 'activity-monitor hook missing from PreToolUse');
   assert.ok(settings.statusLine, 'statusLine config missing');
 });
 
