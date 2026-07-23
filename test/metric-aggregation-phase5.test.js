@@ -333,7 +333,7 @@ test('/api/system payload uses DB-backed PM2 and system summary fallback after w
     scheduler: { running: true }
   });
 
-  assert.equal(payload.pm2[0].process_name, 'zylos-dashboard');
+  assert.equal(payload.pm2[0].name, 'zylos-dashboard');
   assert.equal(payload.system.cpu_pct, 12.5);
   assert.equal(payload.scheduler.running, true);
   assert.equal(payload.collected_at.pm2, '2026-06-07T01:00:00.000Z');
