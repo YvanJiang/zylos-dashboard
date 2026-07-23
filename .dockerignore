@@ -1,0 +1,9 @@
+.git
+node_modules
+.backup
+.zylos
+*.log
+*.env
+.env.*
+test
+docs
