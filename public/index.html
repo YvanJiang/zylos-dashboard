@@ -7,12 +7,12 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="__ASSET_ROOT__/css/style.css?v=45">
+<link rel="stylesheet" href="__ASSET_ROOT__/css/style.css?v=47">
 <link rel="stylesheet" href="__ASSET_ROOT__/themes/light.css?v=2">
 <script src="__ASSET_ROOT__/vendor/chart.umd.js"></script>
 <script src="__ASSET_ROOT__/js/chartjs-adapter-date-fns.bundle.min.js"></script>
 <script src="__ASSET_ROOT__/js/markdown-it.min.js"></script>
-<script type="module" src="__ASSET_ROOT__/js/app.js?v=57"></script>
+<script type="module" src="__ASSET_ROOT__/js/app.js?v=60"></script>
 </head>
 <body>
 <header class="app-header">
@@ -94,6 +94,44 @@
             <div id="subagent-list"></div>
           </div>
         </div>
+      </section>
+
+      <section class="card runtime-observability-card" aria-labelledby="runtime-observability-title">
+        <div class="card-head">
+          <h2 id="runtime-observability-title">Core Runtime Observability</h2>
+          <span class="diagnostic-only">Provider/process identity is diagnostic-only</span>
+        </div>
+        <div id="runtime-observability" aria-live="polite"></div>
+        <form class="operations-control" id="operations-control-form">
+          <div class="operations-control-heading">
+            <h3 data-i18n="operations.title">Authorized Core operations</h3>
+            <span data-i18n="operations.authority_note">Authority comes from deployment policy, never this form.</span>
+          </div>
+          <div class="operations-control-grid">
+            <label><span data-i18n="operations.action">Action</span>
+              <select id="operations-action" required>
+                <option value="inspect">inspect</option>
+                <option value="stop_active_turn">stop_active_turn</option>
+                <option value="clear_unstarted_queue">clear_unstarted_queue</option>
+                <option value="reconcile">reconcile</option>
+                <option value="evict_idle_executor">evict_idle_executor</option>
+                <option value="confirm_recovery">confirm_recovery</option>
+                <option value="reject_recovery">reject_recovery</option>
+              </select>
+            </label>
+            <label class="operations-target"><span data-i18n="operations.target">Canonical Core target (JSON)</span>
+              <textarea id="operations-target" rows="3" spellcheck="false" placeholder='{"aggregate_type":"conversation","conversation_id":"..."}' required></textarea>
+            </label>
+            <label><span data-i18n="operations.version">Expected aggregate version</span>
+              <input id="operations-version" type="number" min="1" step="1" placeholder="inspect may be empty">
+            </label>
+            <label class="operations-reason"><span data-i18n="operations.reason">Redacted audit reason</span>
+              <input id="operations-reason" type="text" maxlength="500" required>
+            </label>
+          </div>
+          <button class="action-btn" id="operations-submit" type="submit" data-i18n="operations.submit">Submit authorized request</button>
+          <output class="operations-result" id="operations-result" aria-live="polite"></output>
+        </form>
       </section>
 
       <!-- ② Capacity & Cost -->

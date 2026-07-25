@@ -27,39 +27,26 @@ MetricAdapter:
 
 | Adapter | 数据来源 | Phase | 覆盖指标 |
 |---------|---------|-------|---------|
-| FileAdapter | activity-monitor JSON/JSONL | 1 | agent_state, current_tool, tool_calls, tool_duration, health, context_usage |
-| StatusLineAdapter | statusline.json（Claude only） | 1 | context_usage, token_usage, session_cost, cache_hit_rate |
+| CoreSnapshotAdapter | Core public snapshot/event stream | 1 | agent_state, current_tool, tool_calls, tool_duration, health |
+| StatusLineAdapter | direct StatusLine ingest（Claude only） | 1 | context_usage, token_usage, session_cost, cache_hit_rate |
 | SQLiteAdapter | c4.db, scheduler.db（readonly） | 1 | messages, scheduled_tasks |
 | PM2Adapter | pm2 jlist | 1 | pm2_services |
 | HookAdapter | Hook 事件流 | 2 | tool_calls, tool_failures, agent_state, session_lifecycle, permission_requests |
 | TelemetryAdapter | OTel OTLP 接收端 | 2 | token_usage, session_cost, llm_latency, cache_hit_rate, tool_calls, tool_failures, tool_duration, ttft |
 
-## FileAdapter
+## CoreSnapshotAdapter
 
 ### 数据源
 
-| 文件 | 内容 | 更新频率 | 读取方式 | runtime 依赖 |
-|------|------|---------|---------|-------------|
-| `agent-status.json` | Agent 状态 | ~1s | fs.watch + JSON parse | 无 |
-| `cost-log.jsonl` | Session 成本记录 | session 结束 | 启动全量 + tail 增量 | 无 |
-| `tool-events.jsonl` | 工具调用事件 | 实时 | tail -f 流式 | 无 |
-| `context-monitor-state.json` | Context 使用率 | 定期 | fs.watch | 两端均可用（Codex 需补 file write） |
-| `proc-state.json` | 进程采样 | ~10s | fs.watch | 无 |
-| `usage.json` | 配额 | 定期 | fs.watch | 无 |
-
-文件监控策略：fs.watch 提示 + 5-10s polling 兜底。activity-monitor 使用 temp+rename 写入模式，inotify 在此模式下不可靠，polling 保证正确性。
+Dashboard 通过 Core 的 provider-neutral 公共快照和事件流获取 runtime 状态。Core 是 lineage、turn、queue、lease、permission 和执行状态的唯一权威；Dashboard 不读取终端、窗口、PID 或私有状态文件来推断执行状态。
 
 ### Codex context_usage 特殊说明
 
-zylos-core `CodexContextMonitor`（`cli/lib/runtime/codex-context-monitor.js`）已能读取 Codex context 使用率——读 JSONL rollout `last_token_usage.input_tokens` + `model_context_window`，SQLite fallback，每 30 秒轮询，零 token 消耗。但当前 `getUsage()` 仅驱动 threshold 回调（60%/75%），**未写入 `context-monitor-state.json`**。
-
-待做：activity-monitor polling callback 补一行 `writeFileSync(context-monitor-state.json, { used_percentage, ... })`，Dashboard FileAdapter 即可通过与 Claude 相同的路径消费。
+Codex context 使用率仅从 Core 的公共指标消费。若对应指标尚未发布，Resolver 返回 degraded/missing；Dashboard 不从 rollout、SQLite 私有表或终端状态构造替代权威。
 
 ## StatusLineAdapter
 
-读取 `statusline.json`，仅 Claude runtime 可用。包含 context 百分比、累计成本、rate limit 状态、token 统计等。
-
-每 turn 更新一次。Claude 的 statusline hook 在每次 API 回复后写入此文件。
+仅 Claude runtime 可用，包含 context 百分比、累计成本、rate limit 状态、token 统计和 runtime metadata。Claude 的 StatusLine command 每 turn 直接 POST 到 Dashboard ingestion endpoint，数据进入 Dashboard 自有 SQLite；collector 只读取该 durable metric，不读取外部状态文件。
 
 ## SQLiteAdapter
 
@@ -86,7 +73,7 @@ Dashboard 自身注册 hook handler，实时接收 runtime 事件流，替代文
 
 | 模式 | Phase | 说明 |
 |------|-------|------|
-| 间接消费（读文件） | Phase 1 | activity-monitor 的 hook 将数据写入状态文件和 JSONL，Dashboard FileAdapter 读取产出物 |
+| Core 公共消费 | Phase 1 | Dashboard 读取 Core 公共快照和事件流 |
 | 直接 ingestion | Phase 2 | Dashboard 自身注册 hook handler，实时接收事件流 |
 
 ### Hook 事件覆盖
@@ -119,7 +106,7 @@ PostToolUseFailure, PostToolBatch, Notification, SubagentStart, SubagentStop, Ta
 | SessionStart / SessionEnd | 会话生命周期精确时间戳 |
 | Stop / StopFailure | Turn 边界 + API 错误分类 |
 | SubagentStart / SubagentStop | 子代理追踪 |
-| FileChanged | 监听状态文件变更驱动 WebSocket 推送 |
+| FileChanged | 接收 runtime 文件变更事件并驱动 SSE 更新 |
 
 ### Hook handler 类型
 
@@ -310,7 +297,7 @@ OTel 数据存入 Dashboard 自有 SQLite（`dashboard.db`），不污染已有�
 ## 依赖
 
 - Resolver（消费本模块的 adapter 接口）
-- activity-monitor（FileAdapter 读取其产出的状态文件和 JSONL）
+- zylos-core（CoreSnapshotAdapter 读取公共快照和事件流）
 - comm-bridge / scheduler（SQLiteAdapter 读取其数据库）
 - PM2（PM2Adapter 调用 `pm2 jlist`）
 - Claude Code / Codex CLI runtime（TelemetryAdapter 接收 OTel 输出、HookAdapter 接收 hook 事件）

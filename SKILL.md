@@ -1,7 +1,7 @@
 ---
 name: dashboard
 version: 0.5.4
-description: Read-only Zylos observability dashboard for agent state, costs, tools, communication, scheduler, and PM2 service health. Full features on Claude runtime. PM2, system health, communication, and scheduler monitoring on all runtimes.
+description: Zylos observability dashboard for agent state, costs, tools, communication, scheduler, PM2 health, and deployment-authorized capability-first Core operations. Operations are disabled by default and never flow to Luna.
 type: capability
 
 lifecycle:
@@ -58,7 +58,7 @@ dependencies: []
 
 # Zylos Dashboard
 
-Read-only observability dashboard for a local Zylos agent.
+Provider-neutral observability plus deployment-authorized Core operations for a local Zylos agent. Dashboard never mutates runtime state directly.
 
 ```bash
 npm start

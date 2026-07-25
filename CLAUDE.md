@@ -36,7 +36,7 @@ This document guides AI assistants working on the zylos-dashboard component.
 
 | Collector | Data source | Runtime |
 |-----------|-------------|---------|
-| `statusline-collector.js` | `activity-monitor/statusline.json` (fs.watch) | All |
+| `statusline-collector.js` | Dashboard `statusline_summary` metrics from direct StatusLine ingest | Claude |
 | `system-collector.js` | `os.cpus()`, `os.totalmem()`, `vm_stat` (macOS), `fs.statfsSync` | All |
 | `pm2-collector.js` | PM2 programmatic API | All |
 | `conversation-collector.js` | Hook events (assistant text messages) | Claude |

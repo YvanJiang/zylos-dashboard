@@ -77,33 +77,32 @@ test('SystemCollector writes a single system_summary row', async () => {
 });
 
 test('StatuslineCollector writes one statusline_summary row with capacity dimensions', async () => {
-  await withStore(async (store, dir) => {
-    const statusDir = path.join(dir, 'activity-monitor');
-    fs.mkdirSync(statusDir, { recursive: true });
-    fs.writeFileSync(path.join(statusDir, 'statusline.json'), JSON.stringify({
+  await withStore(async (store) => {
+    store.insertMetric({
+      timestamp: new Date().toISOString(),
+      runtime: 'claude',
       session_id: 'claude-session-1',
-      model: { id: 'claude-opus-4-6', display_name: 'Opus' },
-      effort: { level: 'high' },
-      version: '1.2.3',
-      context_window: {
-        used_percentage: 42.5,
-        current_usage: {
-          input_tokens: 100,
-          cache_read_input_tokens: 300,
-          cache_creation_input_tokens: 100
-        }
+      metric_name: 'statusline_summary',
+      metric_value: 0,
+      dimensions: {
+        model: 'Opus',
+        model_id: 'claude-opus-4-6',
+        effort: 'high',
+        cc_version: '1.2.3',
+        context_pct: 42.5,
+        session_cost: 0.1234,
+        rate_limit: 55,
+        rate_limit_7d: 11,
+        cache_hit_rate: 0.6
       },
-      cost: { total_cost_usd: 0.1234 },
-      rate_limits: {
-        five_hour: { used_percentage: 55, resets_at: 1779516000 },
-        seven_day: { used_percentage: 11, resets_at: 1780083600 }
-      }
-    }));
+      source: 'statusline',
+      confidence: 'actual'
+    });
 
-    const collector = new StatuslineCollector(store, { zylosDir: dir });
+    const collector = new StatuslineCollector(store);
     const result = await collector.collect();
 
-    assert.equal(result.written, 1);
+    assert.equal(result.written, 0);
     const rows = store.queryMetrics({ name: 'statusline_summary' });
     assert.equal(rows.length, 1);
     assert.equal(rows[0].session_id, 'claude-session-1');
@@ -114,6 +113,24 @@ test('StatuslineCollector writes one statusline_summary row with capacity dimens
     assert.equal(rows[0].dimensions.cache_hit_rate, 0.6);
     assert.equal(collector.getRuntimeInfo().model_id, 'claude-opus-4-6');
   });
+});
+
+test('StatuslineCollector reads only the indexed latest summary row', async () => {
+  const latest = {
+    dimensions: { model: 'Opus', model_id: 'claude-opus-4-6', effort: 'high' }
+  };
+  const store = {
+    getLatestMetric(name) {
+      assert.equal(name, 'statusline_summary');
+      return latest;
+    },
+    queryMetrics() {
+      throw new Error('unbounded history query must not run');
+    }
+  };
+  const collector = new StatuslineCollector(store);
+  assert.deepEqual(await collector.collect(), { written: 0, data: latest });
+  assert.equal(collector.getRuntimeInfo().model_id, 'claude-opus-4-6');
 });
 
 test('usage_event unique index deduplicates null-session replay keys atomically', () => withStore((store) => {
@@ -316,7 +333,7 @@ test('/api/system payload uses DB-backed PM2 and system summary fallback after w
     scheduler: { running: true }
   });
 
-  assert.equal(payload.pm2[0].process_name, 'zylos-dashboard');
+  assert.equal(payload.pm2[0].name, 'zylos-dashboard');
   assert.equal(payload.system.cpu_pct, 12.5);
   assert.equal(payload.scheduler.running, true);
   assert.equal(payload.collected_at.pm2, '2026-06-07T01:00:00.000Z');

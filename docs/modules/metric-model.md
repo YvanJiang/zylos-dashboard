@@ -15,7 +15,7 @@
 | **tool_calls** | 工具调用事件流 | event stream | ✅ | ✅ | telemetry → hook → JSONL fallback |
 | **tool_failures** | 工具执行失败 | event stream | ✅ | ✅ | telemetry → PostToolUseFailure (Claude) / tool_result inference → status fallback |
 | **tool_duration** | 工具执行耗时 | ms | ✅ | ✅ | telemetry → Pre/Post 时间差 |
-| **context_usage** | Context window 使用率 | % | ✅ | degraded（上游前置） | Claude: telemetry → statusLine → context-monitor-state.json；Codex: CodexContextMonitor 已有读取能力，但 activity-monitor 尚未写入 state file，当前 Phase 1 为 degraded/missing |
+| **context_usage** | Context window 使用率 | % | ✅ | degraded（上游前置） | Claude: telemetry → direct statusLine ingest；Codex: Core public metric，未发布时为 degraded/missing |
 | **token_usage** | Token 消耗 | count | ✅ | ✅/verify | telemetry → statusLine → cost-log |
 | **session_cost** | Session 成本 | USD | ✅ | ✅/verify | telemetry → statusLine → cost-log |
 | **llm_latency** | LLM 请求延迟 | ms (P50/P95/P99) | ✅ | ✅/verify | telemetry span / metric |
@@ -97,14 +97,14 @@ Resolver 按指标查找所有 adapter 的 capability，收集 resolve 结果，
 resolve("tool_calls", "claude"):
   TelemetryAdapter → missing (collector not running)
   HookAdapter      → ok, value=[...]
-  FileAdapter      → ok, value=[...]
-  ranking: HookAdapter ok（优先级高于 FileAdapter）
-  → source="hook", preferredSource="telemetry", fallbackReason="telemetry_missing"
+  CoreSnapshotAdapter → ok, value=[...]
+  ranking: CoreSnapshotAdapter ok（Core runtime 权威）
+  → source="core_snapshot", preferredSource="telemetry", fallbackReason="telemetry_missing"
 
 resolve("context_usage", "codex"):
-  FileAdapter → missing (context-monitor-state.json 不存在或无 Codex 数据)
+  CoreSnapshotAdapter → missing (Core 公共指标尚未发布)
   → availability="missing", source=none
-  注：上游前置——activity-monitor 补写 context-monitor-state.json 后，此路径变为 FileAdapter → ok
+  注：Core 发布 provider-neutral context 指标后，此路径变为 CoreSnapshotAdapter → ok
 
 resolve("context_usage", "claude"):
   TelemetryAdapter  → stale (last update 5min ago)

@@ -6,7 +6,7 @@ export class SseHub {
     this.sequence = 0;
   }
 
-  addClient(res, validator) {
+  addClient(res, validator, initialEvents = [], acceptsEvent = null) {
     res.writeHead(200, {
       'content-type': 'text/event-stream',
       'cache-control': 'no-store',
@@ -14,13 +14,17 @@ export class SseHub {
       'x-accel-buffering': 'no'
     });
     res.write(': connected\n\n');
-    const client = { res, validator: validator || null };
+    const client = { res, validator: validator || null, acceptsEvent };
+    for (const { eventType, data } of initialEvents) {
+      if (!this._write(client, this._eventPayload(eventType, data))) return false;
+    }
     this.clients.add(client);
     this._startKeepalive();
     res.on('close', () => {
       this.clients.delete(client);
       if (this.clients.size === 0) this._stopKeepalive();
     });
+    return true;
   }
 
   removeClient(res) {
@@ -35,14 +39,11 @@ export class SseHub {
 
   broadcast(eventType, data) {
     this.sequence += 1;
-    const payload = `id: ${this.sequence}\nevent: ${eventType}\ndata: ${JSON.stringify(data)}\n\n`;
+    const payload = `id: ${this.sequence}\n${this._eventPayload(eventType, data)}`;
     for (const client of this.clients) {
       if (this._evictIfInvalid(client)) continue;
-      try {
-        client.res.write(payload);
-      } catch {
-        this.clients.delete(client);
-      }
+      if (client.acceptsEvent && !client.acceptsEvent(eventType, data)) continue;
+      this._write(client, payload);
     }
   }
 
@@ -64,16 +65,25 @@ export class SseHub {
     return true;
   }
 
+  _eventPayload(eventType, data) {
+    return `event: ${eventType}\ndata: ${JSON.stringify(data)}\n\n`;
+  }
+
+  _write(client, payload) {
+    try {
+      if (client.res.write(payload)) return true;
+      client.res.end();
+    } catch { /* disconnected or closed */ }
+    this.clients.delete(client);
+    return false;
+  }
+
   _startKeepalive() {
     if (this.keepaliveTimer) return;
     this.keepaliveTimer = setInterval(() => {
       for (const client of this.clients) {
         if (this._evictIfInvalid(client)) continue;
-        try {
-          client.res.write(': keepalive\n\n');
-        } catch {
-          this.clients.delete(client);
-        }
+        this._write(client, ': keepalive\n\n');
       }
     }, this.keepaliveMs);
     this.keepaliveTimer.unref();

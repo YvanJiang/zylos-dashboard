@@ -1,7 +1,9 @@
 import { pct, resolveCpuDisplay } from './gauge-utils.js';
 import { setAssetRoot, getLocale, initI18n, t, renderI18n } from './i18n.js?v=2';
-import { renderAgentFleet, liveStateMood, MASCOT_BY_MOOD } from './agent-fleet.js';
+import { renderAgentFleet, MASCOT_BY_MOOD } from './agent-fleet.js';
 import { createFleetSounds } from './fleet-sounds.js';
+import { derivePrimaryRuntimeState, renderRuntimeObservability } from './runtime-observability.js';
+import { buildOperationsControlInput, submitOperationsControl } from './operations-controls.js';
 
 const BASE_PATH = document.documentElement.dataset.basePath || '';
 const ASSET_ROOT = `${BASE_PATH}/_assets`;
@@ -24,6 +26,7 @@ function effortLabel(level) { return t(`effort.${level}`) || level?.charAt(0).to
 
 const state = {
   dashboardState: null,
+  runtimeSnapshot: null,
   metrics: new Map(),
   health: null,
   system: null,
@@ -273,6 +276,8 @@ function stateTitle(p, mood) {
   if (s === 'IDLE') return t('state.idle');
   if (s === 'OFFLINE') return t('state.offline');
   if (s === 'WAITING_HUMAN') return t('state.waiting');
+  if (s === 'QUEUED') return 'Queued';
+  if (s === 'RECOVERING') return 'Recovering';
   if (s === 'POSSIBLY_STUCK') return t('state.possibly_stuck_simple');
   if (s === 'STUCK') return t('state.stuck_simple');
   return t('state.unknown_simple');
@@ -410,13 +415,25 @@ function mascotClass(agentState) {
 }
 
 function renderState() {
-  const p = state.dashboardState;
-  // Same octopus mascot set + mood logic as Agent Fleet (busy with no visible
-  // tool = thinking), so the agent looks identical in its tile and its detail.
-  const mood = liveStateMood(p);
+  const primary = derivePrimaryRuntimeState(state.runtimeSnapshot);
+  const localDetails = primary.available ? (state.dashboardState || {}) : {
+    running_tools: [],
+    active_subagents: [],
+    last_message: null
+  };
+  const p = {
+    ...state.dashboardState,
+    ...localDetails,
+    state: primary.state,
+    reason: primary.reason
+  };
+  // Core owns state authority. A missing or partial snapshot is intentionally
+  // rendered as unknown instead of falling back to local tool/process signals.
+  const moodByState = { BUSY: 'busy', IDLE: 'idle', WAITING_HUMAN: 'offline', RECOVERING: 'stuck' };
+  const mood = primary.available ? (moodByState[p.state] || 'offline') : 'offline';
   const dot = $('#state-dot');
-  if (dot) dot.className = `state-dot ${stateClass(p?.state)}`;
-  $('#state-title').textContent = p ? stateTitle(p, mood) : t('state.unknown_simple');
+  if (dot) dot.className = `state-dot ${stateClass(p.state)}`;
+  $('#state-title').textContent = stateTitle(p, mood);
   const mascotArea = $('#mascot-area');
   if (mascotArea) {
     mascotArea.className = `mascot-area ${mascotClass(p?.state)}`;
@@ -427,13 +444,59 @@ function renderState() {
       sprite.innerHTML = `<img class="mascot-img" src="${ASSET_ROOT}/img/mascot/${file}" alt="" style="filter:hue-rotate(${hue}deg)">`;
     }
   }
-  $('#state-updated').textContent = fmtAge(p?.updated_at || state.sourceUpdatedAt);
+  $('#state-updated').textContent = fmtAge(state.runtimeSnapshot?.snapshot?.generated_at || state.sourceUpdatedAt);
 
-  const tools = p?.running_tools || [];
+  const tools = localDetails.running_tools || [];
 
   renderToolFeed(tools, p);
-  renderSubagents(p);
-  renderAssistantMessage(p);
+  renderSubagents(localDetails);
+  renderAssistantMessage(localDetails);
+}
+
+function renderRuntimeObservabilityPanel() {
+  const panel = $('#runtime-observability');
+  if (panel) panel.innerHTML = renderRuntimeObservability(state.runtimeSnapshot);
+}
+
+function initOperationsControls() {
+  const form = $('#operations-control-form');
+  if (!form) return;
+  const submit = $('#operations-submit');
+  const output = $('#operations-result');
+  form.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    if (state.remoteAgent || REMOTE_AGENT) {
+      output.dataset.tone = 'error';
+      output.textContent = t('operations.local_only');
+      return;
+    }
+    submit.disabled = true;
+    try {
+      const action = $('#operations-action').value;
+      const rawVersion = $('#operations-version').value.trim();
+      const input = buildOperationsControlInput({
+        action,
+        target: JSON.parse($('#operations-target').value),
+        expectedVersion: rawVersion === '' ? null : Number(rawVersion),
+        reason: $('#operations-reason').value,
+      });
+      output.dataset.tone = 'pending';
+      output.textContent = t('operations.submitting');
+      await submitOperationsControl({
+        basePath: BASE_PATH,
+        input,
+        onUpdate(view) {
+          output.dataset.tone = view.tone;
+          output.textContent = `${view.status} — ${view.detail}`;
+        },
+      });
+    } catch (error) {
+      output.dataset.tone = 'error';
+      output.textContent = `${t('operations.invalid')}: ${error.message}`;
+    } finally {
+      submit.disabled = false;
+    }
+  });
 }
 
 function renderToolFeed(tools, p) {
@@ -1144,6 +1207,7 @@ function renderConnection(mode) {
 
 function renderAll() {
   renderI18n();
+  renderRuntimeObservabilityPanel();
   initFleetManageButton();
   if (fleetManageModal) {
     const wasOpen = !fleetManageModal.hidden;
@@ -1839,6 +1903,7 @@ async function refreshState() {
   const data = await fetchJson('/api/state');
   if (!data || typeof data !== 'object') return;
   state.dashboardState = data;
+  state.runtimeSnapshot = data.runtime_snapshot || null;
   state.sourceUpdatedAt = data.updated_at || new Date().toISOString();
   if (data.new_session_threshold) {
     state.newSessionThreshold = data.new_session_threshold;
@@ -1846,6 +1911,7 @@ async function refreshState() {
   applyRuntimeVisibility();
   renderInfoBar();
   renderState();
+  renderRuntimeObservabilityPanel();
   renderHealth();
 }
 
@@ -2074,12 +2140,13 @@ function applySse(name, data) {
     // tile instead of falling back to the untinted base art on every update.
     const prevAgent = state.dashboardState?.agent;
     state.dashboardState = data;
+    if (data.runtime_snapshot) state.runtimeSnapshot = data.runtime_snapshot;
     if (!data.runtime_info && prevRi) state.dashboardState.runtime_info = prevRi;
     if (!data.agent && prevAgent) state.dashboardState.agent = prevAgent;
     if (data.new_session_threshold) state.newSessionThreshold = data.new_session_threshold;
     state.sourceUpdatedAt = data.updated_at || new Date().toISOString();
     applyRuntimeVisibility();
-    renderInfoBar(); renderState(); renderHealth(); updateRestartDot();
+    renderInfoBar(); renderState(); renderRuntimeObservabilityPanel(); renderHealth();
     refreshTimeline();
   } else if (name === 'metric_update') {
     const mn = data.metric_name || data.name;
@@ -2098,6 +2165,10 @@ function applySse(name, data) {
     setFleet(data);
     clearFleetFallback();
     scheduleFleetFallback();
+  } else if (name === 'runtime_snapshot') {
+    state.runtimeSnapshot = data;
+    renderState();
+    renderRuntimeObservabilityPanel();
   }
 }
 
@@ -2123,7 +2194,7 @@ function connectSse() {
     scheduleSseReconnect();
   };
 
-  for (const ev of ['state_change', 'metric_update', 'system_update', 'health_update', 'fleet']) {
+  for (const ev of ['state_change', 'metric_update', 'system_update', 'health_update', 'fleet', 'runtime_snapshot']) {
     state.eventSource.addEventListener(ev, (e) => {
       try { applySse(ev, JSON.parse(e.data)); renderConnection('live'); }
       catch { renderConnection('degraded'); }
@@ -3470,13 +3541,6 @@ function createActionsModal() {
   </div>
   <div class="modal-body">
     <div class="action-group">
-      <span class="action-group-label">${esc(t('actions.agent_control'))}</span>
-      <div class="action-row">
-        <button class="action-btn" data-action="interrupt" type="button">${esc(t('actions.interrupt'))}</button>
-        <button class="action-btn action-warn" data-action="restart-session" type="button">${esc(t('actions.restart'))}</button>
-      </div>
-    </div>
-    <div class="action-group">
       <span class="action-group-label">${esc(t('actions.configuration'))}</span>
       <div class="action-field">
         <label class="action-field-label">${esc(t('actions.runtime'))}</label>
@@ -3648,7 +3712,6 @@ async function openActionsModal() {
 
   const statusEl = modal.querySelector('#action-status');
   statusEl.hidden = true;
-  updateRestartDot();
   const upgradeResult = state.dashboardState?.runtime_info?.zylos_upgrade_result;
   if (upgradeResult && statusEl) {
     statusEl.hidden = false;
@@ -3752,15 +3815,7 @@ function closeActionsModal() {
   setModalBodyDisabled(false);
 }
 
-function updateRestartDot() {
-  const btn = actionsModal?.querySelector('.action-btn[data-action="restart-session"]');
-  if (!btn) return;
-  const pending = !!state.dashboardState?.runtime_info?.pending_restart;
-  btn.classList.toggle('action-btn-pending', pending);
-  btn.title = pending ? t('info.pending_restart') : '';
-}
-
-const CONFIRM_ACTIONS = new Set(['interrupt', 'restart-session', 'switch-runtime', 'switch-model', 'switch-effort', 'upgrade-zylos', 'upgrade-cc']);
+const CONFIRM_ACTIONS = new Set(['switch-runtime', 'switch-model', 'switch-effort', 'upgrade-zylos', 'upgrade-cc']);
 
 let countdownTimer = null;
 let pendingConfirmCancel = null;
@@ -3844,8 +3899,6 @@ async function execAction(action, body) {
   const healthPath = agentPath('/api/health');
   if (CONFIRM_ACTIONS.has(action)) {
     const labels = {
-      'interrupt': t('confirm.interrupt'),
-      'restart-session': t('confirm.restart'),
       'switch-runtime': body?.runtime === 'codex'
         ? t('confirm.switch_runtime_codex')
         : t('confirm.switch_runtime', { value: body?.runtime }),
@@ -3891,11 +3944,6 @@ async function execAction(action, body) {
       }
       statusEl.textContent = localMsg || result.message || (result.ok ? t('status.done') : result.error);
       if (result.ok || isInfo) setTimeout(() => { statusEl.hidden = true; }, 5000);
-    }
-    if (result.ok && result.requires_restart) {
-      await new Promise(r => setTimeout(r, 1500));
-      if (statusEl) statusEl.hidden = true;
-      await execAction('restart-session');
     }
     return result.ok;
   } catch (err) {
@@ -3950,6 +3998,7 @@ initLogout();
 initTips();
 initInfoBarButtons();
 initFleetManageButton();
+initOperationsControls();
 initMemoryControls();
 initFleetHoverPause();
 initFleetSounds();

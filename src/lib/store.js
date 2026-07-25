@@ -331,6 +331,13 @@ export class Store {
       ORDER BY timestamp ASC
     `);
 
+    this._getLatestMetric = this.db.prepare(`
+      SELECT * FROM metric_points
+      WHERE metric_name = ?
+      ORDER BY timestamp DESC, id DESC
+      LIMIT 1
+    `);
+
     this._deleteOldMetrics = this.db.prepare(`
       DELETE FROM metric_points WHERE timestamp < datetime('now', '-' || ? || ' days')
     `);
@@ -665,6 +672,15 @@ export class Store {
       ...row,
       dimensions: row.dimensions ? JSON.parse(row.dimensions) : null
     }));
+  }
+
+  getLatestMetric(name) {
+    const row = this._getLatestMetric.get(name);
+    if (!row) return null;
+    return {
+      ...row,
+      dimensions: row.dimensions ? JSON.parse(row.dimensions) : null
+    };
   }
 
   deleteMetricsOlderThan(days) {

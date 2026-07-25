@@ -212,6 +212,36 @@ h2 { margin-bottom: 0; font-size: 15px; font-weight: 600; }
 main { padding: var(--space-md) var(--space-lg) var(--space-xl); }
 .tab-panel[hidden] { display: none; }
 
+/* ─── Core runtime observability ─── */
+.runtime-observability-card { grid-column: 1 / -1; }
+.diagnostic-only { color: var(--text-muted); font-size: 11px; }
+.runtime-observability-status, .runtime-observability-summary, .runtime-observability-section {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: var(--space-sm) var(--space-md);
+  margin-top: var(--space-sm);
+}
+.runtime-observability-status.is-unavailable, .runtime-observability-unavailable { color: var(--state-possibly-stuck); }
+.runtime-observability-status.is-warning { color: var(--state-possibly-stuck); border-color: var(--state-possibly-stuck); }
+.runtime-observability-summary { display: flex; flex-wrap: wrap; gap: var(--space-sm); color: var(--text-dim); }
+.runtime-observability-summary strong { color: var(--text); }
+.runtime-observability-section h3 { font-size: 12px; margin: 0 0 var(--space-xs); }
+.runtime-observability-list { margin: 0; padding-left: 18px; color: var(--text-dim); }
+.runtime-observability-list li + li { margin-top: 3px; }
+.runtime-observability-empty, .runtime-observability-counters { margin: 0; color: var(--text-muted); }
+.operations-control { margin-top: var(--space-md); padding-top: var(--space-md); border-top: 1px solid var(--border); }
+.operations-control-heading { display: flex; align-items: baseline; justify-content: space-between; gap: var(--space-sm); }
+.operations-control-heading h3 { margin: 0; font-size: 13px; }
+.operations-control-heading span { color: var(--text-muted); font-size: 11px; }
+.operations-control-grid { display: grid; grid-template-columns: minmax(150px, .7fr) minmax(260px, 1.5fr); gap: var(--space-sm); margin: var(--space-sm) 0; }
+.operations-control-grid label { display: grid; gap: 4px; color: var(--text-muted); font-size: 11px; }
+.operations-control-grid input, .operations-control-grid select, .operations-control-grid textarea { width: 100%; box-sizing: border-box; border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 7px 9px; background: var(--bg-secondary); color: var(--text); font: inherit; }
+.operations-control-grid textarea { resize: vertical; font-family: var(--font-mono); }
+.operations-result { display: block; min-height: 1.4em; margin-top: var(--space-sm); color: var(--text-dim); font-size: 12px; }
+.operations-result[data-tone="success"] { color: var(--state-healthy); }
+.operations-result[data-tone="error"] { color: var(--state-possibly-stuck); }
+@media (max-width: 700px) { .operations-control-grid { grid-template-columns: 1fr; } .operations-control-heading { align-items: flex-start; flex-direction: column; } }
+
 /* ─── Memory Browser ─── */
 .memory-layout {
   display: grid;

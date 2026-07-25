@@ -33,6 +33,11 @@ import { EventLoopMonitor } from './lib/event-loop-monitor.js';
 import { IngestQueue } from './lib/ingest-queue.js';
 import { buildSystemPayload } from './lib/system-api.js';
 import { SseHub } from './lib/sse.js';
+import { RuntimeSnapshotConsumer, RuntimeSnapshotError } from './lib/runtime-snapshot.js';
+import { createLunaProjectionEventFilter, RuntimeProjectionPublisher } from './lib/runtime-projection.js';
+import { OperationsAuthorizationAdapter } from './lib/operations-auth-adapter.js';
+import { OperationsControlClient, OperationsControlResultStore } from './lib/operations-control-client.js';
+import { createOperationsControlApi } from './lib/operations-control-api.js';
 import { FleetPoller, stateToFleetRecord } from './lib/fleet-poller.js';
 import { buildSafeFleetPayload } from './lib/fleet-payload.js';
 import { FleetProxy } from './lib/fleet-proxy.js';
@@ -113,6 +118,28 @@ try {
 
 const auth = new AuthGate(config, store);
 const memoryBrowser = new MemoryBrowser({ zylosDir: config.zylosDir });
+let operationsControlApi = null;
+if (config.operationsControl?.enabled === true) {
+  try {
+    const authorizationAdapter = new OperationsAuthorizationAdapter({
+      callerNamespace: config.operationsControl.callerNamespace,
+      policy: config.operationsControl.authorizationPolicy,
+    });
+    operationsControlApi = createOperationsControlApi({
+      authorizationAdapter,
+      client: new OperationsControlClient({
+        endpoint: config.operationsControl.endpoint,
+        timeoutMs: config.operationsControl.timeoutMs,
+      }),
+      resultStore: new OperationsControlResultStore(),
+      getVerifiedSubject: (req) => req._verifiedExternalSubject || null,
+      readJsonBody,
+      sendJson,
+    });
+  } catch (error) {
+    process.stderr.write(`[operations-control] disabled: ${error.message}\n`);
+  }
+}
 
 // 3. Sanitizer
 const sanitizer = new Sanitizer(config.zylosDir);
@@ -144,6 +171,13 @@ if (!isClaudeRuntime) process.stderr.write(`[startup] Runtime "${activeRuntime}"
 
 // SSE hub
 const sse = new SseHub(15_000);
+// Core owns the durable projection. Dashboard holds only the latest validated
+// full replacement in memory and never reads Core storage or runtime processes.
+const runtimeSnapshotConsumer = new RuntimeSnapshotConsumer();
+// This is an in-memory delivery cache derived solely from the validated Core
+// snapshot seam. A new Dashboard process gets a new instance ID and must wait
+// for a Core snapshot before it can serve Luna's first projection.
+const runtimeProjectionPublisher = new RuntimeProjectionPublisher();
 let fleetStateTimer = null;
 let lastFleetStateBroadcastAt = 0;
 let fleetPollerReady = false; // fleetPoller is declared later (TDZ guard)
@@ -371,6 +405,7 @@ function buildApiStatePayload() {
   stateData.rate_limit_pct = rateLimitPct('rate_limit');
   stateData.rate_limit_7d_pct = rateLimitPct('rate_limit_7d');
   Object.assign(stateData, getCostTiers());
+  stateData.runtime_snapshot = runtimeSnapshotConsumer.getPublic();
   return stateData;
 }
 
@@ -992,6 +1027,11 @@ function handleApi(req, res, pathname, url) {
     return true;
   }
 
+  if (pathname === '/api/runtime-snapshot') {
+    sendJson(res, 200, runtimeSnapshotConsumer.getPublic());
+    return true;
+  }
+
   if (pathname === '/api/fleet') {
     try {
       sendJson(res, 200, buildFullFleetPayload().payload);
@@ -1172,8 +1212,16 @@ function handleApi(req, res, pathname, url) {
   if (pathname === '/api/stream') {
     const apiToken = req._apiToken;
     const validator = apiToken ? () => !!validateApiSession(apiToken) : null;
-    sse.addClient(res, validator);
-    res.write(`event: fleet_state\ndata: ${JSON.stringify(buildApiStatePayload())}\n\n`);
+    const projection = runtimeProjectionPublisher.get();
+    const isLunaConsumer = url.searchParams.get('consumer') === 'luna';
+    const lunaFilter = isLunaConsumer ? createLunaProjectionEventFilter(projection) : null;
+    const initialEvents = isLunaConsumer && projection?.complete
+      ? [{ eventType: 'runtime_projection', data: projection }]
+      : [];
+    if (!sse.addClient(res, validator, initialEvents, lunaFilter?.accepts)) return true;
+    if (!isLunaConsumer || lunaFilter.isReady()) {
+      res.write(`event: fleet_state\ndata: ${JSON.stringify(buildApiStatePayload())}\n\n`);
+    }
     return true;
   }
 
@@ -1405,6 +1453,7 @@ async function handleStatuslineIngest(req, res) {
       metrics_written: written,
       runtime: 'claude'
     });
+    if (statuslineCollector) await statuslineCollector.collect();
 
     for (const m of metrics) {
       if (m.metric_name && m.metric_value != null) {
@@ -1521,8 +1570,52 @@ export function createServer() {
       return;
     }
 
+    if (pathname === '/api/runtime-controls' || pathname.startsWith('/api/runtime-controls/')) {
+      if (!operationsControlApi) {
+        sendJson(res, 503, { error: 'operations_control_unavailable' });
+        return;
+      }
+      await operationsControlApi.handle(req, res, url);
+      return;
+    }
+
     if (pathname === '/api/stream') {
       handleApi(req, res, pathname, url);
+      return;
+    }
+
+    if (pathname === '/api/runtime-snapshot' && req.method === 'POST') {
+      // A Core publisher must use an admin API session. This endpoint is a
+      // transport boundary only: it cannot grant Core access or trigger any action.
+      const apiSession = req._apiToken ? validateApiSession(req._apiToken) : null;
+      if (apiSession?.scope !== 'admin') {
+        sendJson(res, 403, { error: 'admin_api_session_required' });
+        return;
+      }
+      let snapshot;
+      try {
+        snapshot = await readJsonBody(req, 512 * 1024);
+      } catch (err) {
+        sendJson(res, err.status || 400, { error: err.message || 'invalid_json' });
+        return;
+      }
+      try {
+        const update = runtimeSnapshotConsumer.apply(snapshot);
+        const payload = runtimeSnapshotConsumer.getPublic();
+        const projectionUpdate = runtimeProjectionPublisher.publish(snapshot, update);
+        const projection = runtimeProjectionPublisher.get();
+        sse.broadcast('runtime_snapshot', payload);
+        if (projectionUpdate.apply) sse.broadcast('runtime_projection', projection);
+        sendJson(res, update.apply ? 202 : (update.status === 'conflict' ? 409 : 200), {
+          ...payload,
+          update,
+          runtime_projection: projection,
+          runtime_projection_update: projectionUpdate,
+        });
+      } catch (err) {
+        const status = err instanceof RuntimeSnapshotError ? 422 : 500;
+        sendJson(res, status, { error: err.code || 'runtime_snapshot_rejected' });
+      }
       return;
     }
 

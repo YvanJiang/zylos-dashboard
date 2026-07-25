@@ -71,6 +71,12 @@ function extractMetrics(data) {
   const session = data.session_id || null;
   const dimensions = {};
 
+  const model = data.model?.display_name || data.model?.id;
+  if (model) dimensions.model = model;
+  if (data.model?.id) dimensions.model_id = data.model.id;
+  if (data.effort?.level) dimensions.effort = data.effort.level;
+  if (data.version) dimensions.cc_version = data.version;
+
   if (data.context_window?.used_percentage != null) {
     dimensions.context_pct = data.context_window.used_percentage;
   }
