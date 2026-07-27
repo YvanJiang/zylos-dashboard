@@ -34,7 +34,7 @@ const FLOWS = Object.freeze([
   'dashboard_luna_projection',
 ]);
 const EXPECTED_CORE_FIXTURE_SHA256 =
-  'c11dbb169e0c124bbfb05cded4d3a3d49d473d8deaea1c5a777e25f026f867ba';
+  'e65484147b146fd52e73002ce1f3a403f0cdbfc06406fbe5dfe9909263da5735';
 const CORE_FIXTURE_FILES = Object.freeze([
   'control-v1.json',
   'dashboard-runtime-projection-v1.json',
